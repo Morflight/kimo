@@ -71,3 +71,5 @@ Prior local Windows release builds and native checks passed. The 30-second proxy
 Those measurements are inherited evidence from the tested local session, not newly measured during fork setup. The harness used real BMP/PCM with a simulated audio clock; physical audio, desktop canvas presentation, layered projects and unprepared originals are not certified. Private reports, fixtures, projects and binaries remain outside the public source fork.
 
 Fork setup verification (2026-11-18): all six JavaScript regression suites passed under Node 22, both production JS files passed syntax checks, build scripts passed Bash syntax checks, and all 17 original changed/new source files matched the reviewed checkout byte for byte. No new Rust build or full native suite was run during setup.
+
+The subsequent portability commit changes only the buffer test default source path to resolve relative to the test file; the original exact source snapshot remains in the preceding commits. GitHub CI exposed the former Docker-only `/src` assumption.

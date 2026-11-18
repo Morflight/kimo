@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-const source = readFileSync(process.env.KIMO_PLAYBACK_SOURCE || '/src/crates/kimo-gui/ui/playback.js','utf8');
+const source = readFileSync(process.env.KIMO_PLAYBACK_SOURCE || new URL('../ui/playback.js', import.meta.url),'utf8');
 function setup(end=10,stride=4) {
  let ms=0,id=0;const jobs=new Map();
  const ctx={window:{},performance:{now:()=>ms},requestAnimationFrame:f=>{jobs.set(++id,f);return id;},cancelAnimationFrame:id=>jobs.delete(id),clearTimeout(){},setTimeout(){}};
