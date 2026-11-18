@@ -12,11 +12,11 @@ This fork is independently maintained; upstream README/product claims are upstre
 git clone --branch main https://github.com/Morflight/kimo.git
 cd kimo
 git remote add upstream https://github.com/naman-sharma12345/kimo.git
-git switch -c feature/description
+git switch main
 bash tools/fork/test-preview.sh
 ```
 
-Open pull requests against `main`. Fetch upstream with `git fetch upstream --tags`, then merge a reviewed upstream revision on an integration branch and run checks before merging. Do not reset main onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
+This is a solo-maintainer repository: commit and push directly to `main`; feature branches and pull requests are optional. Run the relevant tests locally and inspect CI on every push. Fetch upstream with `git fetch upstream --tags`, then integrate a reviewed upstream revision and verify it with the same checks. Do not reset main onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
 
 Keep media, real editing projects/history, bridge credentials, caches and binaries outside this repository. Tests must use synthetic fixtures or explicitly supplied local paths. Two decoder capture artifacts inherited from upstream were removed from the maintained tree; upstream history is retained unchanged.
 

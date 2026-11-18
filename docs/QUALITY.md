@@ -4,17 +4,17 @@ The acceptance target is **100% line and function coverage of first-party runtim
 
 ## Current status
 
-The fork inherited 431 Rust source files and 13 non-vendored UI JavaScript files at the initial audit. Its feature reference is substantial but historical, and its native gate manifest was stale. The six preview/controller regression suites passed; that does not establish complete feature coverage, native coverage, browser coverage or real audiovisual correctness. A repository-wide measured 100% result has not been obtained. Until it is obtained, this baseline is **not quality-qualified for merge/release** under this contract.
+The fork inherited 431 Rust source files and 13 non-vendored UI JavaScript files at the initial audit. Its feature reference is substantial but historical, and its native gate manifest was stale. The six preview/controller regression suites passed; that does not establish complete feature coverage, native coverage, browser coverage or real audiovisual correctness. A repository-wide measured 100% result has not been obtained. Until it is obtained, this baseline is **not quality-qualified for release** under this contract.
 
 ## Change procedure
 
 1. Identify affected entries in `docs/features/catalog.json`; read the linked feature contracts.
 2. Change implementation, contracts and behavioral tests together. Cover success, invalid inputs, boundaries, cancellation and lifecycle errors as appropriate.
-3. Run documentation coherence checks against the PR base, unit/integration tests, and native/browser coverage. Preserve reports for the exact commit.
+3. Run documentation coherence checks against the pre-change commit (or an optional PR base), unit/integration tests, and native/browser coverage. Preserve reports for the exact commit.
 4. Inspect coverage gaps; add meaningful tests. Never lower thresholds, silently skip tests, regenerate goldens or accept failures as a new baseline.
-5. Merge only after required CI checks pass. Documentation-only changes also require checks. A missing runner/tool/dependency is a blocker, not a waiver.
+5. Commit and push directly to `main` in the solo workflow; branches and PRs are optional. Every push runs CI, including documentation-only changes. All required tests must pass and coverage must reach 100% before claiming quality acceptance or releasing. A missing runner/tool/dependency is a qualification blocker, not a waiver.
 
-The catalog's `legacy-unverified` state explicitly records inherited documentation debt. It is not a certification. Each affected legacy area must gain a focused contract and linked behavioral tests before new behavior can be accepted there. Mechanical linkage checks cannot prove prose semantics; reviewer inspection is still required.
+The catalog's `legacy-unverified` state explicitly records inherited documentation debt. It is not a certification. Each affected legacy area must gain a focused contract and linked behavioral tests before new behavior can be accepted there. Mechanical linkage checks cannot prove prose semantics; maintainer inspection is still required.
 
 ## Required evidence
 
@@ -36,3 +36,7 @@ Coverage jobs use pinned collectors (cargo-llvm-cov 0.6.16, c8 10.1.3, coverage.
 ## Initial measured JavaScript evidence
 
 On 2026-11-18, all six controller suites passed under Node 22 with c8 10.1.3. The UI-only line coverage in that run was **3.42% (252/7,378 lines, including the development mock)**, with **75.90%** for playback.js. Twelve other UI files had no mapped execution from these controller suites. Sliced editor-controller tests are not attributed to the complete studio.js file, because fragment offsets would give misleading coverage. This is coverage from this specific suite, not a statement that no other tests exist. It fails the required 100% threshold.
+
+## Solo workflow authorization
+
+On 2026-11-18 the owner explicitly authorized moving the initial documentation and controls onto main with their known coverage gaps. Mandatory PR/review restrictions are removed. Required checks remain configured, with owner/admin bypass enabled to permit direct development pushes. CI failures remain visible and the 100% thresholds and strict acceptance job are unchanged. This integration is not evidence that inherited failures or coverage debt have been resolved.
