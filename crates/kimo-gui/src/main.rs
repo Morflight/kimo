@@ -623,8 +623,8 @@ async fn viewer_draft(app: tauri::AppHandle, start: f64, seconds: f64) -> Result
 // ---------- real-time preview (the engine's preview_stream: frames + audio chunks ahead of the playhead) ----------
 /// Start a preview session at `time` (scale 0.5 half / 0.25 quarter of the project size).
 #[tauri::command]
-async fn preview_start(app: tauri::AppHandle, time: f64, scale: Option<f64>, rate: Option<f64>, playing: Option<bool>) -> Result<Value, String> {
-    blocking(app, move |st| st.viewer.stream(&st.app_tools(), "start", json!({"time": time, "scale": scale.unwrap_or(0.5), "rate": rate.unwrap_or(1.0), "playing": playing.unwrap_or(false)}))).await
+async fn preview_start(app: tauri::AppHandle, time: f64, scale: Option<f64>, rate: Option<f64>, playing: Option<bool>, warming: Option<bool>) -> Result<Value, String> {
+    blocking(app, move |st| st.viewer.stream(&st.app_tools(), "start", json!({"time": time, "scale": scale.unwrap_or(0.5), "rate": rate.unwrap_or(1.0), "playing": playing.unwrap_or(false), "warming": warming.unwrap_or(false)}))).await
 }
 
 /// The poll: the playhead (and play state / speed) in, the frames and audio chunks ready ahead out. `seek` starts a new run.

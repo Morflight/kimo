@@ -1,0 +1,21 @@
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const src=readFileSync(new URL('../ui/playback.js',import.meta.url),'utf8');
+const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve()};
+function setup(invoke){let now=0;const timers=[],calls=[],states=[];
+ const ctx={window:{},performance:{now:()=>now},setTimeout:f=>timers.push(f),clearTimeout(){},requestAnimationFrame(){},cancelAnimationFrame(){}};vm.createContext(ctx);vm.runInContext(src,ctx);
+ const p=new ctx.window.KimoPlayer({fps:()=>60,duration:()=>30,scale:()=>.5,onWarm:s=>states.push(s),invoke:async(c,a)=>{calls.push([c,a]);return invoke(c,a)}});
+ p.take=r=>{p.info=r;p.run={start:0,dir:1,stride:2};if(r.ready)for(let i=0;i<32;i++)p.frames.set(i*2,{bmp:{close(){}}});};
+ return {p,calls,states,async step(dt=150){now+=dt;timers.splice(0).forEach(f=>f());await flush();}};
+}
+let release;
+const a=setup(c=>c==='preview_start'?new Promise(r=>release=r):{});
+const loading=a.p.prepare(0);const cancelling=a.p.cancelPreparation();release({});await loading;await cancelling;
+assert.deepEqual(a.calls.map(c=>c[0]),['preview_start','preview_stop']);assert.equal(a.p.started,false);assert.equal(a.p.warm,null);
+const b=setup(()=>({ready:true}));await b.p.prepare(0);assert.equal(b.states.at(-1),'ready');await b.p.cancelPreparation(true,0);assert.equal(b.p.started,true);assert.equal(b.calls.length,1,'Play reuses the prepared engine session');
+const c=setup(()=>({ready:true}));await c.p.prepare(0);await c.p.cancelPreparation();assert.equal(c.calls.at(-1)[0],'preview_stop');assert.equal(c.p.frames.size,0);
+const d=setup(()=>({}));const waiting=d.p.prepare(0);await flush();await d.step(800);await waiting;assert.equal(d.states.at(-1),'skipped');assert.equal(d.calls.at(-1)[0],'preview_stop','UI lag cancels real engine work');
+const e=setup(c=>{if(c==='preview_start')throw Error('oversized');return {}});await e.p.prepare(0);assert.equal(e.states.at(-1),'skipped');assert.notEqual(e.p.supported,false,'background rejection must not disable normal playback');
+const f=setup(()=>({ready:true}));await f.p.prepare(0);await f.p.cancelPreparation(true,10);assert.equal(f.calls.at(-1)[0],'preview_stop','different playhead cannot reuse stale preparation');
+console.log('ok 6 preparation cases: in-flight cancellation, reuse, release, UI lag, oversized fallback, changed playhead');

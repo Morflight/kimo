@@ -11,8 +11,36 @@ pub(crate) fn decode_capture(cmd:&mut Command,max:usize,deadline:Duration)->Resu
 /// One decode may use up to a quarter of the memory budget (at least the old 256 MB): a 30-minute WAV decodes whole.
 pub(crate) fn decode_capture_cap()->usize{(crate::guard::limits().mem_bytes/4).max(256*1024*1024)}
 pub(crate) fn decode_deadline(frames:usize)->Duration{Duration::from_secs(30u64.saturating_add((frames as u64).saturating_mul(2)).min(crate::guard::limits().timeout_s))}
-fn capture_bounded(cmd:&mut Command,max:usize,timeout:Duration)->Result<Vec<u8>,String>{
- let deadline=Instant::now().checked_add(timeout).ok_or("capture deadline overflow")?;crate::guard::reserve(max+1);let mut child=cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e|e.to_string())?;let mut output=child.stdout.take().ok_or("capture stdout missing")?;let(tx,rx)=mpsc::channel();let reader=crate::guard::spawn_with_token(move||{let mut bytes=Vec::with_capacity(max+1);let result=output.by_ref().take(max as u64+1).read_to_end(&mut bytes).map_err(|e|e.to_string()).and_then(|_|if bytes.len()>max{Err("capture stdout limit exceeded".into())}else{Ok(bytes)});let _=tx.send(result);});let mut c=Capture{child,reader:Some(reader)};
+/// Preview batches use a large Windows pipe instead of spilling raw RGBA to disk.
+/// The byte limit, cancellation and deadline remain enforced by the capture owner.
+pub(crate) fn preview_decode_capture(cmd:&mut Command,max:usize,timeout:Duration)->Result<Vec<u8>,String>{
+ if max==0 || max>(crate::guard::limits().mem_bytes/3).min(1<<30).max(1<<20) || timeout.is_zero(){return Err("invalid preview decode bounds".into())}
+ capture_bounded_impl(cmd,max,timeout,true)
+}
+fn capture_stdout(cmd:&mut Command,large:bool)->Result<(Child,Box<dyn Read+Send>),String>{
+ #[cfg(windows)]
+ if large {
+  use std::{ffi::c_void,os::windows::io::FromRawHandle};
+  #[link(name="kernel32")] unsafe extern "system" { fn CreatePipe(read:*mut *mut c_void,write:*mut *mut c_void,attributes:*const c_void,size:u32)->i32; }
+  let(mut read,mut write)=(std::ptr::null_mut(),std::ptr::null_mut());
+  // CreatePipe returns two owned handles on success; File closes them on every error path.
+  let(reader,writer)=unsafe{
+   if CreatePipe(&mut read,&mut write,std::ptr::null(),1<<20)==0{return Err(std::io::Error::last_os_error().to_string())}
+   (std::fs::File::from_raw_handle(read),std::fs::File::from_raw_handle(write))
+  };
+  let child=cmd.stdout(Stdio::from(writer)).stderr(Stdio::null()).spawn().map_err(|e|e.to_string())?;
+  // Command retains its configured handle: release that writer so EOF can reach the reader.
+  cmd.stdout(Stdio::null());
+  return Ok((child,Box::new(reader)));
+ }
+ let _=large;
+ let mut child=cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e|e.to_string())?;
+ let reader=child.stdout.take().ok_or("capture stdout missing")?;
+ Ok((child,Box::new(reader)))
+}
+fn capture_bounded(cmd:&mut Command,max:usize,timeout:Duration)->Result<Vec<u8>,String>{capture_bounded_impl(cmd,max,timeout,false)}
+fn capture_bounded_impl(cmd:&mut Command,max:usize,timeout:Duration,large:bool)->Result<Vec<u8>,String>{
+ let deadline=Instant::now().checked_add(timeout).ok_or("capture deadline overflow")?;crate::guard::reserve(max+1);let (child,mut output)=capture_stdout(cmd,large)?;let(tx,rx)=mpsc::channel();let reader=crate::guard::spawn_with_token(move||{let mut bytes=Vec::with_capacity(max+1);let result=output.by_ref().take(max as u64+1).read_to_end(&mut bytes).map_err(|e|e.to_string()).and_then(|_|if bytes.len()>max{Err("capture stdout limit exceeded".into())}else{Ok(bytes)});let _=tx.send(result);});let mut c=Capture{child,reader:Some(reader)};
  let bytes=loop{crate::guard::check();let remaining=deadline.saturating_duration_since(Instant::now());if remaining.is_zero(){return Err("capture deadline exceeded".into())}match rx.recv_timeout(remaining.min(Duration::from_millis(100))){Ok(v)=>break v?,Err(mpsc::RecvTimeoutError::Timeout)=>continue,Err(_)=>return Err("capture reader disconnected".into())}};
  loop{crate::guard::check();if let Some(status)=c.child.try_wait().map_err(|e|e.to_string())?{if !status.success(){return Err("capture command failed".into())}return Ok(bytes)}let remaining=deadline.saturating_duration_since(Instant::now());if remaining.is_zero(){return Err("capture deadline exceeded after stdout".into())}thread::sleep(remaining.min(Duration::from_millis(20)));}
 }

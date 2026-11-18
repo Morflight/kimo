@@ -44,7 +44,7 @@
   root.KimoAV = AV;
 
   // ---------------------------------------------------------------------------------------------------------------
-  const BUFFER_TO_START = 8;          // frames ready before Play starts the clock
+  const BUFFER_TO_START = 32;         // two renderer batches: absorb delivery jitter before restarting the clock
   const FETCHES = 8;                  // frame downloads in flight
   const AUDIO_WAIT_MS = 1500;         // longest wait for the first audio chunk before playing without it
   const BUFFER_WAIT_MS = 15000;       // a failed delivery must not leave Play buffering forever
@@ -62,8 +62,61 @@
     get fps() { return this.o.fps() || 30; }
     get end() { return this.o.duration() || 0; }
 
+    // Background preparation owns the session until Play takes it over. Cancellation waits
+    // for an in-flight start/poll, then stops the engine before any new session can start.
+    async prepare(t) {
+      if (this.warm || this.started || this.playing) return;
+      const job = this.warm = { cancel: false, keep: false, time: t };
+      this.o.onWarm?.('preparing');
+      job.promise = (async () => {
+        let state = 'ready';
+        try {
+          const r = await this.o.invoke('preview_start', { time: t, scale: this.o.scale(), playing: false, rate: 1, warming: true });
+          this.started = true; this.t = t;
+          if (!job.cancel) this.take(r);
+          const deadline = performance.now() + 5500;
+          while (!job.cancel) {
+            if (this.info.error || this.frameError) throw Error('preparation failed');
+            const need = Math.min(BUFFER_TO_START, Math.max(1, Math.ceil((this.end - t) * this.fps / this.run.stride)));
+            if (this.ready(Math.round(t * this.fps), need) >= need) break;
+            const before = performance.now();
+            await new Promise(ok => setTimeout(ok, 150));
+            if (job.cancel) break;
+            if (performance.now() > deadline || performance.now() - before > 650) throw Error('preparation budget reached');
+            const r = await this.o.invoke('preview_update', { time: t, playing: false, rate: 1 });
+            if (!job.cancel) this.take(r);
+          }
+        } catch (_) { state = 'skipped'; job.keep = false; }
+        if ((job.cancel && !job.keep) || state === 'skipped') {
+          this.started = false; this.gen = -1;
+          this.dropFrames(); this.dropChunks();
+          try { await this.o.invoke('preview_stop', {}); } catch (_) {}
+          this.warm = null;
+        }
+        this.o.onWarm?.(job.cancel ? (job.keep ? 'playing' : 'cancelled') : state);
+      })();
+      await job.promise;
+    }
+    async cancelPreparation(keep = false, time = this.t) {
+      const job = this.warm;
+      if (!job) return;
+      job.cancel = true; job.keep = keep && Math.abs(job.time - time) < 0.5 / this.fps;
+      await job.promise;
+      // A completed preparation retains its session until Play or explicit cancellation.
+      if (this.warm === job) {
+        if (!job.keep) {
+          this.started = false; this.gen = -1; this.dropFrames(); this.dropChunks();
+          job.promise = this.o.invoke('preview_stop', {}).catch(() => {});
+          await job.promise;
+        }
+        if (this.warm === job) this.warm = null;
+        this.o.onWarm?.(job.keep ? 'playing' : 'cancelled');
+      }
+    }
+
     // ---- engine session ----
     async ensure(t) {
+      if (this.warm) await this.cancelPreparation(true, t);
       if (this.supported === false) return false;
       if (this.started) return true;
       try {
@@ -77,7 +130,7 @@
         return false;
       }
     }
-    async stop() { this.pause(); if (this.started) { this.started = false; try { await this.o.invoke('preview_stop', {}); } catch (e) {} } this.dropFrames(); this.dropChunks(); }
+    async stop() { await this.cancelPreparation(); this.pause(); if (this.started) { this.started = false; try { await this.o.invoke('preview_stop', {}); } catch (e) {} } this.dropFrames(); this.dropChunks(); }
     // the poll: our playhead in, ready frames and audio chunks out
     async poll(extra) {
       if (!this.started || this.polling && !extra) return;
@@ -234,7 +287,8 @@
         const due = AV.onRun(this.run, Math.floor(t * fps + 1e-6));
         if (this.draw(due)) this.missingSince = 0;
         else if (!this.missingSince) this.missingSince = performance.now();
-        else if (performance.now() - this.missingSince > STALL_MS) { this.t = this.shown >= 0 ? this.shown / fps : t; return this.rebuffer(); }
+        // Keep the clock position: rewinding to the last bitmap can cross the engine's retention window.
+        else if (performance.now() - this.missingSince > STALL_MS) { return this.rebuffer(); }
         this.o.onTime(t);
         if (performance.now() - this.drawnT0 > 1000) { this.fpsShown = this.drawn * 1000 / (performance.now() - this.drawnT0); this.drawn = 0; this.drawnT0 = performance.now(); this.o.onState?.('playing', this.stats()); }
         this.schedule();

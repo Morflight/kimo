@@ -42,7 +42,7 @@ await test('a transient missing frame can recover before the timeout', async () 
   let failed = false;
   const h = harness(async () => { if (!failed) { failed = true; throw new Error('evicted'); } return { ok: true, blob: async () => ({}) }; });
   await h.p.fetchFrame({ index: 0, url: '0' }); h.p.rebuffer(); h.advance(100);
-  for (let i = 0; i < 8; i++) await h.p.fetchFrame({ index: i, time: i / 30, url: String(i) });
+  for (let i = 0; i < 32; i++) await h.p.fetchFrame({ index: i, time: i / 30, url: String(i) });
   h.advance(100); assert.equal(h.p.buffering, false); assert.ok(h.p.clock); assert.equal(h.errors.length, 0);
 });
 await test('pause cancels the pending timeout', () => {

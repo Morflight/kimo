@@ -32,6 +32,27 @@ pub const BEHIND: usize = 8;
 pub const RING_CAP: usize = 96;
 /// Frames rendered ahead while paused, so pressing Play shows motion at once.
 pub const PRIME: usize = 6;
+pub const WARM_FRAMES: usize = 32;
+pub const WARM_SECONDS: u64 = 5;
+thread_local! { static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub(crate) fn background_decode()->bool { BACKGROUND.with(|x|x.get()) }
+#[cfg(windows)]
+fn background_priority(on:bool) {
+    unsafe extern "system" { fn GetCurrentThread()->*mut std::ffi::c_void; fn SetThreadPriority(thread:*mut std::ffi::c_void,priority:i32)->i32; }
+    unsafe { SetThreadPriority(GetCurrentThread(),if on {0x00010000}else{0x00020000}); }
+}
+struct Background(bool);
+impl Background { fn enter(on:bool)->Self { BACKGROUND.with(|x|x.set(on)); #[cfg(windows)] if on {background_priority(true);} Self(on) } }
+impl Drop for Background { fn drop(&mut self){BACKGROUND.with(|x|x.set(false)); #[cfg(windows)] if self.0 {background_priority(false);} } }
+/// Automatic work is deliberately limited to plain HD projects. File duration/bytes do not
+/// predict the cost of a short decode window; source dimensions and composition do.
+pub fn warm_eligible(p:&Project)->bool {
+    p.width as u64*p.height as u64<=1920*1080 && p.duration()>0.0
+    && p.tracks.iter().map(|tr|tr.clips.len()).sum::<usize>()<=256
+    && p.assets.values().all(|a|a.width as u64*a.height as u64<=3840*2160)
+    && p.tracks.iter().flat_map(|tr|tr.clips.iter()).all(|c|crate::render::plain_preview_clip(p,c.start+c.duration/2.0).is_some())
+}
+
 /// Audio chunks kept ahead of the playhead while playing.
 pub const AUDIO_AHEAD: usize = 3;
 pub const AUDIO_CAP: usize = 16;
@@ -132,15 +153,14 @@ pub fn frame_due(clock: &AvClock, a: f64, fps: f64) -> i64 { if !(fps > 0.0) { r
 /// holds frames) when this passes one frame.
 pub fn drift_frames(clock: &AvClock, a: f64, shown: i64, fps: f64) -> f64 { (clock.timeline_at(a) * fps) - shown as f64 - 0.5 }
 
-/// Frame skip for normal-speed playback (1 = every frame, 2 = every 2nd ...) given the frames per second the stream makes:
-/// the smallest skip that keeps 10% headroom over real time, stepping back down once there is 30% to spare.
-pub fn choose_skip(fps: f64, made: f64, cur: i64) -> i64 {
-    if !(made > 0.0) || !(fps > 0.0) { return cur; }
-    let need = |d: i64| fps / d as f64;
-    if made < need(cur) * 0.95 { return (1..=4).find(|&d| made >= need(d) * 1.1).unwrap_or(4).max(cur); }
-    if cur > 1 && made >= need(cur - 1) * 1.3 { return cur - 1; }
-    cur
+/// Stable preview cadence near 30 fps, never below 27 fps unless the timeline itself is lower.
+/// Pick it before filling the ring: changing cadence during playback discards buffered frames.
+pub fn preview_stride(fps:f64)->i64 {
+    if !fps.is_finite() || fps<=0.0{return 1;}
+    let max_skip=(fps/27.0).floor().clamp(1.0,16.0);
+    (fps/30.0).round().clamp(1.0,max_skip) as i64
 }
+pub fn choose_skip(fps:f64,_made:f64,_cur:i64)->i64 { preview_stride(fps) }
 
 /// The audio chunks (index k covers [k * AUDIO_CHUNK, (k+1) * AUDIO_CHUNK)) needed from timeline time `t`, `ahead` of them,
 /// clamped to the timeline.
@@ -231,6 +251,9 @@ pub fn draft_size(w: u32, h: u32, scale: f64) -> (usize, usize) {
 }
 
 fn render_draft(p: &Project, t: f64, cache: &crate::render::Cache, nw: usize, nh: usize) -> Result<Vec<u8>, String> {
+    if let Some(frame)=crate::render::opaque_preview_frame(p,t,cache) {
+        return Ok(crate::ext::preview_range::box_downscale(frame,p.width as usize,p.height as usize,nw,nh));
+    }
     let f = crate::render::export_frame_rgba8(p, t, cache)?;
     Ok(crate::ext::preview_range::box_downscale(&f, p.width as usize, p.height as usize, nw, nh))
 }
@@ -259,7 +282,7 @@ pub struct ChunkOut { pub chunk: u64, pub start: f64, pub end: f64, pub name: St
 
 struct State {
     project: Arc<Project>, rev: u64, gen: u32, arev: u32, run: Run, ring: Ring<FrameOut>, busy: Vec<u64>,
-    playing: bool, audio_on: bool, playhead: f64, audio: BTreeMap<u64, ChunkOut>, audio_busy: Option<u64>,
+    warming: bool, playing: bool, audio_on: bool, playhead: f64, audio: BTreeMap<u64, ChunkOut>, audio_busy: Option<u64>,
     rate: f64, skip: i64, run_rendered: u64,
     error: Option<String>, audio_error: Option<String>, rendered: u64, render_ms: f64, fps_made: f64, first_ms: Option<f64>, started: std::time::Instant, run_started: std::time::Instant,
     proxies: Vec<String>, scrub: Vec<(u64, i64, PathBuf)>,
@@ -307,33 +330,49 @@ impl Stream {
         let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(2).saturating_sub(1).clamp(1, 8);
         // frames per batch; halved whenever a batch's decode window does not fit the decode cache budget (several 1080p+ layers)
         let mut max_batch = threads * 2;
+        let mut prefetch = crate::render::StreamPrefetch::new();
         while !self.stop.load(Ordering::Relaxed) {
             // what to render next: a batch of consecutive missing seqs, small right after a seek so the first frame is quick
-            let (p, run, gen, seqs) = {
+            let (p, run, gen, seqs, warming) = {
                 let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
                     if self.stop.load(Ordering::Relaxed) { return; }
-                    let ahead = if st.playing { st.ring.cap() - BEHIND } else { PRIME };
+                    let ahead = if st.playing { st.ring.cap() - BEHIND } else if st.warming { WARM_FRAMES } else { PRIME };
                     let last = self.last_index(); let run = st.run;
                     let busy = st.busy.clone();
                     let in_range = |s: u64| { let f = run.frame(s); f >= 0 && f <= last };
                     let first = st.ring.next_missing(ahead, |s| busy.contains(&s) || !in_range(s));
                     if let (Some(s0), None) = (first, st.error.as_ref()) {
-                        let want = if st.ring.ready_ahead() == 0 { 1 } else { max_batch };
+                        let want = if st.warming || st.ring.ready_ahead() == 0 { 1 } else { max_batch };
                         let mut v = vec![s0]; let mut s = s0 + 1;
                         while v.len() < want && s < st.ring.read() + ahead as u64 && st.ring.in_window(s) && in_range(s) { if !st.ring.contains(s) && !busy.contains(&s) { v.push(s); } s += 1; }
                         st.busy.extend(v.iter().copied());
-                        break (st.project.clone(), run, st.gen, v);
+                        break (st.project.clone(), run, st.gen, v, st.warming);
                     }
                     st = self.cv.wait_timeout(st, std::time::Duration::from_millis(250)).unwrap_or_else(|e| e.into_inner()).0;
                 }
             };
+            let _background = Background::enter(warming);
+            cache.decode_budget = Some(if warming { (64 << 20).min(stream_decode_budget()) } else { stream_decode_budget() });
             let (w, h, batch_t) = (self.w, self.h, std::time::Instant::now());
             let times: Vec<f64> = seqs.iter().map(|&s| run.frame(s) as f64 / self.fps()).collect();
             let (t0, t1) = (times.iter().cloned().fold(f64::MAX, f64::min), times.iter().cloned().fold(f64::MIN, f64::max));
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Vec<Result<(Vec<u8>, f64), String>>, String> {
                 let _nb = crate::analysis_proxy::NonBlocking::new();
+                prefetch.finish(gen, &mut cache);
+                cache.sample_step = if run.dir==1 && run.stride==2 {2}else{1};
                 crate::render::prepare_stream_range(&p, &mut cache, t0, t1)?;
+                // Overlap the next decode with this batch's composition. Large strides already
+                // span huge source windows; keep speculative decode bounded to normal playback.
+                if !warming && run.dir == 1 && run.stride <= 2 {
+                    let next = seqs.last().copied().unwrap_or(0) + 1;
+                    let a = run.frame(next) as f64 / self.fps();
+                    let b = (run.frame(next + max_batch as u64 - 1) as f64 / self.fps()).min(self.end - 1.0/self.fps());
+                    if a <= b { prefetch.start(p.clone(), &cache, gen, a, b); }
+                }
+                if warming {
+                    return Ok(times.iter().map(|&time| { let t=std::time::Instant::now(); render_draft(&p,time,&cache,w,h).map(|px|(bmp(&px,w,h),t.elapsed().as_secs_f64()*1000.0)) }).collect());
+                }
                 let cache = &cache; let slots: Vec<Mutex<Option<Result<(Vec<u8>, f64), String>>>> = times.iter().map(|_| Mutex::new(None)).collect();
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 std::thread::scope(|sc| { for _ in 0..threads.min(times.len()) { let (p, slots, next, times) = (&p, &slots, &next, &times); crate::guard::scope_spawn(sc, move || loop {
@@ -372,6 +411,8 @@ impl Stream {
             let secs = batch_t.elapsed().as_secs_f64();
             if secs > 0.0 && seqs.len() > 1 { let f = seqs.len() as f64 / secs; st.fps_made = if st.fps_made == 0.0 { f } else { st.fps_made * 0.7 + f * 0.3 }; }
             self.cv.notify_all();
+            drop(st);
+            if warming { std::thread::sleep(std::time::Duration::from_millis(20)); }
         }
     }
 
@@ -383,7 +424,7 @@ impl Stream {
                 loop {
                     if self.stop.load(Ordering::Relaxed) { return; }
                     let ahead = if st.playing { AUDIO_AHEAD } else { 1 };
-                    let want = if st.audio_on { chunks_from(st.playhead, ahead, self.end) } else { vec![] };
+                    let want = if st.audio_on && !st.warming { chunks_from(st.playhead, ahead, self.end) } else { vec![] };
                     if let Some(k) = want.into_iter().find(|k| !st.audio.contains_key(k)) { st.audio_busy = Some(k); break (st.project.clone(), k, st.arev); }
                     st = self.cv.wait_timeout(st, std::time::Duration::from_millis(250)).unwrap_or_else(|e| e.into_inner()).0;
                 }
@@ -418,7 +459,7 @@ impl Stream {
         let elapsed = st.started.elapsed().as_secs_f64();
         serde_json::json!({
             "gen": st.gen, "rev": format!("{:016x}", st.rev), "run": {"start": st.run.start, "dir": st.run.dir, "stride": st.run.stride},
-            "fps": self.fps, "duration": self.end, "width": self.w, "height": self.h, "scale": self.scale, "playing": st.playing,
+            "warming": st.warming, "fps": self.fps, "duration": self.end, "width": self.w, "height": self.h, "scale": self.scale, "playing": st.playing,
             "frames": frames, "audio": audio, "audio_on": st.audio_on, "ready_ahead": st.ring.ready_ahead(), "ring": st.ring.cap(),
             "render_ms": st.render_ms, "render_fps": st.fps_made, "skip": st.skip, "rate": st.rate,
             "first_frame_ms": st.first_ms, "rendered": st.rendered, "uptime_s": elapsed, "proxies": st.proxies, "error": st.error, "audio_error": st.audio_error,
@@ -441,6 +482,10 @@ pub fn stop() -> bool {
 
 /// Start (or restart) the stream for `p` into `dir`, at `scale` (0.5 or 0.25), from timeline time `t`.
 pub fn start(p: &Project, dir: &Path, scale: f64, t: f64, rate: f64, playing: bool) -> Result<serde_json::Value, String> {
+    start_mode(p,dir,scale,t,rate,playing,false)
+}
+pub fn start_mode(p:&Project,dir:&Path,scale:f64,t:f64,rate:f64,playing:bool,warming:bool)->Result<serde_json::Value,String> {
+    if warming && (!warm_eligible(p) || playing) { return Err("background preview skipped: project exceeds automatic preparation budget".into()); }
     let end = p.duration();
     if !(end > 0.0) { return Err("out_of_range: the timeline is empty".into()); }
     if !(scale > 0.0 && scale <= 1.0) { return Err("out_of_range: scale must be between 0 and 1 (0.5 half, 0.25 quarter)".into()); }
@@ -450,7 +495,7 @@ pub fn start(p: &Project, dir: &Path, scale: f64, t: f64, rate: f64, playing: bo
     let (w, h) = draft_size(p.width, p.height, scale);
     let now = std::time::Instant::now();
     let st = State { project: Arc::new(p.clone()), rev: project_rev(p), gen: 0, arev: 0, run: Run::for_rate(0, 1.0), ring: Ring::new(RING_CAP, BEHIND), busy: vec![],
-        playing, audio_on: true, rate: 1.0, skip: 1, run_rendered: 0, playhead: t, audio: BTreeMap::new(), audio_busy: None, error: None, audio_error: None, rendered: 0, render_ms: 0.0, fps_made: 0.0, first_ms: None, started: now, run_started: now, proxies: vec![], scrub: vec![] };
+        warming, playing, audio_on: true, rate: 1.0, skip: preview_stride(fps), run_rendered: 0, playhead: t, audio: BTreeMap::new(), audio_busy: None, error: None, audio_error: None, rendered: 0, render_ms: 0.0, fps_made: 0.0, first_ms: None, started: now, run_started: now, proxies: vec![], scrub: vec![] };
     let tok = crate::guard::new_token();
     let s = Arc::new(Stream { dir: dir.to_path_buf(), scale, w, h, fps, end, st: Mutex::new(st), cv: Condvar::new(), stop: Arc::new(AtomicBool::new(false)), tok: tok.clone(), scrub_cache: Mutex::new(crate::render::Cache::new()) });
     { let mut st = s.st.lock().unwrap(); s.restart(&mut st, t.clamp(0.0, end), rate); st.playing = playing; }
@@ -460,6 +505,20 @@ pub fn start(p: &Project, dir: &Path, scale: f64, t: f64, rate: f64, playing: bo
         crate::guard::spawn_builder_with_token(std::thread::Builder::new().name(name.into()), move || crate::guard::with_token(&tok2, || if audio { s2.audio_loop() } else { s2.video_loop() })).map_err(|e| format!("cannot start the preview worker: {e}"))?;
     }
     *STREAM.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
+    if warming {
+        let weak=Arc::downgrade(&s);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(WARM_SECONDS));
+            if let Some(s)=weak.upgrade() {
+                let mut st=s.st.lock().unwrap_or_else(|e|e.into_inner());
+                let required=WARM_FRAMES.min(((s.end-st.playhead)*s.fps/st.run.stride as f64).ceil().max(1.0) as usize);
+                if st.warming && st.ring.ready_ahead()<required {
+                    st.error=Some("background preview stopped: preparation time budget reached".into());
+                    s.stop.store(true,Ordering::Relaxed); s.tok.store(true,Ordering::Relaxed); s.cv.notify_all();
+                }
+            }
+        });
+    }
     let st = s.st.lock().unwrap();
     Ok(s.report(&st))
 }
@@ -470,12 +529,12 @@ pub fn update(p: &Project, t: f64, rate: Option<f64>, playing: Option<bool>, see
     let s = current().ok_or("no preview stream: start one first")?;
     let rev = project_rev(p);
     let mut st = s.st.lock().unwrap_or_else(|e| e.into_inner());
-    if (p.duration() - s.end).abs() > 1e-9 || p.width != st.project.width || p.height != st.project.height || p.fps != st.project.fps {
+    if s.stop.load(Ordering::Relaxed) || (p.duration() - s.end).abs() > 1e-9 || p.width != st.project.width || p.height != st.project.height || p.fps != st.project.fps {
         drop(st); let (dir, scale) = (s.dir.clone(), s.scale);
         return start(p, &dir, scale, t, rate.unwrap_or(1.0), playing.unwrap_or(false));
     }
     let t = t.clamp(0.0, s.end);
-    if let Some(pl) = playing { st.playing = pl; }
+    if let Some(pl) = playing { st.playing = pl; if pl { st.warming=false; } }
     let cur_rate = st.rate;
     let rate_changed = rate.is_some_and(|r| Run::for_rate(0, r) != Run::for_rate(0, cur_rate));
     if rev != st.rev { st.playhead = t; if let Some(r) = rate { st.rate = r; } s.reload(&mut st, p.clone(), rev); }
@@ -627,14 +686,15 @@ mod tests {
 
     #[test]
     fn a_slow_machine_skips_frames_instead_of_stalling() {
-        assert_eq!(choose_skip(25.0, 30.0, 1), 1, "fast enough: every frame");
-        assert_eq!(choose_skip(25.0, 10.5, 1), 3, "10.5 fps made: every 3rd frame (8.3 needed) keeps real time");
-        assert_eq!(choose_skip(25.0, 14.0, 1), 2);
-        assert_eq!(choose_skip(25.0, 3.0, 1), 4, "never more than every 4th");
-        assert_eq!(choose_skip(25.0, 30.0, 2), 2, "not enough spare to go back to every frame (hysteresis)");
-        assert_eq!(choose_skip(25.0, 40.0, 2), 1);
-        assert_eq!(choose_skip(25.0, 0.0, 2), 2, "nothing measured yet");
-        let mut r = Run::for_rate(10, 1.0); r.stride *= 3; assert_eq!((r.frame(2), r.seq_at(16)), (16, Some(2)));
+        assert_eq!(choose_skip(25.0, 30.0, 1), 1);
+        assert_eq!(choose_skip(25.0, 3.0, 1), 1, "do not drop an already low-fps timeline");
+        assert_eq!(choose_skip(60.0, 12.0, 1), 2, "60 fps preview must stay at least 30 fps");
+        assert_eq!(choose_skip(60.0, 35.0, 2), 2);
+        assert_eq!(choose_skip(60.0, 12.0, 16), 2, "normalize a prior low-quality stride");
+        assert_eq!(choose_skip(120.0, 15.0, 1), 4);
+        assert_eq!(choose_skip(60.0, 90.0, 2), 2, "do not discard the ring after a fast batch");
+        assert_eq!(choose_skip(60.0, 0.0, 2), 2);
+
     }
 
     #[test]

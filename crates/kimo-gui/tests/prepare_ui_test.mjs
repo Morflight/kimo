@@ -1,0 +1,13 @@
+import {readFileSync} from 'node:fs';import vm from 'node:vm';import assert from 'node:assert/strict';
+const source=readFileSync(new URL('../ui/studio.js',import.meta.url),'utf8');
+const begin=source.indexOf('let warmTimer ='),end=source.indexOf('const PB = new KimoPlayer',begin);
+let id=0;const timers=new Map(),calls=[];
+const ctx={S:{tab:'edit'},V:{dur:30,rev:'one',t:0},document:{hidden:false},PB:{playing:false,started:false,prepare:t=>calls.push(['prepare',t]),cancelPreparation:()=>{calls.push(['cancel']);return Promise.resolve()}},setTimeout:f=>{timers.set(++id,f);return id},clearTimeout:i=>timers.delete(i)};
+vm.createContext(ctx);vm.runInContext(source.slice(begin,end),ctx);
+const run=()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(f=>f())};
+ctx.schedulePreviewPreparation();assert.equal(calls.length,0,'opening must remain responsive before idle preparation');run();assert.deepEqual(calls,[['prepare',0]]);
+ctx.schedulePreviewPreparation();assert.equal(timers.size,0,'no repeated preparation for the same revision');
+await ctx.cancelPreviewPreparation(true);ctx.V.rev='two';ctx.schedulePreviewPreparation();assert.equal(timers.size,0,'manual cancel stays off across edits');
+vm.runInContext('warmDisabled=false',ctx);ctx.document.hidden=true;ctx.schedulePreviewPreparation();assert.equal(timers.size,0,'hidden editor does not start background work');
+ctx.document.hidden=false;ctx.schedulePreviewPreparation();ctx.S.tab='home';run();assert.equal(calls.filter(c=>c[0]==='prepare').length,1,'leaving the editor cancels scheduled work');
+console.log('ok editor idle scheduling, revision deduplication, sticky Cancel, hidden editor and navigation');

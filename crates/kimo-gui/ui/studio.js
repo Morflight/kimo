@@ -102,12 +102,13 @@ const TITLES = { home: 'Home', edit: 'Edit', agent: 'Agent', live: 'Live', conne
 function show(tab) {
   if (!TITLES[tab]) return;
   S.tab = tab;
+  if (typeof cancelPreviewPreparation === 'function' && tab !== 'edit') cancelPreviewPreparation();
   $('#tb-title').textContent = TITLES[tab];
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   $$('.tab').forEach(s => s.classList.toggle('on', s.id === 'tab-' + tab));
   if (tab === 'live') $('#nav-live').hidden = true;
   if (tab === 'agent') { $('#nav-agent').hidden = true; $('#slot-agent').appendChild($('#viewer')); setTimeout(() => $('#chat-in').focus(), 30); }
-  if (tab === 'edit') { $('#slot-edit').prepend($('#viewer')); requestAnimationFrame(renderTimeline); }
+  if (tab === 'edit') { $('#slot-edit').prepend($('#viewer')); requestAnimationFrame(renderTimeline); schedulePreviewPreparation(); }
   if (tab === 'connections') refreshCli();
 }
 $$('#nav a').forEach(a => a.onclick = () => show(a.dataset.tab));
@@ -365,7 +366,7 @@ function seekTo(t, render = true) {
   if (render) { if (inDraft(V.t)) $('#vw-scrub').oninput(); else viewerSeek(); }
 }
 let seekTimer = 0;
-function viewerSeek() { const hit = V.frames.get(`${V.rev}:${fidx(V.t)}`); if (hit) { $('#vw-img').src = hit.url; vMedia('image'); } else PB.scrub(V.t); clearTimeout(seekTimer); seekTimer = setTimeout(() => { if (!V.frames.has(`${V.rev}:${fidx(V.t)}`)) viewerRefresh(); }, 140); }
+function viewerSeek() { cancelPreviewPreparation(); const hit = V.frames.get(`${V.rev}:${fidx(V.t)}`); if (hit) { $('#vw-img').src = hit.url; vMedia('image'); } else PB.scrub(V.t); clearTimeout(seekTimer); seekTimer = setTimeout(() => { if (!V.frames.has(`${V.rev}:${fidx(V.t)}`)) viewerRefresh(); }, 140); }
 $('#tl-ruler').addEventListener('pointerdown', e => {
   if (e.target.dataset.mk) { const m = P.markers.find(x => String(x.id) === e.target.dataset.mk); if (m) seekTo(m.time); return; }
   const r = tlCanvas.getBoundingClientRect();
@@ -654,6 +655,21 @@ const V = { t: 0, dur: 0, fps: 30, rev: null, before: null, draft: null, frames:
 const vw = $('#viewer'), scrub = $('#vw-scrub'), video = $('#vw-video');
 const fidx = t => Math.round(Math.max(0, t) * V.fps);
 // real-time playback (playback.js): the engine renders ahead of the playhead, Web Audio keeps the sound in sync
+let warmTimer = null, warmRevision = null, warmDisabled = false, warmState = 'idle';
+function cancelPreviewPreparation(manual = false) {
+  clearTimeout(warmTimer);
+  if (manual) warmDisabled = true;
+  return PB.cancelPreparation();
+}
+function schedulePreviewPreparation() {
+  if (S.tab !== 'edit' || document.hidden || !V.dur || warmDisabled || warmRevision === V.rev || PB.playing || PB.started) return;
+  clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => {
+    if (S.tab !== 'edit' || document.hidden || PB.playing || PB.started || warmDisabled) return;
+    warmRevision = V.rev;
+    PB.prepare(V.t);
+  }, 1000);
+}
 const PB = new KimoPlayer({
   invoke: (c, a) => B.invoke(c, a), canvas: $('#vw-canvas'),
   fps: () => V.fps, duration: () => V.dur, scale: () => ((V.w || 1920) > 2000 ? 0.25 : 0.5),
@@ -666,8 +682,20 @@ const PB = new KimoPlayer({
     } else if (st === 'paused') { vw.dataset.playing = '0'; vw.dataset.buffering = '0'; playing = false; $('#vw-msg').textContent = `Paused · draft ${i.size}`; }
     else if (st === 'scrub' && !V.frames.has(`${V.rev}:${fidx(V.t)}`) && vw.dataset.state !== 'rendering') { vMedia('stream'); $('#vw-msg').textContent = i.cached ? 'Draft frame (buffered)' : `Draft frame in ${i.ms} ms`; }
   },
+  onWarm: state => {
+    warmState = state;
+    $('#vw-prepare').hidden = state === 'playing';
+    $('#vw-prepare-status').textContent = ({preparing:'Preparing preview…',ready:'Preview ready.',cancelled:'Preparation stopped. Play is available.',skipped:'Automatic preparation skipped. Press Play when ready.'})[state] || '';
+    $('#vw-prepare-action').textContent = state === 'preparing' ? 'Cancel preparation' : state === 'ready' ? 'Clear prepared preview' : 'Prepare preview';
+  },
   onError: m => { $('#vw-msg').textContent = m; },
 });
+$('#vw-prepare-action').onclick = async () => {
+  if (warmState === 'preparing' || warmState === 'ready') await cancelPreviewPreparation(true);
+  else { warmDisabled = false; warmRevision = null; schedulePreviewPreparation(); }
+};
+addEventListener('visibilitychange', () => { if (document.hidden) cancelPreviewPreparation(); });
+addEventListener('input', () => cancelPreviewPreparation());
 function vState(s, busy) { vw.dataset.state = s; if (busy) $('#vw-busy-t').textContent = busy; }
 function vMedia(m) {
   vw.dataset.media = m;
@@ -715,6 +743,7 @@ function applyShown(s) {
   $('#vw-msg').textContent = (f.cached ? 'From cache' : `Rendered in ${f.ms} ms`) + (s.changed ? ' · updated after an edit' : '');
   if (s.changed && vw.dataset.view === 'before') setView('after'); else setView(vw.dataset.view);
   vState('ready');
+  schedulePreviewPreparation();
 }
 async function viewerRefresh() {
   if (S.app?.engine?.state !== 'running') return;
@@ -1400,6 +1429,10 @@ B.listen('engine-event', ev => { if (ev && ev.type === 'proxy') onProxyJob(ev); 
 B.listen('external-event', onExternal);
 B.listen('changes', list => { const flash = list.length > S.changes.length ? list[list.length - 1]?.id : null; S.changes = list; renderChanges(flash); });
 B.listen('project-changed', m => {
+  cancelPreviewPreparation().then(async () => {
+    if (!PB.playing && PB.started) await PB.stop();
+    viewerSoon();
+  });
   S.dirty = m?.action !== 'new_project' && m?.action !== 'load_project'; setProjectName(S.app?.project_path);
   loadSoon(m?.actor && m.actor !== 'you' ? 60 : 30); viewerSoon();
 });

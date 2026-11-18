@@ -136,6 +136,10 @@
               <button class="btn sm ghost vw-ic" id="vw-full" aria-label="Full screen (F)" title="Full screen (F)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
             </div>
             <div class="note vw-msg" id="vw-msg">Frames come from the engine.</div>
+            <div id="vw-prepare" hidden>
+              <span class="note" id="vw-prepare-status" role="status" aria-live="polite"></span>
+              <button class="btn sm ghost" id="vw-prepare-action" type="button">Cancel preparation</button>
+            </div>
           </div>
           <form class="askbar" id="askbar">
             <span class="ask-agent" id="ask-agent" title="Change agent in the Agent tab"><span class="d"></span><span id="ask-agent-t">Claude Code</span></span>

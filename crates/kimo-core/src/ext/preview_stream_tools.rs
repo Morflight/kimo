@@ -15,7 +15,7 @@ fn run(ss: &mut Session, a: &Value) -> Result<Value, String> {
         "start" => {
             let dir = a.get("dir").and_then(|v| v.as_str()).ok_or("dir is required: the directory the frames and audio chunks are written to")?;
             let scale = f(a, "scale").unwrap_or(0.5);
-            crate::preview_stream::start(&ss.project, std::path::Path::new(dir), scale, t, rate.unwrap_or(1.0), playing.unwrap_or(false))
+            crate::preview_stream::start_mode(&ss.project, std::path::Path::new(dir), scale, t, rate.unwrap_or(1.0), playing.unwrap_or(false), a.get("warming").and_then(|v|v.as_bool()).unwrap_or(false))
         }
         "update" | "poll" | "seek" => crate::preview_stream::update(&ss.project, t, rate, playing, op == "seek"),
         "frame" => crate::preview_stream::frame(&ss.project, t),
@@ -34,6 +34,7 @@ pub fn commands() -> Vec<Command> { vec![
             ("time", n("playhead, seconds")),
             ("scale", n("start: 0.5 (half, default) or 0.25 (quarter) of the project size")),
             ("rate", n("speed: 1 normal, 2 / 4 fast forward (every 2nd / 4th frame), negative = reverse; sound only at 1")),
+            ("warming", json!({"type":"boolean","description":"start only: bounded, cancellable background preparation; default false"})),
             ("playing", json!({"type": "boolean", "description": "playing renders the whole ring ahead; paused only primes a few frames"})),
         ], &[]),
         run },

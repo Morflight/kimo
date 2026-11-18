@@ -73,4 +73,13 @@ test('the loop region wraps the playhead', () => {
   assert.equal(AV.wrap(4, { on: false }, 10), 4);
 });
 
+test('adaptive preview strides above four stay on the engine lattice', () => {
+  const c = AV.clock(0, 10, 1, 0), due = AV.frameDue(c, 11.05, 60);
+  assert.equal(due, 63);
+  assert.equal(AV.onRun({ start: 0, dir: 1, stride: 6 }, due), 60);
+  assert.equal(AV.onRun({ start: 0, dir: 1, stride: 9 }, due), 63);
+  assert.equal(AV.onRun({ start: 0, dir: 1, stride: 16 }, due), 48);
+  assert.equal(AV.onRun({ start: 120, dir: -1, stride: 6 }, 107), 108);
+});
+
 console.log(`${n} tests passed`);

@@ -7,27 +7,27 @@ use std::process::{Command, Stdio};
 /// Decoded frames for media clips, keyed by clip id. Frames are RGBA8 at project size, project fps,
 /// Constant speed is applied during decode; ramps use source-time indices.
 /// A decoded window of consecutive frames, contiguous in memory. `first` is the global frame index of buf[0].
-pub struct Frames { pub still:bool,pub working_linear:bool, pub quantized: std::sync::OnceLock<Vec<u8>>, pub linear_buf: Option<Vec<f32>>, pub buf: Vec<u8>, pub fs: usize, pub first: usize }
+pub struct Frames { pub step:usize, pub still:bool,pub working_linear:bool, pub quantized: std::sync::OnceLock<Vec<u8>>, pub linear_buf: Option<Vec<f32>>, pub buf: Vec<u8>, pub fs: usize, pub first: usize }
 impl Frames {
-    pub fn get_float(&self,g:usize)->Option<&[f32]>{let b=self.linear_buf.as_ref()?;let n=self.len();if n==0{return None}let i=g.saturating_sub(self.first).min(n-1);Some(&b[i*self.fs..(i+1)*self.fs])}
+    pub fn get_float(&self,g:usize)->Option<&[f32]>{let b=self.linear_buf.as_ref()?;let n=self.len();if n==0{return None}let i=(g.saturating_sub(self.first)/self.step.max(1)).min(n-1);Some(&b[i*self.fs..(i+1)*self.fs])}
     pub fn len(&self) -> usize { if self.fs == 0 { 0 } else { self.linear_buf.as_ref().map(|b|b.len()).unwrap_or(self.buf.len()) / self.fs } }
-    pub fn covers(&self, a: usize, b: usize) -> bool { self.len() > 0 && ((a >= self.first && b < self.first + self.len()) || (self.still && self.len() == 1 && self.first == 0)) }
+    pub fn covers(&self, a: usize, b: usize) -> bool { self.len() > 0 && ((a >= self.first && b <= self.first + (self.len()-1)*self.step.max(1) && (a-self.first)%self.step.max(1)==0 && (b-self.first)%self.step.max(1)==0) || (self.still && self.len() == 1 && self.first == 0)) }
     /// Global-index lookup, clamped into the window.
-    pub fn get(&self, g: usize) -> Option<&[u8]> { let n = self.len(); if n == 0 { return None; } let i = g.saturating_sub(self.first).min(n - 1); let buf=if let Some(f)=&self.linear_buf{self.quantized.get_or_init(||f.iter().map(|v|(v.clamp(0.,1.)*255.+0.5) as u8).collect())}else{&self.buf};Some(&buf[i * self.fs..(i + 1) * self.fs]) }
+    pub fn get(&self, g: usize) -> Option<&[u8]> { let n = self.len(); if n == 0 { return None; } let i = (g.saturating_sub(self.first)/self.step.max(1)).min(n - 1); let buf=if let Some(f)=&self.linear_buf{self.quantized.get_or_init(||f.iter().map(|v|(v.clamp(0.,1.)*255.+0.5) as u8).collect())}else{&self.buf};Some(&buf[i * self.fs..(i + 1) * self.fs]) }
 }
-impl std::ops::Index<usize> for Frames { type Output = [u8]; fn index(&self, i: usize) -> &[u8] { self.get(self.first+i).expect("no decoded frame") } }
-pub struct Cache { frames: HashMap<String, (String, std::sync::Arc<Frames>)>, /// Code clip frames per clip id: (signature, last slot asked for, slot -> canvas-size RGBA8). See codeclip.rs.
+impl std::ops::Index<usize> for Frames { type Output = [u8]; fn index(&self, i: usize) -> &[u8] { self.get(self.first+i*self.step.max(1)).expect("no decoded frame") } }
+pub struct Cache { pub sample_step:usize, frames: HashMap<String, (String, std::sync::Arc<Frames>)>, /// Code clip frames per clip id: (signature, last slot asked for, slot -> canvas-size RGBA8). See codeclip.rs.
     code: HashMap<String, CodeSlots>, pub size: (u32, u32, f64), /// Export-only static layer cache (project is immutable for the cache's lifetime).
     pub export_mode: bool, proxy_clips: std::collections::BTreeMap<String,String>, /// Decode cache byte budget for this cache (None = the default `decode_cache_limit`); the real-time preview raises it so playback decodes in full windows.
     pub decode_budget: Option<usize>, statics: std::sync::RwLock<HashMap<String, std::sync::Arc<StaticCrop>>> }
 /// Rendered frames of one code clip: (signature, last slot prepared, slot -> canvas-size straight-alpha RGBA8).
 type CodeSlots = (String, usize, std::collections::BTreeMap<usize, std::sync::Arc<Vec<u8>>>);
 pub struct StaticCrop { x0: usize, y0: usize, x1: usize, y1: usize, d: Vec<f32> }
-impl Cache { pub fn new() -> Self { Cache { frames: HashMap::new(), code: HashMap::new(), size: (0, 0, 0.0), export_mode: false, proxy_clips: Default::default(), decode_budget: None, statics: std::sync::RwLock::new(HashMap::new()) } } pub fn new_export() -> Self { let mut c = Cache::new(); c.export_mode = true; c } pub fn frames_of(&self, id: &str) -> Option<&Frames> { self.frames.get(id).map(|x| x.1.as_ref()) }
+impl Cache { pub fn new() -> Self { Cache { sample_step:1, frames: HashMap::new(), code: HashMap::new(), size: (0, 0, 0.0), export_mode: false, proxy_clips: Default::default(), decode_budget: None, statics: std::sync::RwLock::new(HashMap::new()) } } pub fn new_export() -> Self { let mut c = Cache::new(); c.export_mode = true; c } pub fn frames_of(&self, id: &str) -> Option<&Frames> { self.frames.get(id).map(|x| x.1.as_ref()) }
     /// A cheap point-in-time copy for overlapping export: shares every decoded frame/code-slot buffer by
     /// Arc (no pixel data is duplicated), so a prefetch thread can decode the next window into its own
     /// `Cache` instance without aliasing the one the current batch's compose threads are reading.
-    pub fn snapshot(&self) -> Cache { Cache { frames: self.frames.clone(), code: self.code.clone(), size: self.size, export_mode: self.export_mode, proxy_clips: self.proxy_clips.clone(), decode_budget: self.decode_budget, statics: std::sync::RwLock::new(self.statics.read().map(|g| g.clone()).unwrap_or_default()) } }
+    pub fn snapshot(&self) -> Cache { Cache { sample_step:self.sample_step, frames: self.frames.clone(), code: self.code.clone(), size: self.size, export_mode: self.export_mode, proxy_clips: self.proxy_clips.clone(), decode_budget: self.decode_budget, statics: std::sync::RwLock::new(self.statics.read().map(|g| g.clone()).unwrap_or_default()) } }
 }
 
 /// Still-image extensions the decoder holds as one looped frame (ffmpeg `-loop 1`). One list, read by
@@ -316,33 +316,23 @@ fn conform_fps_filter(p: &Project, c: &Clip, path: &str, speed: f64, is_img0: bo
     format!("fps={}", p.fps)
 }
 
-/// Decode `n` frames starting at global clip frame `a` (windowed: memory stays bounded for any clip length).
-/// The real-time preview's decode transport: ffmpeg writes the window to a temp file that is read back whole. Several 1080p
-/// layers at playback rate are hundreds of MB/s, which an OS pipe (a few KB per transfer on Windows) cannot carry; the
-/// file goes through the OS cache. The command's last argument (`-`, stdout) is replaced by the file.
-fn decode_via_file(cmd: &mut Command, max: usize, deadline: std::time::Duration) -> Result<Vec<u8>, String> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    struct Tmp(std::path::PathBuf);
-    impl Drop for Tmp { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
-    let tmp = Tmp(std::env::temp_dir().join(format!("kimo-decode-{}-{}.rgba", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
-    let args: Vec<std::ffi::OsString> = cmd.get_args().map(|a| a.to_os_string()).collect();
-    let mut c = Command::new(cmd.get_program());
-    c.args(&args[..args.len().saturating_sub(1)]).arg("-y").arg(&tmp.0);
-    crate::guard::reserve(max + 1);
-    crate::color::process::wait_command(&mut c, deadline)?;
-    let len = std::fs::metadata(&tmp.0).map_err(|e| format!("decode output: {e}"))?.len() as usize;
-    if len > max { return Err("decode output larger than requested".into()); }
-    std::fs::read(&tmp.0).map_err(|e| format!("decode output: {e}"))
+/// Preview decode transport: bounded memory capture with a high-throughput Windows pipe.
+fn decode_preview_transport(cmd: &mut Command, max: usize, deadline: std::time::Duration) -> Result<Vec<u8>, String> {
+    let started = std::time::Instant::now();
+    let command = if std::env::var_os("KIMO_PROFILE_DECODE").is_some() { Some(format!("{:?}",cmd)) } else { None };
+    let result = crate::color::process::preview_decode_capture(cmd,max,deadline);
+    if let Some(command) = command { eprintln!("{}",serde_json::json!({"stage":"decode_pipe","command":command,"bytes":result.as_ref().map(|v|v.len()).unwrap_or(0),"process_ms":started.elapsed().as_secs_f64()*1000.})); }
+    result
 }
 
-fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Option<(f64, i64)>, via_file: bool, limit: usize) -> Result<Frames, String> {
+fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Option<(f64, i64)>, via_file: bool, limit: usize, step:usize) -> Result<Frames, String> {
     let (w, h) = (p.width, p.height);
     check_decodable(path)?;
     if path.ends_with(".kimopx") {
       let src=crate::pixels::read(path)?;
       let src=if crate::reframe::active(c){let(rx,ry)=crate::reframe::pos(c,0,p.fps);crate::reframe::crop_frame(&src,w as usize,h as usize,rx,ry)}else{src};
       let d=if src.w==w as usize && src.h==h as usize {src.d} else {crate::color::interchange::fit(&src,w as usize,h as usize,c.props.get("fit").map(|q|q.at(0.)).unwrap_or(0.))?};
-      return Ok(Frames{still:true,working_linear:true,quantized:Default::default(),linear_buf:Some(d),buf:vec![],fs:w as usize*h as usize*4,first:0});
+      return Ok(Frames{step:1,still:true,working_linear:true,quantized:Default::default(),linear_buf:Some(d),buf:vec![],fs:w as usize*h as usize*4,first:0});
     }
     if p.color_pipeline.enabled&&[".tif",".tiff"].iter().any(|e|path.to_lowercase().ends_with(e)){
       let mut src=crate::color::interchange::tiff_frame(path,decode_cache_limit())?;
@@ -350,8 +340,8 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
       crate::color::pipeline::input(p,c,&mut src)?;
       let src=if crate::reframe::active(c){let(rx,ry)=crate::reframe::pos(c,0,p.fps);crate::reframe::crop_frame(&src,w as usize,h as usize,rx,ry)}else{src};
       let d=crate::color::interchange::fit(&src,w as usize,h as usize,fit)?;
-      return Ok(Frames{still:true,working_linear:true,quantized:Default::default(),linear_buf:Some(d),buf:vec![],fs:w as usize*h as usize*4,first:0})
-    } let is_img0 = is_still_path(path); let (a, n) = if is_img0 { (0, 1) } else { (a, n) };
+      return Ok(Frames{step:1,still:true,working_linear:true,quantized:Default::default(),linear_buf:Some(d),buf:vec![],fs:w as usize*h as usize*4,first:0})
+    } let is_img0 = is_still_path(path); let (a, n) = if is_img0 { (0, 1) } else { (a, n) }; let step=if is_img0 {1}else{step};
     let (in_pt, speed, span, a_rel) = if let Some((st, fbase)) = seek_base { let rel = (a as i64 - fbase).max(0) as usize; (st, 1.0, (rel+n) as f64 / p.fps, rel) } else if c.retimed() { (c.in_point, 1.0, (a+n) as f64 / p.fps, a) } else { (c.in_point, c.speed, (a+n) as f64 / p.fps * c.speed, a) };
     let fit = c.props.get("fit").map(|q| q.at(0.0)).unwrap_or(0.0);
     let fitf = if crate::reframe::active(c) { crate::reframe::ffmpeg_fit(c, w, h, p.fps, a, n) } else { clip_fit_filter(w, h, fit, p.linear_blend) };
@@ -363,14 +353,14 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     // straight through to the existing pipe path -- this can never make an export fail that would
     // otherwise have succeeded.
     #[cfg(feature = "libav")]
-    if seek_base.is_none() && std::env::var("KIMO_DECODER").ok().as_deref() == Some("libav") {
+    if step==1 && seek_base.is_none() && std::env::var("KIMO_DECODER").ok().as_deref() == Some("libav") {
         let is_native_fit_ext = p.color_pipeline.enabled && [".exr", ".pfm"].iter().any(|ext| path.to_lowercase().ends_with(ext));
         if crate::libav_decode::supported(p.color_pipeline.enabled, c.retimed(), speed, crate::reframe::active(c), is_img0, false, is_native_fit_ext) {
             let fs = (w as usize).checked_mul(h as usize).and_then(|v| v.checked_mul(4));
             if let Some(fs) = fs {
                 crate::guard::reserve(fs.saturating_mul(n.max(1)));
                 if let Ok(buf) = crate::libav_decode::decode_window(path, w, h, fit, in_pt, p.fps, a, n) {
-                    return Ok(Frames { still: is_img0, working_linear: false, quantized: Default::default(), linear_buf: None, buf, fs, first: a });
+                    return Ok(Frames { step:1, still: is_img0, working_linear: false, quantized: Default::default(), linear_buf: None, buf, fs, first: a });
                 }
             }
         }
@@ -410,8 +400,10 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     } else {
         String::new()
     };
+    let selected = if step>1 {format!("select=not(mod(n\\,{step})),")} else {String::new()};
+    let output_n=n.div_ceil(step.max(1));
     let fps_filter = conform_fps_filter(p, c, path, speed, is_img0, seek_base);
-    let vf = format!("{color_override}setpts=PTS/{},{},trim=start_frame={a_rel}:end_frame={},setpts=PTS-STARTPTS,{},format={pix}",speed.max(0.01),fps_filter,a_rel+n,fitf);
+    let vf = format!("{color_override}setpts=PTS/{},{},trim=start_frame={a_rel}:end_frame={},setpts=PTS-STARTPTS,{selected}{},format={pix}",speed.max(0.01),fps_filter,a_rel+n,fitf);
     let is_img = is_still_path(path);
     let loop_args: Vec<&str> = if is_img { vec!["-loop", "1"] } else { vec![] };
     let fs = (w * h * 4) as usize;
@@ -424,7 +416,17 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     crate::guard::reserve(estimate);
     let exr_args:Vec<&str>=if path.to_lowercase().ends_with(".exr"){vec!["-apply_trc","linear"]}else{vec![]};
     let vf=if native_fit{format!("setpts=PTS/{},{},trim=start_frame={a_rel}:end_frame={},setpts=PTS-STARTPTS,format={pix}",speed.max(0.01),fps_filter,a_rel+n)}else{vf};
-    let mut command=Command::new("ffmpeg");command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&n.max(1).to_string(),"-f","rawvideo","-pix_fmt",pix,"-"]);
+    let mut command=Command::new("ffmpeg");
+    if crate::preview_stream::background_decode() {
+        command.args(["-threads","1","-filter_threads","1","-filter_complex_threads","1"]);
+        #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); }
+    }
+    command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-f","rawvideo","-pix_fmt",pix,"-"]);
+    if step>1 || crate::preview_stream::background_decode() { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
+        if step>1 {command.args(["-fps_mode","passthrough"]);}
+        if crate::preview_stream::background_decode() {command.args(["-threads:v","1"]);}
+        command.arg("-");
+        #[cfg(windows)] if crate::preview_stream::background_decode() { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); } }
     let mut buf=Vec::new();
     let linear_buf=if native_fit{
         let bytes_per_frame=raw_fs.checked_mul(if float_source{4}else{2}).ok_or("native frame size overflow")?;
@@ -443,13 +445,13 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
         stream.finish()?;Some(values)
     }else{
         let bytes_per_frame=fs.checked_mul(if p.color_pipeline.enabled{2}else{1}).ok_or("decode frame size overflow")?;
-        let max=bytes_per_frame.checked_mul(n.max(1)).ok_or("decode output size overflow")?;
-        buf=if via_file{decode_via_file(&mut command,max,crate::color::process::decode_deadline(n.max(1)))?}else{crate::color::process::decode_capture(&mut command,max,crate::color::process::decode_deadline(n.max(1)))?};
+        let max=bytes_per_frame.checked_mul(output_n.max(1)).ok_or("decode output size overflow")?;
+        buf=if via_file{decode_preview_transport(&mut command,max,crate::color::process::decode_deadline(n.max(1)))?}else{crate::color::process::decode_capture(&mut command,max,crate::color::process::decode_deadline(n.max(1)))?};
         if buf.len()%bytes_per_frame!=0{return Err("truncated project-sized decode output".into())}
         if p.color_pipeline.enabled{let values=buf.chunks_exact(2).map(|v|u16::from_le_bytes([v[0],v[1]]) as f32/65535.).collect();buf=Vec::new();Some(values)}else{None}
     };
     let k = buf.len() / fs; buf.truncate(k * fs);
-    Ok(Frames { still:is_img,working_linear:native_fit,quantized:Default::default(),linear_buf, buf, fs, first: a })
+    Ok(Frames { step, still:is_img,working_linear:native_fit,quantized:Default::default(),linear_buf, buf, fs, first: a })
 }
 
 fn media_index(c:&Clip,lt:f64,fps:f64)->usize{if let Some((a,_,_))=c.remap_pos(lt.max(0.),fps){return a}if c.speed_curve.is_some(){return c.source_index(lt,fps)}(lt.max(0.)*fps+1e-6).floor() as usize}
@@ -491,6 +493,26 @@ pub fn prepare_draft_at(p:&Project,cache:&mut Cache,t:f64)->Result<(),String>{pr
 /// proxies when enabled, else the short-GOP analysis proxies (never waited for: callers hold an `analysis_proxy::NonBlocking`).
 /// Decodes the usual 24-frame windows (capped by the cache's budget).
 pub fn prepare_stream_range(p:&Project,cache:&mut Cache,t0:f64,t1:f64)->Result<(),String>{prepare_window(p,cache,t0,t1,WINDOW,true,true)}
+/// One bounded decode ahead of the renderer. The cached windows are immutable Arc data;
+/// each worker owns its Cache and a seek/generation mismatch discards its result.
+pub struct StreamPrefetch { next: Option<(u32, std::thread::JoinHandle<Result<Cache,String>>)> }
+impl StreamPrefetch {
+    pub fn new() -> Self { Self { next: None } }
+    pub fn finish(&mut self, generation:u32, cache:&mut Cache) {
+        if let Some((g,job))=self.next.take() {
+            if let Ok(Ok(prepared))=job.join() { if g==generation { *cache=prepared; } }
+        }
+    }
+    pub fn start(&mut self,p:std::sync::Arc<Project>,cache:&Cache,generation:u32,t0:f64,t1:f64) {
+        debug_assert!(self.next.is_none());
+        let mut next=cache.snapshot();
+        self.next=Some((generation,crate::guard::spawn_with_token(move||{
+            let _nb=crate::analysis_proxy::NonBlocking::new();
+            prepare_stream_range(&p,&mut next,t0,t1)?; Ok(next)
+        })));
+    }
+}
+impl Drop for StreamPrefetch { fn drop(&mut self) { if let Some((_,job))=self.next.take(){let _=job.join();} } }
 /// One real-time-preview frame now (a scrub): the same proxies and direct seek, a one-frame window.
 pub fn prepare_stream_frame(p:&Project,cache:&mut Cache,t:f64)->Result<(),String>{prepare_window(p,cache,t,t,1,true,true)}
 pub fn prepare_analysis_range(p:&Project,cache:&mut Cache,t0:f64,t1:f64)->Result<(),String>{*ANALYSIS_PREPARE_CALLS.lock().unwrap().entry(std::thread::current().id()).or_insert(0)+=1;prepare_window(p,cache,t0,t1,256,false,true)}
@@ -504,7 +526,7 @@ impl Cache {
     }
 }
 /// One clip's decode window, collected by `prepare_window` and decoded after its loop (`alias`: same window as an earlier job).
-struct DecodeJob<'a> { c: &'a Clip, apath: String, orig: String, start: usize, count: usize, seek_base: Option<(f64, i64)>, sig: String, ia: usize, ib: usize, selected: bool, using_preview_proxy: bool, alias: Option<usize>, via_file: bool }
+struct DecodeJob<'a> { step:usize, c: &'a Clip, apath: String, orig: String, start: usize, count: usize, seek_base: Option<(f64, i64)>, sig: String, ia: usize, ib: usize, selected: bool, using_preview_proxy: bool, alias: Option<usize>, via_file: bool }
 fn prepare_window(p: &Project, cache: &mut Cache, t0: f64, t1: f64, window:usize, preview:bool, analysis:bool) -> Result<(), String> {
     cache.proxy_clips.clear();
     let limit = cache.decode_budget.unwrap_or_else(decode_cache_limit);
@@ -543,6 +565,18 @@ fn prepare_window(p: &Project, cache: &mut Cache, t0: f64, t1: f64, window:usize
         let mut ia=if !all&&c.props.get("flow_mode").map(|v|v.base.round()==1.).unwrap_or(false){ia.saturating_sub(1)}else{ia};
         // Stabilize, Synthesize Edges (stab_fill, see synth_edges) reads up to stab_fill frames before and after; other clips decode as before.
         if !all { let nf = c.props.get("stab_fill").map(|q| q.at(0.0)).unwrap_or(0.0); if nf >= 1.0 { let nf = nf.min(30.0) as usize; ia = ia.saturating_sub(nf); ib = (ib + nf).min(total - 1); } }
+        // Sparse preview decoding is safe only for ordinary clips without temporal sampling.
+        // Exports and unsupported clips retain dense windows.
+        let sparse = preview && analysis && cache.sample_step==2 && !p.color_pipeline.enabled && !p.frame_blend_conform
+            && c.speed==1.0 && !c.retimed() && matches!(c.time_mode,TimeMode::Normal)
+            && c.motion_blur==0.0 && c.posterize_fps==0.0 && c.echo.is_none() && c.transition_in.is_none()
+            && c.effects.is_empty() && !crate::reframe::active(c)
+            && c.props.keys().all(|k| matches!(k.as_str(),"opacity"|"reveal"|"rotation"|"scale"|"x"|"y"|"fit"|"audio_only"));
+        let step=if sparse && ((c.start*p.fps).round()-c.start*p.fps).abs()<1e-6 {
+            ia=(((t0-c.start).max(0.0)*p.fps+1e-6).floor() as usize).min(total-1);
+            ib=(((t1-c.start).max(0.0)*p.fps+1e-6).floor() as usize).min(total-1);
+            if (ib-ia)%2==0 {2}else{1}
+        } else {1};
         let a = p.assets.get(asset).ok_or(format!("asset {asset} missing"))?;
         let original_path=p.resolve(&a.path);
         let preview_path=if preview {crate::proxy::preview_path(p,asset)}else{None};
@@ -559,12 +593,13 @@ fn prepare_window(p: &Project, cache: &mut Cache, t0: f64, t1: f64, window:usize
         let using_analysis_proxy = selected.is_some() && !using_preview_proxy;
         if using_preview_proxy{cache.proxy_clips.insert(c.id.clone(),asset.clone());}
         let sig = format!("{asset}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}", c.in_point, c.duration, c.speed, c.speed_curve.as_ref().map(|p| serde_json::to_string(p).unwrap_or_default()), p.color_pipeline,c.props.get("input_gamut"),c.props.get("input_transfer"),c.props.get("fit"),apath,stat.len(),stat.modified().ok());
+        let sig = format!("{sig}|sample-step:{step}");
         let sig = if crate::reframe::active(c) { format!("{sig}|reframe|{}", crate::reframe::sig(c)) } else { sig };
         let sig = match &c.time_remap { Some(r) => format!("{sig}|remap|{}|{}", serde_json::to_string(&r.curve).unwrap_or_default(), r.offset), None => sig };
         if let Some((s, fr)) = cache.frames.get(&c.id) { if *s == sig && fr.covers(ia, ib) { continue; } }
         let shared=cache.frames.values().find(|(s,fr)|*s==sig&&fr.covers(ia,ib)).map(|(_,fr)|fr.clone());
         if let Some(fr)=shared{cache.frames.insert(c.id.clone(),(sig,fr));continue}
-        if a.width == 0 { cache.frames.insert(c.id.clone(), (sig, std::sync::Arc::new(Frames { still:false,working_linear:false,quantized:Default::default(),linear_buf: None, buf: vec![], fs: 0, first: 0 }))); continue; }
+        if a.width == 0 { cache.frames.insert(c.id.clone(), (sig, std::sync::Arc::new(Frames { step:1, still:false,working_linear:false,quantized:Default::default(),linear_buf: None, buf: vec![], fs: 0, first: 0 }))); continue; }
         // Ramps cache source-frame windows; constant-speed clips cache output-frame windows.
         let (start, count) = if all { (0, total) } else { (ia, (ib - ia + 1).max(window).min(total - ia)) };
         let mut count=count;
@@ -578,18 +613,18 @@ fn prepare_window(p: &Project, cache: &mut Cache, t0: f64, t1: f64, window:usize
             else if stream_seek { Some(((c.in_point + start as f64 / p.fps - 0.001).max(0.0), start as i64)) } else { None };
         // a clip with the very same window as one already queued shares its frames (what the cache lookup above did when decoding was in line)
         let alias = jobs.iter().position(|j| j.sig == sig && j.start == start && j.count == count && j.ia == ia && j.ib == ib && j.apath == apath);
-        jobs.push(DecodeJob { c, apath, orig: original_path, start, count, seek_base, sig, ia, ib, selected: selected.is_some(), using_preview_proxy, alias, via_file: preview && analysis });
+        jobs.push(DecodeJob { step, c, apath, orig: original_path, start, count, seek_base, sig, ia, ib, selected: selected.is_some(), using_preview_proxy, alias, via_file: preview && analysis });
     }
     let run = |j: &DecodeJob| -> Result<(Frames, String, bool), String> {
-        match decode(p, j.c, &j.apath, j.start, j.count, j.seek_base, j.via_file, limit) {
-            Ok(fr) if j.selected && !fr.covers(j.ia, j.ib) => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
+        match decode(p, j.c, &j.apath, j.start, j.count, j.seek_base, j.via_file, limit, j.step) {
+            Ok(fr) if j.selected && !fr.covers(j.ia, j.ib) => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
             Ok(fr) => Ok((fr, j.sig.clone(), false)),
-            Err(_) if j.selected => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
+            Err(_) if j.selected => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
             Err(e) => Err(e),
         }
     };
     let own = jobs.iter().filter(|j| j.alias.is_none()).count();
-    let mut results: Vec<Option<Result<(Frames, String, bool), String>>> = if own < 2 {
+    let mut results: Vec<Option<Result<(Frames, String, bool), String>>> = if own < 2 || crate::preview_stream::background_decode() {
         jobs.iter().map(|j| if j.alias.is_some() { None } else { Some(run(j)) }).collect()
     } else {
         let slots: Vec<std::sync::Mutex<Option<Result<(Frames, String, bool), String>>>> = jobs.iter().map(|_| std::sync::Mutex::new(None)).collect();
@@ -1233,6 +1268,41 @@ pub fn render_frame_opts(p_in: &Project, t: f64, cache: &Cache, transparent: boo
 
 /// The compositor keeps premultiplied color on a transparent canvas (rgb = sum of src*a over below); alpha deliveries need straight alpha.
 pub(crate) fn unpremultiply(f: &mut Frame) { for px in f.d.chunks_exact_mut(4) { let a = px[3]; if a > 0.0 && a < 1.0 { for j in 0..3 { px[j] = (px[j] / a).min(1.0); } } } }
+/// Borrow an already composed opaque media frame for preview. Any unsupported scene
+/// feature falls back to the complete compositor; export does not use this shortcut.
+pub fn plain_preview_clip(p:&Project,t:f64)->Option<&Clip> {
+    if !t.is_finite() || p.color_pipeline.enabled || p.linear_blend || !p.links.is_empty() || !p.expr_scripts.is_empty()
+        || crate::comp3d::active(p) || !p.grade_scopes.graphs.is_empty() || !p.grade_scopes.clip_bindings.is_empty()
+        || !p.grade_scopes.groups.is_empty() || !p.grade_scopes.timeline.is_empty() {return None;}
+    if p.color_pipeline.validate().is_err(){return None;}
+    // Preserve global validation and internal isolation-track semantics.
+    if p.tracks.iter().any(|tr|tr.id==ALONE_SRC_TRACK || tr.clips.iter().any(|c|!c.effects.is_empty() || c.grade_graph.is_some())){return None;}
+    let mut clips=p.tracks.iter().flat_map(|tr|tr.clips.iter()).filter(|c|t>=c.start-1e-9 && t<c.start+c.duration-1e-9);
+    let c=clips.next()?; if clips.next().is_some(){return None;}
+    if !matches!(c.source,Source::Media{..}) || t<c.start || t>=c.start+c.duration
+        || !crate::editorial::caption_visible(p,&c.id) || c.speed!=1.0 || c.retimed()
+        || !matches!(c.time_mode,TimeMode::Normal) || !c.effects.is_empty() || c.grade_graph.is_some()
+        || c.mask.is_some() || c.corners.is_some() || c.parent.is_some() || c.transition_in.is_some()
+        || c.motion_blur!=0.0 || c.echo.is_some() || c.motion_path.is_some() || c.posterize_fps!=0.0
+        || c.text_fx.is_some() || c.blend!="normal" || crate::reframe::active(c) {return None;}
+    for (name,value) in &c.props {
+        if !value.keys.is_empty() || !value.expr.is_empty(){return None;}
+        let expected=match name.as_str(){"opacity"|"scale"|"reveal"=>1.0,"x"|"y"|"rotation"=>0.0,"fit"=>continue,_=>return None};
+        if value.base!=expected{return None;}
+    }
+    if prop(c,"opacity",0.)!=1.0 || prop(c,"scale",0.)!=1.0{return None;}
+    Some(c)
+}
+pub fn opaque_preview_frame<'a>(p:&Project,t:f64,cache:&'a Cache)->Option<&'a [u8]> {
+    let c=plain_preview_clip(p,t)?;
+    let frames=cache.frames_of(&c.id)?;
+    if frames.working_linear || frames.linear_buf.is_some() || frames.fs!=p.width as usize*p.height as usize*4{return None;}
+    let index=media_index(c,t-c.start,p.fps);
+    if !frames.covers(index,index){return None;}
+    let bytes=frames.get(index)?;
+    if !bytes.chunks_exact(4).all(|px|px[3]==255){return None;}
+    Some(bytes)
+}
 /// One export-equivalent RGBA8 frame (opaque canvas): render_frame_opts, the colour pipeline output stage, then to_rgba8, exactly the steps of the export loop.
 pub fn export_frame_rgba8(p: &Project, t: f64, cache: &Cache) -> Result<Vec<u8>, String> { render_frame_opts(p, t, cache, false).and_then(|mut f| { crate::color::pipeline::output(p, &mut f)?; Ok(to_rgba8(&f)) }) }
 pub fn to_rgba8(f: &Frame) -> Vec<u8> { f.d.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect() }
@@ -1707,7 +1777,7 @@ fn flow_pair(fr:&Frames,a:usize,b:usize,w:usize,h:usize)->Result<(Frame,Frame),S
  let mk=|i:usize|->Result<Frame,String>{let d=if let Some(v)=fr.get_float(i){v.to_vec()}else{fr.get(i).ok_or("no flow frame")?.iter().map(|v|*v as f32/255.).collect()};Ok(Frame{w,h,d})};Ok((mk(a)?,mk(b)?))
 }
 #[cfg(test)]mod flow_pair_tests{use super::*;
-#[test]fn flow_pair_keeps_float_and_rejects_clamped_video(){let d=vec![-0.25,4.,0.18,0.5,1.,2.,3.,1.];let f=Frames{still:false,working_linear:true,quantized:Default::default(),linear_buf:Some(d.clone()),buf:vec![],fs:4,first:10};let(a,b)=flow_pair(&f,10,11,1,1).unwrap();assert_eq!(a.d,&d[..4]);assert_eq!(b.d,&d[4..]);assert!(f.quantized.get().is_none());assert!(flow_pair(&f,10,12,1,1).is_err());}
+#[test]fn flow_pair_keeps_float_and_rejects_clamped_video(){let d=vec![-0.25,4.,0.18,0.5,1.,2.,3.,1.];let f=Frames{step:1,still:false,working_linear:true,quantized:Default::default(),linear_buf:Some(d.clone()),buf:vec![],fs:4,first:10};let(a,b)=flow_pair(&f,10,11,1,1).unwrap();assert_eq!(a.d,&d[..4]);assert_eq!(b.d,&d[4..]);assert!(f.quantized.get().is_none());assert!(flow_pair(&f,10,12,1,1).is_err());}
 }
 
 #[cfg(test)]mod decode_lifecycle_test{use super::*;
