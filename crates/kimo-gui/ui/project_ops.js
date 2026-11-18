@@ -81,7 +81,6 @@ export function pipelineOps(state, MODES, ev) {
   if (err && tn !== 'set_ocio_view_delivery') return false;   /* a refused call leaves the pipeline as it was */
   const S = state._pipe || (state._pipe = { input: null, working: null, view: null, output: null });
   if (tn === 'set_color_pipeline') {
-    if (err) return false;
     const st = (R.settings && typeof R.settings === 'object' ? R.settings : null) || A.settings || {};
     if (st.enabled === false) { setPipe(S, 'working', 'off (display-referred)'); }
     else {
@@ -91,12 +90,10 @@ export function pipelineOps(state, MODES, ev) {
     }
     if (st.mastering && typeof st.mastering === 'object') for (const k of ['max_cll', 'max_fall', 'max_nits', 'min_nits']) setPipe(S, 'hdr:' + k, nits(st.mastering[k]));
   } else if (tn === 'set_clip_input_color') {
-    if (err) return false;
     const T = ev.target || {}, cn = clipName(state, MODES, A.clip_id ?? T.clip_id), nm = cn ? cn.replace(/\.[a-z0-9]{2,4}$/i, '').slice(0, 12) : 'clip input';
     const v = space(R.gamut ?? A.gamut, R.transfer ?? A.transfer); if (!v) return false;
     if (!(S.clips && S.clips[nm] != null)) { (S._ch || (S._ch = {}))['clip:' + nm] = { from: S.input ?? 'project input' }; (S.clips || (S.clips = {}))[nm] = v; } else setPipe(S, 'clip:' + nm, v);
   } else if (tn === 'set_hdr_mastering') {
-    if (err) return false;
     const m = (R.mastering && typeof R.mastering === 'object' ? R.mastering : null) || A.metadata || {};
     if (A.clear || R.mastering === null) { for (const k of ['max_cll', 'max_fall', 'max_nits', 'min_nits']) if (S.hdr) setPipe(S, 'hdr:' + k, 'cleared'); if (!S.hdr) return false; }
     else for (const k of ['max_cll', 'max_fall', 'max_nits', 'min_nits']) setPipe(S, 'hdr:' + k, nits(m[k]));
@@ -289,7 +286,7 @@ function metaOps(state, MODES, A, R) {
     const tr = tl && (findTrack(tl, id) || (tl.tracks || []).find(x => x.name === id)); if (!tr) return false;
     from = clean(tr.label); if (typeof name === 'string' && name) { tr.label = name.slice(0, 16); tr.name = name; } tr._flash = t; nm = tr.label; hit = true;
   } else {
-    let [tr, i] = tl ? findClip(tl, { clip_id: id }) : [null, -1];
+    let [tr, i] = findClip(tl, { clip_id: id });
     if (!tr && tl) for (const x of tl.tracks || []) { const j = (x.clips || []).findIndex(c => c.name === id); if (j >= 0) { tr = x; i = j; break; } }
     if (!tr) return false;
     const c = tr.clips[i]; from = clean(c.label);
@@ -460,7 +457,7 @@ export function qaOps(state, MODES, ev) {
 export const C_MUT = /^(set_color_pipeline|set_clip_input_color|set_hdr_mastering|set_meta|restore|batch|recipe_apply|template_apply|template_define|template_delete|load_project)$/;
 const noFlash = (k, v) => (k === '_flash' || k === '_footFlash' ? undefined : v);
 const clone = x => (x == null ? null : JSON.parse(JSON.stringify(x, noFlash)));
-function tlSnap(state, MODES) { const tl = timelineView(state, MODES) || {}; return clone({ tracks: tl.tracks || [], markers: (tl.markers || []).filter(m => !m.gone), mc: tl._mc || {} }); }
+function tlSnap(state, MODES) { const tl = timelineView(state, MODES); return clone({ tracks: tl.tracks || [], markers: (tl.markers || []).filter(m => !m.gone), mc: tl._mc || {} }); }
 function projSnap(state, MODES) { return { pipe: clone(state._pipe || null), tl: tlSnap(state, MODES) }; }
 const VIEWS = [['color', 'kv'], ['edit', 'kv'], ['batch', 'diffbatch'], ['batch', 'media']];
 export function cSnap(state, MODES) { return { ...projSnap(state, MODES), v: VIEWS.map(([m, k]) => clone(panel(state, MODES, m, k))) }; }
@@ -482,7 +479,7 @@ function pipeApply(state, MODES, pipe) {
   for (const [k, v] of Object.entries(nx.clips || {})) if ((cur.clips || {})[k] !== v) ch['clip:' + k] = { from: (cur.clips || {})[k] ?? null };
   for (const [k, v] of Object.entries(nx.hdr || {})) if ((cur.hdr || {})[k] !== v) ch['hdr:' + k] = { from: (cur.hdr || {})[k] ?? null };
   nx._ch = ch; state._pipe = nx;
-  if (pipe || state._pipe) pipeRows(state, MODES);
+  pipeRows(state, MODES);
 }
 function projApply(state, MODES, S) { const t = now(); tlApply(state, MODES, S.tl, t); if (S.pipe || state._pipe) pipeApply(state, MODES, S.pipe); }
 export function cRestore(state, MODES, S) {   /* undo / redo of a lane-C step: its panels exactly as they were */
@@ -507,7 +504,7 @@ export function cPush(state, before, after, tool, R) {   /* the step covAHistory
   h.undo[h.undo.length - 1] = { tool, c: true, before, after };
 }
 function batchTimeline(state, MODES, ops, res) {   /* trims / moves the batch applied, from the engine's own per-op results */
-  const tl = timelineView(state, MODES); if (!tl) return; const t = now();
+  const tl = timelineView(state, MODES); const t = now();
   for (const r of res) {
     const op = ops[r.index] || {}, a = op.args || {}, b = r.result_brief && typeof r.result_brief === 'object' ? r.result_brief : {};
     const [tr, i] = findClip(tl, { clip_id: a.clip_id }); if (!tr) continue; const c = tr.clips[i];

@@ -471,7 +471,8 @@
         "crates/kimo-gui/src/keys.rs",
         "crates/kimo-gui/src/recovery.rs",
         "crates/kimo-gui/src/crash.rs",
-        "crates/kimo-gui/src/ledger.rs"
+        "crates/kimo-gui/src/ledger.rs",
+        "crates/kimo-gui/src/system.rs"
       ],
       "sources": [
         "crates/kimo-gui/src/bridge.rs",
@@ -513,7 +514,8 @@
         "crates/kimo-gui/tests/flash_edit_scope_test.py",
         "crates/kimo-gui/tests/fix2_test.mjs",
         "crates/kimo-gui/tests/cov_b_unit_test.mjs",
-        "crates/kimo-gui/tests/cov_a_unit_test.mjs"
+        "crates/kimo-gui/tests/cov_a_unit_test.mjs",
+        "crates/kimo-gui/tests/app_interaction_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
