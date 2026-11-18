@@ -4,12 +4,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 const filename = fileURLToPath(new URL('../ui/dev/mock-bridge.js', import.meta.url));
-async function fixture(search = '') {
-  const window = {}, context = vm.createContext({ window, location: { search }, URLSearchParams, structuredClone,
+async function fixture(search = '', extras = {}) {
+  const window = {}, context = vm.createContext({ window, location: { search }, URLSearchParams, structuredClone, ...extras,
     setTimeout: fn => setImmediate(fn) });
-  const module = new vm.SourceTextModule(readFileSync(filename, 'utf8'), { context, identifier: filename });
+  const module = new vm.SourceTextModule(readFileSync(filename, 'utf8') + '\nexport { psRestart as testRestart, applyEdit as testEdit };', { context, identifier: filename });
   await module.link(() => {}); await module.evaluate();
-  return { bridge: module.namespace.bridge, mock: window.__mock };
+  return { bridge: module.namespace.bridge, mock: window.__mock, restart:module.namespace.testRestart, edit:module.namespace.testEdit };
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 let count = 0;
@@ -129,5 +129,41 @@ await test('setup pause and skip do not claim missing components were installed'
   const skipped = await b.invoke('setup_status');
   assert.equal(skipped.done,true); assert.equal(skipped.ready,false);
   assert.deepEqual(skipped.parts,before.parts);
+});
+
+await test('external fallback tool names, GUI actor and temperature edits retain protocol identity', async () => {
+  const {bridge:b,mock}=await fixture(), external=[];
+  b.listen('external-event',e=>external.push(e));
+  await mock.engineCall({kind:'external',conn:4},'project','',{},null);
+  assert.deepEqual(plain(external.map(e=>e.ev.tool_name)),['project','project']);
+  const gui=await mock.engineCall({kind:'gui'},'project','read',{},null);
+  assert.equal(gui.actor,'kimo-chat');
+  const answer=await b.invoke('agent_send',{text:'warm the grade',turn:9});
+  assert.equal(mock.M.edit.warm,0.12);assert.match(answer.reply,/Warmed the grade/);
+  await b.invoke('setup_start');assert.equal((await b.invoke('setup_status')).ready,true);
+});
+await test('empty preview and draft fail before requesting a canvas', async () => {
+  const {bridge:b}=await fixture('?project=empty&stream=1');
+  for(const command of ['viewer_draft','preview_start'])await assert.rejects(b.invoke(command,{time:0}),e=>e==='out_of_range: the timeline is empty');
+});
+await test('synthetic canvas captions, frame cache eviction and stream boundaries', async () => {
+  const drawn=[], blobs=[];let serial=0;
+  const context={createLinearGradient:()=>({addColorStop(){}}),createRadialGradient:()=>({addColorStop(){}}),
+    fillRect(){},beginPath(){},moveTo(){},lineTo(){},fill(){},ellipse(){},arc(){},roundRect(){},
+    measureText:text=>({width:text.length*10}),fillText:text=>drawn.push(text)};
+  const document={createElement:name=>{assert.equal(name,'canvas');return {getContext:()=>context,toDataURL:()=>`data:synthetic,${serial++}`};}};
+  const {bridge:b,mock,restart,edit}=await fixture('?stream=1',{document,Blob,URL:{createObjectURL:blob=>{blobs.push(blob);return `blob:synthetic-${blobs.length}`;}}});
+  mock.M.edit.sat=0;mock.M.edit.caption=0;edit('add_title');assert.equal(mock.M.edit.title,true);
+  await b.invoke('viewer_frame',{time:13});assert.deepEqual(drawn.slice(-2),['Golden hour','So we shoot fast']);
+  const start=await b.invoke('preview_start',{time:0,playing:true});assert.equal(start.rate,1);assert.equal(start.audio.length,3);
+  const steady=await b.invoke('preview_update',{time:0,playing:false});assert.equal(steady.gen,start.gen);assert.equal(steady.playing,false);
+  const beyond=await b.invoke('preview_update',{time:18,seek:true,rate:2});assert.deepEqual(beyond.frames,[]);
+  const first=await b.invoke('preview_frame',{time:0});
+  assert.equal((await b.invoke('preview_frame',{time:0})).url,first.url);
+  // More than 600 distinct revision/index keys must evict the oldest frame.
+  for(let i=0;i<601;i++){mock.M.edit.warm=i/1000;await b.invoke('preview_frame',{time:1});}
+  mock.M.edit.warm=0;const evicted=await b.invoke('preview_frame',{time:0});assert.notEqual(evicted.url,first.url);
+  restart(1);const retained=await b.invoke('preview_update',{time:1});assert.equal(retained.rate,2);
+  assert.ok(blobs.every(b=>b.type==='audio/wav'));
 });
 console.log(`${count} synthetic bridge cases passed`);

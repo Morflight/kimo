@@ -144,10 +144,23 @@ mod tests {
         assert!(due(6, 5, 61.0, 60.0, 20), "an edit and a minute passed");
         assert!(due(25, 5, 1.0, 60.0, 20), "20 edits: save now");
     }
+
+    #[test]
+    fn unavailable_state_destination_and_absent_autosave_do_not_offer_recovery() {
+        let d = tmp("unavailable");
+        let blocker = d.join("file");
+        std::fs::write(&blocker, b"preserve").unwrap();
+        let state = State { autosaved_rev: 2, saved_rev: 1, ..State::default() };
+        store(&blocker, &state);
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"preserve");
+        assert_eq!(load(&blocker), State::default());
+        assert!(offer(&state).is_none());
+        std::fs::remove_dir_all(d).unwrap();
+    }
 }
 
 /// Against the real engine (KIMO_MCP_BIN): autosave with history, a "crash" (the engine is stopped), a fresh engine
-/// restores, and Undo walks back through the edits made before the crash. Skipped when unset.
+/// restores, and Undo walks back through the edits made before the crash. The real engine is required.
 #[cfg(test)]
 mod real_engine {
     use super::*;
@@ -159,12 +172,13 @@ mod real_engine {
         let r = sup.call("project", &json!({"action": "save_project", "args": {"path": p.display().to_string()}})).unwrap();
         assert!(!is_error(&r), "{}", result_text(&r));
         let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-        v["tracks"].as_array().map(|a| a.len()).unwrap_or(0)
+        v["tracks"].as_array().expect("saved projects must contain the tracks array").len()
     }
 
     #[test]
     fn undo_works_after_a_crash_restore() {
-        let Some(bin) = std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).filter(|p| p.is_file()) else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let bin = PathBuf::from(std::env::var_os("KIMO_MCP_BIN").expect("KIMO_MCP_BIN is required for crash recovery acceptance"));
+        assert!(bin.is_file(), "KIMO_MCP_BIN must name the real engine binary");
         let d = std::env::temp_dir().join(format!("kimo-rec-real-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
         let env = vec![("KIMO_SPECTATOR".to_string(), "off".to_string())];

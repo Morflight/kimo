@@ -70,13 +70,18 @@ export function covbOps(state, MODES, ev, H) {
   const graph = (lanes, o = {}) => {   // lanes: [{label, cur, prev, em, marks: [[t, v, kind]]}] with times in seconds (or frames, o.frames)
     const G = pk('curves'); if (!G) return false;
     lanes = lanes.slice(0, 5);
-    const ts = lanes.flatMap(L => [...(L.cur || []), ...(L.prev || []), ...(L.marks || [])].map(k => k[0])).concat(o.span || []).filter(isNum);
+    const ts = lanes.flatMap(L => [...L.cur, ...(L.prev || []), ...(L.marks || [])].map(k => k[0])).concat(o.span || []).filter(isNum);
     let t0 = ts.length ? Math.min(...ts) : 0, t1 = ts.length ? Math.max(...ts) : 1; if (t1 - t0 < 1e-6) { t0 -= .5; t1 += .5; }
-    const raw = (t1 - t0) / 6, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= raw) || raw, pad = (t1 - t0) * .04;
+    const span = t1 - t0, pad = span * .04;
+    if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(t0 - pad) || !Number.isFinite(t1 + pad)) {
+      delete G.ruler; G.curves = []; G.lanes = []; G.playhead = null; G._covb = ev.call_id;
+      return false;
+    }
+    const raw = span / 6, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= raw);
     G.ruler = { t0: t0 - pad, t1: t1 + pad, step, first: Math.ceil((t0 - pad) / step - 1e-9) * step, fmt: o.frames ? 'n' : 's' };
     G.curves = []; G.lanes = [];
     for (const L of lanes) {
-      const vs = [...(L.cur || []), ...(L.prev || []), ...(L.marks || [])].map(k => k[1]).filter(isNum);
+      const vs = [...L.cur, ...(L.prev || []), ...(L.marks || [])].map(k => k[1]).filter(isNum);
       let lo = vs.length ? Math.min(...vs) : 0, hi = vs.length ? Math.max(...vs) : 1; if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
       const N = v => .12 + (v - lo) / (hi - lo) * .76;
       if (L.prev && L.prev.length) G.curves.push({ pts: L.prev.map(k => [k[0], N(k[1])]), keys: L.prev.length <= 40 ? L.prev.map(k => [k[0], N(k[1]), '#4d4a44']) : [], color: '#4d4a44', w: 1.4, dash: '5 4', cls: 'cvb-prev' });
@@ -132,14 +137,14 @@ export function covbOps(state, MODES, ev, H) {
     return insp(head(nm, 'motion preset'), [['Preset', names.length ? names.join(' + ') : (A.preset ?? A.prompt)], at != null ? ['At', s(at)] : null, dur != null ? ['Duration', s(dur)] : null, ap.length && numOrNull(ap[0].frames) != null ? ['Frames', ap.map(x => x.frames).join(' + ')] : null, lanes.length ? ['Channels', lanes.map(l => l._p).join(', ')] : null, lanes.length ? ['Keys', `${lanes[0]._n} each${lanes[0]._d < lanes[0]._n ? ` (${lanes[0]._d} drawn)` : ''}`, lanes.every(l => l._b === lanes[0]._b) ? `${lanes[0]._b}` : null] : null, numOrNull(A.intensity) != null ? ['Intensity', f(A.intensity)] : null]);
   }
   if (tn === 'copy_curve') {
-    const C = state._covbCurves || {}, src = C[`${A.from_clip}|${A.from_property}`], had = C[`${A.to_clip}|${A.to_property}`], hadN = had ? had.keys.length + had.more : null;
+    const C = state._covbCurves || (state._covbCurves = {}), src = C[`${A.from_clip}|${A.from_property}`], had = C[`${A.to_clip}|${A.to_property}`], hadN = had ? had.keys.length + had.more : null;
     const ts = numOrNull(A.time_scale) ?? 1, to = numOrNull(A.time_offset) ?? 0, vs = numOrNull(A.value_scale) ?? 1, vo = numOrNull(A.value_offset) ?? 0;
     let dst = null;
     if (src && src.keys.length && !src.more) {   /* the documented paste: reverse / invert, then time scale + offset, value scale + offset */
       const T0 = src.keys[0][0], T1 = src.keys[src.keys.length - 1][0], V0 = Math.min(...src.keys.map(k => k[1])), V1 = Math.max(...src.keys.map(k => k[1]));
       dst = src.keys.map(([t, v]) => [A.reverse ? T0 + T1 - t : t, A.invert ? V0 + V1 - v : v]).sort((p, q) => p[0] - q[0]).map(([t, v]) => [t * ts + to, v * vs + vo]);
       if (numOrNull(R.keys) != null && R.keys !== dst.length) dst = null;
-      if (dst) { (state._covbCurves || (state._covbCurves = {}))[`${A.to_clip}|${A.to_property}`] = { keys: dst, more: 0 }; }
+      if (dst) { C[`${A.to_clip}|${A.to_property}`] = { keys: dst, more: 0 }; }
     }
     const fromN = cname(A.from_clip), toN = cname(A.to_clip);
     const lanes = [];

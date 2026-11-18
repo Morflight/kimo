@@ -192,6 +192,7 @@ export function covAOps(state, MODES, ev, H) {
     return true;
   }
   if (n === 'sync_clips') {
+    const tracks = tl.tracks || [];
     const ids = Array.isArray(R.clip_ids) ? R.clip_ids : Array.isArray(A.clip_ids) ? A.clip_ids : [], offs = Array.isArray(R.offsets_seconds) ? R.offsets_seconds : [];
     const found = ids.map(id => { const [t, i] = H.findClip(tl, { clip_id: id }); return t ? t.clips[i] : null; });
     const have = found.filter(Boolean); const out = [];
@@ -199,7 +200,7 @@ export function covAOps(state, MODES, ev, H) {
       const anchor = Math.min(...have.map(c => c.s)) + (N(R.origin_shift) ?? 0);
       found.forEach((c, k) => { if (!c || N(offs[k]) == null) return; const to = anchor + N(offs[k]), from = c.s, d = to - from;
         if (Math.abs(d) > 1e-9) { c.s += d; c.e += d; } c._flash = now; out.push([c.label && !H.RAW_ID.test(String(c.label)) ? String(c.label) : 'clip', sec(to), Math.abs(d) > 1e-9 ? sec(from) : null]); });
-      for (const t of tl.tracks || []) if ((t.clips || []).some(c => found.includes(c))) t.clips.sort((a, b) => a.s - b.s);
+      for (const t of tracks) if ((t.clips || []).some(c => found.includes(c))) t.clips.sort((a, b) => a.s - b.s);
     }
     rows(kv, 'sync_clips', [['Synced', `${ids.length} clips`], ['By', String(R.method || A.by || 'audio')], ...out.slice(0, 4)], null, H);
     return true;

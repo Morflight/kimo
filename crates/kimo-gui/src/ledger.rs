@@ -113,9 +113,7 @@ impl Ledger {
         // the engine's own verdict on this edit (kimo_core::observe): keep the worst few findings with their fixes
         let (findings, counts) = observed(&text);
         if let (Some(c), false) = (&change, findings.is_empty()) {
-            let mut cs = self.changes.lock().unwrap();
-            if let Some(x) = cs.iter_mut().find(|x| x.id == c.id) { x.findings = findings.clone(); }
-            (self.emit)("changes", serde_json::to_value(&*cs).unwrap_or(json!([])));
+            self.record_findings(c.id, &findings);
         }
         if loud {
             (self.emit)("live-event", json!({"id": id, "phase": "end", "actor": actor, "tool": tool, "action": action, "summary": summary,
@@ -125,6 +123,13 @@ impl Ledger {
         if !ro && ok && !matches!(action.as_str(), "save_project" | "export_job_start" | "export") { self.rev.fetch_add(1, Ordering::SeqCst); }
         if !ro && ok { (self.emit)("project-changed", json!({"actor": actor, "tool": tool, "action": action, "change": change})); }
         res
+    }
+
+    // A reset can remove a card between after_write and attaching its findings.
+    fn record_findings(&self, id: u64, findings: &[Value]) {
+        let mut cs = self.changes.lock().unwrap();
+        if let Some(x) = cs.iter_mut().find(|x| x.id == id) { x.findings = findings.to_vec(); }
+        (self.emit)("changes", serde_json::to_value(&*cs).unwrap_or(json!([])));
     }
 
     /// After a successful possibly-mutating call: compare history depth, make or re-sync cards.
@@ -275,4 +280,81 @@ mod tests {
             assert!(!is_read_only(t, a), "{t}.{a}");
         }
     }
+    #[test]
+    fn adapters_reset_and_unicode_output_preserve_the_contract() {
+        let (l, got) = ledger();
+        let actor = As { ledger: l.clone(), actor: "test-agent" };
+        assert_eq!(actor.list(), vec![json!({"name":"timeline"}), json!({"name":"project"})]);
+        actor.call("timeline", &json!({"action":"add_track"})).unwrap();
+        assert_eq!(l.revision(), 1);
+        assert_eq!(l.changes()[0].actor, "test-agent");
+        let card = l.changes()[0].clone();
+        assert_eq!(card, l.changes()[0]);
+        assert!(format!("{card:?}").contains("test-agent"));
+        l.reset();
+        l.record_findings(card.id, &[json!({"code":"late"})]);
+        assert!(l.changes().is_empty());
+        assert_eq!(got.lock().unwrap().last().unwrap(), &("changes".into(), json!([])));
+        assert_eq!(l.undo_change("you", card.id).unwrap_err(), "That change is no longer in the history.");
+        assert_eq!(clip("é🙂界", 2), "é🙂…");
+        assert_eq!(clip("é🙂", 2), "é🙂");
+        assert_eq!(clip("x", 0), "…");
+        let findings: Vec<Value> = (0..8).map(|i| json!({"code": i, "extra": "private"})).collect();
+        let (compact, counts) = observed(&json!({"observe":{"findings":findings}}).to_string());
+        assert_eq!(compact.len(), 6);
+        assert_eq!(compact[5]["code"], 5);
+        assert!(compact[0].get("extra").is_none());
+        assert_eq!(counts, Value::Null);
+        assert_eq!(observed("{\"observe\":{}}"), (vec![], Value::Null));
+    }
+
+    struct Reporting { inner: Fake, mode: Mutex<&'static str> }
+    impl Tools for Reporting {
+        fn list(&self) -> Vec<Value> { self.inner.list() }
+        fn call(&self, name: &str, args: &Value) -> Result<Value, String> {
+            let mode = *self.mode.lock().unwrap();
+            if args["action"] == "history_list" && mode == "history-error" { return Err("history offline".into()); }
+            if args["action"] == "undo" {
+                if mode == "transport-error" { return Err("transport offline".into()); }
+                if mode == "engine-error" { return Ok(json!({"isError":true,"content":[{"type":"text","text":"undo refused"}]})); }
+            }
+            let result = self.inner.call(name, args).expect("in-memory engine fixture succeeds");
+            if args["action"] == "add_track" {
+                return Ok(json!({"content":[{"type":"text","text":json!({"observe":{"findings":[{"code":"clip_warning"}],"counts":{"warning":1}}}).to_string()}]}));
+            }
+            Ok(result)
+        }
+    }
+
+    #[test]
+    fn findings_errors_and_poisoned_write_lock_do_not_forge_success() {
+        let tools = Arc::new(Reporting { inner: Fake::default(), mode: Mutex::new("ok") });
+        let got = Arc::new(Mutex::new(vec![]));
+        let sink = got.clone();
+        let l = Arc::new(Ledger::new(tools.clone(), Arc::new(move |k,v| sink.lock().unwrap().push((k.to_string(),v)))));
+        assert_eq!(l.tools().len(), 2);
+        let poison = l.clone();
+        assert!(std::thread::spawn(move || { let _guard = poison.write.lock().unwrap(); panic!("owned test poison"); }).join().is_err());
+        l.call("you", "timeline", &json!({"action":"add_track","observe":"numbers"})).unwrap();
+        let card = l.changes()[0].clone();
+        assert_eq!(card.findings[0]["code"], "clip_warning");
+        assert!(got.lock().unwrap().iter().any(|(k,v)| k == "changes" && v[0]["findings"][0]["code"] == "clip_warning"));
+        for (mode, expected) in [("history-error", "Could not read the engine's history."), ("transport-error", "transport offline"), ("engine-error", "undo refused")] {
+            *tools.mode.lock().unwrap() = mode;
+            assert_eq!(l.undo_change("you", card.id).unwrap_err(), expected);
+            assert_eq!(l.revision(), 1);
+        }
+        *tools.mode.lock().unwrap() = "history-error";
+        l.call("app", "timeline", &json!({"action":"add_track"})).unwrap();
+        assert_eq!(l.changes().len(), 1, "unreadable history must not invent a card");
+        assert_eq!(l.revision(), 2);
+        *tools.mode.lock().unwrap() = "ok";
+        for action in ["save_project", "export_job_start", "export"] { l.call("app", "output", &json!({"action":action})).unwrap(); }
+        assert_eq!(l.revision(), 2, "saving and exporting do not dirty the project");
+        assert!(got.lock().unwrap().iter().any(|(k,v)| k == "live-event" && v["result"] == "transport offline" && v["ok"] == false));
+        l.call("you", "project", &json!({"action":"undo","args":{"steps":10}})).unwrap();
+        for _ in 0..3 { l.call("you", "project", &json!({"action":"redo"})).unwrap(); }
+        assert_eq!(l.changes()[0].undone, false);
+    }
+
 }

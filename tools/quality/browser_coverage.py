@@ -10,6 +10,7 @@ from pathlib import Path
 import runpy
 import sys
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +48,8 @@ class Collector:
                 source = script.get('source')
                 if source != path.read_text():
                     raise ValueError(f'coverage source differs from checkout: {path}')
-                scripts.append({**script, 'url': str(path)})
+                # c8 indexes executed sources only for file URLs (including --all).
+                scripts.append({**script, 'url': path.as_uri()})
                 sources[str(path)] = hashlib.sha256(source.encode()).hexdigest()
             if scripts:
                 data = {'result': scripts, 'kimoSources': sources}
@@ -62,7 +64,7 @@ def verify_sources(output):
         data = json.loads(report.read_text())
         hashes = data['kimoSources']
         for script in data['result']:
-            path = Path(script['url'])
+            path = Path(url2pathname(urlparse(script['url']).path))
             if hashlib.sha256(path.read_text().encode()).hexdigest() != hashes[str(path)]:
                 raise ValueError(f'coverage source changed after collection: {path}')
 

@@ -15,7 +15,10 @@
         "crates/kimo-core/src/ext/editorial_tools.rs",
         "crates/kimo-core/src/audio.rs",
         "crates/kimo-core/src/color/adjust_v2_proof.rs",
-        "crates/kimo-core/src/color/film_fast_proof.rs"
+        "crates/kimo-core/src/color/film_fast_proof.rs",
+        "crates/kimo-core/src/color/mux.rs",
+        "crates/kimo-core/src/render.rs",
+        "crates/kimo-core/src/color/process.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",
@@ -465,7 +468,10 @@
       ],
       "tests": [
         "crates/kimo-gui/tests/playback_delivery_test.mjs",
-        "crates/kimo-gui/src/keys.rs"
+        "crates/kimo-gui/src/keys.rs",
+        "crates/kimo-gui/src/recovery.rs",
+        "crates/kimo-gui/src/crash.rs",
+        "crates/kimo-gui/src/ledger.rs"
       ],
       "sources": [
         "crates/kimo-gui/src/bridge.rs",
@@ -504,7 +510,10 @@
         "crates/kimo-gui/tests/timeline_perf_test.py",
         "crates/kimo-gui/tests/feed_gap_test.py",
         "crates/kimo-gui/tests/reconnect_test.py",
-        "crates/kimo-gui/tests/flash_edit_scope_test.py"
+        "crates/kimo-gui/tests/flash_edit_scope_test.py",
+        "crates/kimo-gui/tests/fix2_test.mjs",
+        "crates/kimo-gui/tests/cov_b_unit_test.mjs",
+        "crates/kimo-gui/tests/cov_a_unit_test.mjs"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",

@@ -29,7 +29,7 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(channel.send.await_count, 2)
             reports = list((root / 'raw').glob('*.json')); self.assertEqual(len(reports), 1)
             data = json.loads(reports[0].read_text())
-            self.assertEqual(data, {'result': [{**script, 'url': str(source)}], 'kimoSources': {str(source): hashlib.sha256(source.read_text().encode()).hexdigest()}})
+            self.assertEqual(data, {'result': [{**script, 'url': source.as_uri()}], 'kimoSources': {str(source): hashlib.sha256(source.read_text().encode()).hexdigest()}})
             self.assertFalse(c.sessions)
             coverage.verify_sources(root / 'raw')
             source.write_text('modified after collection')

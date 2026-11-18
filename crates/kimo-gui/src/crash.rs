@@ -41,11 +41,15 @@ pub fn render(version: &str, thread: &str, message: &str, location: &str, backtr
 
 /// Write one log. Returns its path. Never panics (it runs inside the panic hook).
 pub fn write(crash_dir: &Path, text: &str, at_ms: u64) -> std::io::Result<PathBuf> {
+    write_with(crash_dir, text, at_ms, &|p, t| std::fs::write(p, t))
+}
+
+fn write_with(crash_dir: &Path, text: &str, at_ms: u64, persist: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(crash_dir)?;
     let mut p = crash_dir.join(format!("crash-{at_ms}.log"));
     let mut n = 1;
     while p.exists() { p = crash_dir.join(format!("crash-{at_ms}-{n}.log")); n += 1; }
-    std::fs::write(&p, text)?;
+    persist(&p, text)?;
     Ok(p)
 }
 
@@ -77,7 +81,7 @@ pub fn pending(crash_dir: &Path) -> Vec<Report> {
     let Ok(rd) = std::fs::read_dir(crash_dir) else { return vec![] };
     let mut v: Vec<Report> = rd.flatten().filter_map(|e| {
         let p = e.path();
-        let name = p.file_name()?.to_str()?.to_string();
+        let name = e.file_name().to_str()?.to_string();
         if !(name.starts_with("crash-") && name.ends_with(".log") && p.is_file()) { return None; }
         let text = std::fs::read_to_string(&p).ok()?;
         let at = field(&text, "time_ms:").and_then(|t| t.parse().ok()).unwrap_or(0);
@@ -106,9 +110,13 @@ pub fn answer(crash_dir: &Path, file: &str) -> Result<(), String> {
 
 /// The log as it would be sent: the person's home folder replaced by `~` (paths in backtraces and messages).
 pub fn scrub(text: &str, home: Option<&Path>) -> String {
+    scrub_platform(text, home, cfg!(windows))
+}
+
+fn scrub_platform(text: &str, home: Option<&Path>, windows: bool) -> String {
     let Some(h) = home.map(|h| h.display().to_string()).filter(|h| h.len() > 3) else { return text.to_string() };
     let mut out = text.replace(&h, "~");
-    if cfg!(windows) { out = out.replace(&h.replace('\\', "/"), "~"); }
+    if windows { out = out.replace(&h.replace('\\', "/"), "~"); }
     out
 }
 
@@ -166,7 +174,7 @@ mod tests {
 
     #[test]
     fn the_report_link_hides_the_home_folder_and_is_one_url() {
-        let home = if cfg!(windows) { PathBuf::from(r"C:\Users\someone") } else { PathBuf::from("/home/someone") };
+        let home = PathBuf::from("/home/someone");
         let text = render("9.0.0", "main", "bad & worse", &format!("{}/src/x.rs:1:1", home.display()), "", 5);
         let r = Report { file: "crash-5.log".into(), path: String::new(), at: 5, message: "bad & worse".into(), text };
         let u = issue_url(&r, Some(&home));
@@ -188,5 +196,93 @@ mod tests {
         let r = p.iter().find(|r| r.message == "forced for the test").expect("the forced panic left a log");
         assert!(r.text.contains("thread: forced") && r.text.contains("version: test") && r.text.contains("crash.rs"), "{}", r.text);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn malformed_logs_and_archive_errors_preserve_pending_reports() {
+        let root = tmp("failures");
+        let d = dir(&root);
+        std::fs::create_dir_all(&d).unwrap();
+        let blocker = root.join("file");
+        std::fs::write(&blocker, b"original").unwrap();
+        assert!(write(&blocker, "report", 1).is_err());
+        std::fs::write(d.join("crash-invalid.log"), b"time_ms: invalid\n").unwrap();
+        std::fs::write(d.join("crash-unreadable.log"), [0xff, 0xfe]).unwrap();
+        std::fs::write(d.join("unrelated.log"), b"not a report").unwrap();
+        std::fs::create_dir(d.join("crash-directory.log")).unwrap();
+        let reports = pending(&d);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].at, 0);
+        assert_eq!(reports[0].message, "");
+        for invalid in ["plain.log", "crash-1.txt", "crash-..log", "crash-sub\\x.log"] {
+            assert_eq!(answer(&d, invalid).unwrap_err(), "not a crash log");
+        }
+        answer(&d, "crash-missing.log").unwrap();
+        let archive = d.join("answered");
+        std::fs::write(&archive, b"block archive directory").unwrap();
+        assert!(answer(&d, "crash-invalid.log").is_err());
+        assert_eq!(pending(&d).len(), 1);
+        std::fs::remove_file(&archive).unwrap();
+        std::fs::create_dir_all(archive.join("crash-invalid.log")).unwrap();
+        assert!(answer(&d, "crash-invalid.log").is_err());
+        assert_eq!(pending(&d).len(), 1);
+        assert_eq!(scrub("retain /x", Some(Path::new("/x"))), "retain /x");
+        assert_eq!(scrub_platform(r"C:\Users\fixture\x and C:/Users/fixture/y", Some(Path::new(r"C:\Users\fixture")), true), r"~\x and ~/y");
+        assert_eq!(scrub_platform("/home/fixture/x", Some(Path::new("/home/fixture")), false), "~/x");
+        let error = write_with(&d, "must persist", 99, &|path, text| {
+            assert_eq!(path, d.join("crash-99.log"));
+            assert_eq!(text, "must persist");
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fixture storage denied"))
+        }).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!d.join("crash-99.log").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_log_names_are_not_offered() {
+        use std::os::unix::ffi::OsStringExt;
+        let d = tmp("nonutf8");
+        std::fs::create_dir_all(&d).unwrap();
+        let name = std::ffi::OsString::from_vec(b"crash-\xff.log".to_vec());
+        std::fs::write(d.join(name), b"message: ignored").unwrap();
+        assert!(pending(&d).is_empty());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_unicode_log_names_are_not_offered() {
+        use std::os::windows::ffi::OsStringExt;
+        let d = tmp("nonunicode");
+        std::fs::create_dir_all(&d).unwrap();
+        let units: Vec<u16> = "crash-".encode_utf16().chain([0xd800]).chain(".log".encode_utf16()).collect();
+        std::fs::write(d.join(std::ffi::OsString::from_wide(&units)), b"message: ignored").unwrap();
+        assert!(pending(&d).is_empty());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn hook_preserves_string_and_non_string_panic_payloads_in_a_child_process() {
+        const CHILD: &str = "KIMO_TEST_CRASH_PAYLOADS";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "crash::tests::hook_preserves_string_and_non_string_panic_payloads_in_a_child_process", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(output.status.success(), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let d = tmp("payloads");
+        install(d.clone(), "payload-test");
+        assert!(std::thread::spawn(|| std::panic::panic_any(String::from("owned panic"))).join().is_err());
+        assert!(std::thread::spawn(|| std::panic::panic_any(42_u32)).join().is_err());
+        let reports = pending(&d);
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().any(|r| r.message == "owned panic"));
+        assert!(reports.iter().any(|r| r.message == "(no message)"));
+        assert!(reports.iter().all(|r| r.text.contains("thread: unnamed") && r.at > 0));
+        std::fs::remove_dir_all(d).unwrap();
     }
 }
