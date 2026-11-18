@@ -499,7 +499,6 @@
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
-        "crates/kimo-gui/ui/bridge.js",
         "crates/kimo-gui/ui/cov_a.js",
         "crates/kimo-gui/ui/cov_b.js",
         "crates/kimo-gui/ui/dev/mock-bridge.js",
@@ -537,6 +536,20 @@
       ],
       "sources": [
         "crates/kimo-core/src/color/ocio_bridge.py"
+      ]
+    },
+    {
+      "id": "event-bridge",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/event-bridge.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/bridge_test.mjs",
+        "crates/kimo-gui/tests/reconnect_test.py"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/bridge.js"
       ]
     }
   ],

@@ -19,6 +19,8 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 
 ## Focused runtime contracts
 
+- [Editor event transport](event-bridge.md): Tauri/SSE selection, liveness, reconnect backoff and replay limits.
+
 - [Code clip rendering sidecar](code-clip-sidecar.md): job defaults, frame output, local request routing, errors and browser qualification limits.
 - [OpenColorIO reference bridge](ocio-reference-bridge.md): pinned color configuration, binary streaming, failures and reference-library qualification limits.
 

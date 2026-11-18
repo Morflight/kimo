@@ -47,7 +47,7 @@ jobs:
           --all --src crates/kimo-gui/ui --include 'crates/kimo-gui/ui/**/*.js' --exclude '**/vendor/**'
           --check-coverage --per-file --lines 100 --functions 100 --branches 100 --statements 100
           --reporter text --reporter json --reporter lcov
-          bash tools/fork/test-preview.sh
+          bash tools/fork/test-ui.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
