@@ -70,10 +70,14 @@ pub fn byte_range(h: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
 
 /// The kimo:// answer for one request: status, headers, body. Only cache files are served; a Range gets a 206.
 pub fn respond(dir: &Path, uri_path: &str, range: Option<&str>) -> (u16, Vec<(&'static str, String)>, Vec<u8>) {
-    let Some((file, mime)) = cache_file(dir, uri_path) else { return (404, vec![("Content-Type", "text/plain".into())], b"not in the viewer cache".to_vec()) };
-    let Ok(bytes) = std::fs::read(&file) else { return (404, vec![("Content-Type", "text/plain".into())], b"gone".to_vec()) };
+    // Native fetch needs CORS even though img/video tags can display this protocol.
+    // Only the packaged app origin may read cache bytes; never reflect arbitrary origins.
+    let origin = if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" };
+    let cors = ("Access-Control-Allow-Origin", origin.to_string());
+    let Some((file, mime)) = cache_file(dir, uri_path) else { return (404, vec![cors, ("Content-Type", "text/plain".into())], b"not in the viewer cache".to_vec()) };
+    let Ok(bytes) = std::fs::read(&file) else { return (404, vec![cors, ("Content-Type", "text/plain".into())], b"gone".to_vec()) };
     let len = bytes.len() as u64;
-    let mut h = vec![("Content-Type", mime.to_string()), ("Accept-Ranges", "bytes".to_string()), ("Cache-Control", "no-store".to_string())];
+    let mut h = vec![cors, ("Content-Type", mime.to_string()), ("Accept-Ranges", "bytes".to_string()), ("Cache-Control", "no-store".to_string())];
     match byte_range(range, len) {
         Ok(None) => { h.push(("Content-Length", len.to_string())); (200, h, bytes) }
         Ok(Some((s, e))) => {
@@ -289,6 +293,24 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ---------- pure parts (no engine) ----------
+    #[test]
+    fn cache_responses_allow_only_the_packaged_app_origin() {
+        let dir = std::env::temp_dir().join(format!("kimo-cors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("0a.bmp"), b"bitmap").unwrap();
+        let expected = if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" };
+        for (path, range, status) in [
+            ("/0a.bmp", None, 200), ("/0a.bmp", Some("bytes=0-1"), 206),
+            ("/0a.bmp", Some("bytes=99-"), 416), ("/ff.wav", None, 404),
+            ("/../0a.bmp", None, 404),
+        ] {
+            let (s, headers, _) = respond(&dir, path, range);
+            assert_eq!(s, status);
+            assert_eq!(headers.iter().find(|(k, _)| *k == "Access-Control-Allow-Origin").map(|(_, v)| v.as_str()), Some(expected));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn playhead_snaps_to_whole_frames() {
         assert_eq!(frame_index(1.0, 30.0), 30);

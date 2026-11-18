@@ -47,6 +47,7 @@
   const BUFFER_TO_START = 8;          // frames ready before Play starts the clock
   const FETCHES = 8;                  // frame downloads in flight
   const AUDIO_WAIT_MS = 1500;         // longest wait for the first audio chunk before playing without it
+  const BUFFER_WAIT_MS = 15000;       // a failed delivery must not leave Play buffering forever
   const STALL_MS = 300;               // a frame missing this long: pause the clock and re-buffer
   const POLL_MS = 120;
   const KEEP = 60;                    // decoded frames kept (ImageBitmaps, about 2 MB each at half 1080p)
@@ -88,7 +89,7 @@
     take(r) {
       if (!r) return;
       this.info = r;
-      if (r.gen !== this.gen) { this.gen = r.gen; this.run = r.run || this.run; this.dropFrames(); if (this.playing) this.rebuffer(); }
+      if (r.gen !== this.gen) { this.gen = r.gen; this.frameError = null; this.audioError = null; this.run = r.run || this.run; this.dropFrames(); if (this.playing) this.rebuffer(); }
       this.pending = (r.frames || []).filter(f => !this.frames.has(f.index));
       this.pump();
       for (const c of r.audio || []) this.fetchChunk(c);
@@ -105,12 +106,15 @@
       if (this.frames.has(f.index) || this.loading.has(f.index)) return;
       const gen = this.gen; this.loading.add(f.index);
       try {
-        const blob = await (await fetch(f.url, { cache: 'no-store' })).blob();
+        const response = await fetch(f.url, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
         const bmp = root.createImageBitmap ? await createImageBitmap(blob) : await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(blob); });
         if (gen !== this.gen) { bmp.close?.(); return; }
+        if (this.frameError?.index === f.index) this.frameError = null;
         this.frames.set(f.index, { bmp, time: f.time });
         if (this.frames.size > KEEP) this.evict();
-      } catch (e) { /* replaced or deleted meanwhile: the next poll lists what is there */ }
+      } catch (e) { if (gen === this.gen) this.frameError = { index: f.index, message: `Preview frame ${f.index}: ${String(e)}` }; }
       finally { this.loading.delete(f.index); this.pump(); }
     }
     evict() {
@@ -138,8 +142,17 @@
       const key = c.name; if (this.chunks.has(key)) return;
       const ctx = this.actx(); if (!ctx) return;
       const e = { ...c, buf: null, scheduled: false }; this.chunks.set(key, e);
-      try { const ab = await (await fetch(c.url, { cache: 'no-store' })).arrayBuffer(); e.buf = await ctx.decodeAudioData(ab); this.schedule(); }
-      catch (err) { this.chunks.delete(key); }
+      const gen = this.gen;
+      try {
+        const response = await fetch(c.url, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        e.buf = await ctx.decodeAudioData(await response.arrayBuffer()); this.schedule();
+      } catch (err) {
+        this.chunks.delete(key);
+        if (gen === this.gen && !this.audioError) {
+          this.audioError = `Preview audio: ${String(err)}`; this.o.onError?.(this.audioError);
+        }
+      }
       if (this.chunks.size > 24) { const old = [...this.chunks.values()].filter(x => x.end < this.t - 2 && !x.src); for (const x of old) this.chunks.delete(x.name); }
     }
     stopSources() { for (const s of this.sources) { try { s.stop(); } catch (e) {} } this.sources = []; for (const c of this.chunks.values()) { c.scheduled = false; c.src = null; } }
@@ -187,6 +200,11 @@
         // a new AudioContext says "running" a moment before its clock moves: anchor on a clock that runs
         const clockOk = !this.usesAudio() || this.ctx.state !== 'running' || this.ctx.currentTime > 0;
         if (framesOk && audioOk && clockOk) return this.go();
+        if (performance.now() - t0 >= BUFFER_WAIT_MS) {
+          this.pause();
+          this.o.onError?.(this.frameError?.message || this.info.error || 'Preview timed out waiting for decoded frames or the audio clock. Press Play to retry.');
+          return;
+        }
         this.raf = requestAnimationFrame(wait);
       };
       this.raf = requestAnimationFrame(wait);
