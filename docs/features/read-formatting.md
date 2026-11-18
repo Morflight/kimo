@@ -9,3 +9,5 @@ Known read tools have measurement-specific rows: scopes distinguish luma, RGB, c
 The formatter remains legacy-unverified: complete coverage and all malformed-response boundaries still require qualification.
 
 Additional exact-value cases cover project counts, cache memory units and hit rates, environment diagnostics, history, markers, edit points, HLG display values and color-pipeline field aliases.
+
+Tool-specific formatters are selected only from the registry's own entries. Names inherited from Object.prototype, including `constructor`, `toString` and `__proto__`, use the same generic formatting as other unknown tools. A regression test previously failed with `rows.filter is not a function` for these mutation names; it now checks the exact generic rows. Malformed marker entries also fall back to readable generic output.

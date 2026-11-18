@@ -105,3 +105,33 @@ assert.deepEqual(plain(callRows('set_track_matte', {mode:'luma',luma_space:'line
 assert.deepEqual(plain(callRows('set_track_matte', {})), [['Track matte','alpha',false],['Matte visible','no',false]]);
 assert.deepEqual(plain(callRows('set_text_style', {font_size:20,fill:[1,0,0]}, {}, {clip:{other:1}})), [['Text style','applied',true],['Font size','20',false],['Fill','1 0 0',false]]);
 console.log('PASS project, environment, cache, history and color-pipeline cards retain counts and units');
+for (const tool of ['constructor', 'toString', '__proto__']) {
+  assert.deepEqual(plain(callRows(tool, {gain:2}, {score:3})), [['Gain','2',false],['Score','3',false]], tool);
+  assert.deepEqual(plain(readRows(tool, {score:3})), [['Score','3']], tool);
+}
+assert.deepEqual(plain(readRows('list_markers', {markers:[null]})), [['Markers','×1']]);
+console.log('PASS unknown prototype-like tool names use generic rows and malformed marker entries remain readable');
+for (const tool of ['get_scopes','contrast_ratio','edit_check','av_offset','text_contrast_series',
+  'query_safe_margins','analyze_color','describe_frame','read_pixels','get_project','check_environment',
+  'kimo_info','list_edit_points','list_markers','evaluate_hlg_reference_display','history_list',
+  'snap_time','inspect_color_pipeline','saliency_map','frozen_frames','focus_series','render_flow','validate_captions']) {
+  assert.deepEqual(plain(readRows(tool, {})), [['Result','empty']], `${tool}: absent measurements must not invent values`);
+}
+assert.deepEqual(plain(readRows('session_stats', {})), [['Returned','0 B']]);
+assert.deepEqual(plain(readRows('get_scopes', {percentiles:[50],luma_percentiles:[0.25]})), [['Luma p50','0.25']]);
+assert.deepEqual(plain(readRows('get_scopes', {zone_clipped_whites_max_pct:2,zone_crushed_blacks_max_pct:3})), [['Zone max clip/crush','2% / 3%','wrap']]);
+assert.deepEqual(plain(readRows('analyze_color', {min:[0.1],max:[0.9]})), [['Luma min / max','0.1 / 0.9']]);
+assert.deepEqual(plain(readRows('describe_frame', {frame_stats:{dominant_colors:[{}, {hex:'#abc'}]}})), [['Dominant','#abc']]);
+assert.deepEqual(plain(readRows('query_safe_margins', {overlaps:[],worst_edge_px:0})), [['Max outside safe','no safe zone','wrap'],['Max in avoid','no avoid zone','wrap'],['Worst edge','none crossed','wrap']]);
+assert.deepEqual(plain(readRows('query_safe_margins', {overlaps:[]})), [['Max outside safe','no safe zone','wrap'],['Max in avoid','no avoid zone','wrap'],['Worst edge','no safe zone','wrap']]);
+assert.deepEqual(plain(readRows('query_safe_margins', {zones:[null,{name:'title'},{name:'action'}],estimated:false,source:'standard'})), [['Zones','3 · , title…','wrap'],['Estimated','no'],['Source','standard','wrap']]);
+assert.deepEqual(plain(readRows('av_offset', {best_lag_ms:0,best_r:1})), [['Best lag','0 ms','stack'],['r there / at 0','1.000 / —','wrap']]);
+assert.deepEqual(plain(readRows('av_offset', {best_lag_ms:null,onset_max:0})), [['Best lag','none · no audio onsets','stack']]);
+assert.deepEqual(plain(readRows('av_offset', {best_lag_ms:null})), [['Best lag','none','stack']]);
+assert.deepEqual(plain(callRows('add_text_animator', {wiggly:true})), [['Animator','custom',true],['Wiggly','-1..1 · 2/s',false]]);
+assert.deepEqual(plain(callRows('set_text_weight', {}, {}, {clip:7})), [['Weight','default',true]]);
+assert.deepEqual(plain(callRows('set_audio_effect_key', {})), []);
+assert.deepEqual(plain(callRows('validate_captions', {})), []);
+assert.equal(scopeLine('analyze_color', {mean:[0,1,0,0.72],min:[0],max:[1]}), 'analyze_color · mean 0 1 0 · luma 0.72 · range 0–1');
+for (const tool of ['analyze_color','describe_frame','pick_white_balance','pick_key_color','match_color','match_grade']) assert.equal(scopeLine(tool, {}), null, tool);
+console.log('PASS incomplete measurements stay absent and documented empty/default summaries remain explicit');

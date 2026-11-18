@@ -19,6 +19,10 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 
 ## Focused runtime contracts
 
+- [Project event visuals](project-event-visuals.md): color-pipeline feedback, history association and QA presentation.
+
+- [Desktop engine connection](desktop-engine-connection.md): binary discovery, RPC, probing and supervisor failure states.
+
 - [Agent client linking](agent-client-linking.md): read-only discovery and explicit registration failure handling.
 
 - [MCP client configuration](mcp-client-configuration.md): launch arguments, copyable commands, JSON and TOML escaping.

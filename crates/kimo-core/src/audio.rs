@@ -219,7 +219,8 @@ impl std::fmt::Display for AudioError{fn fmt(&self,f:&mut std::fmt::Formatter<'_
 /// Whole-timeline float PCM may use up to a quarter of the engine's memory budget (KIMO_MEM_MB, default 55% of RAM):
 /// on a 16 GB machine that is about 5.5 hours of 48 kHz stereo. It used to be a fixed 64 MB (about 3 minutes), which
 /// stopped ducking, loudness and lint on any real-length edit. Allocations still go through guard::reserve.
-fn strict_audio_cap()->usize{(crate::guard::limits().mem_bytes/4).max(64*1024*1024)}
+fn strict_audio_cap()->usize{strict_audio_cap_for_budget(crate::guard::limits().mem_bytes)}
+fn strict_audio_cap_for_budget(memory:usize)->usize{(memory/4).max(64*1024*1024)}
 fn strict_samples(seconds:f64)->Result<usize,AudioError>{if !seconds.is_finite()||seconds<0.{return Err(AudioError::InvalidInput("finite nonnegative duration required".into()))}let samples=(seconds*SR as f64).ceil()*2.;if !samples.is_finite()||samples>usize::MAX as f64{return Err(AudioError::ResourceLimit("sample count overflow".into()))}Ok(samples as usize)}
 pub(crate) fn source_info(path:&str)->Result<serde_json::Value,AudioError>{let raw=crate::color::process::capture(Command::new("ffprobe").args(["-v","error","-select_streams","a:0","-show_entries","stream=sample_rate,channels","-of","json",path]),1024*1024,std::time::Duration::from_secs(30)).map_err(AudioError::DecodeFailed)?;let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|AudioError::DecodeFailed(e.to_string()))?;let stream=v["streams"].as_array().and_then(|v|v.first()).ok_or(AudioError::NoAudioTrack)?;Ok(serde_json::json!({"native_rate":stream["sample_rate"].as_str().and_then(|v|v.parse::<u32>().ok()),"native_channels":stream["channels"]}))}
 pub(crate) fn strict_decode(path:&str,c:&Clip)->Result<Vec<f32>,AudioError>{
@@ -267,5 +268,25 @@ fn strict_limit(pcm: &mut [f32], ceiling_db: f64) {
 fn session(path:&std::path::Path)->crate::commands::Session{use crate::commands::{dispatch,Session};use serde_json::json;let mut s=Session::new();let a=dispatch(&mut s,"import_media",&json!({"path":path})).unwrap()["asset_id"].clone();let tr=dispatch(&mut s,"add_track",&json!({})).unwrap()["track_id"].clone();dispatch(&mut s,"add_clip",&json!({"track_id":tr,"source_type":"media","asset_id":a,"start":0.00001,"duration":0.2})).unwrap();s}
 #[test]fn strict_mix_matches_legacy_pcm_and_limiter(){let path=std::env::temp_dir().join(format!("kimo-strict-audio-{}.wav",std::process::id()));assert!(Command::new("ffmpeg").args(["-v","error","-y","-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=0.3","-ac","2",path.to_str().unwrap()]).status().unwrap().success());let s=session(&path);assert_eq!(mix_strict(&s.project).unwrap(),mix(&s.project));let mut a:Vec<f32>=(0..20000).map(|i|(i as f32/30.).sin()*2.).collect();let mut b=a.clone();limit(&mut a,-1.5);strict_limit(&mut b,-1.5);assert_eq!(a,b);std::fs::remove_file(path).unwrap();}
 #[test]fn absent_audio_and_decode_failure_are_typed(){let path=std::env::temp_dir().join(format!("kimo-strict-video-{}.mp4",std::process::id()));assert!(Command::new("ffmpeg").args(["-v","error","-y","-f","lavfi","-i","color=s=16x16:r=25:d=0.2","-c:v","libx264",path.to_str().unwrap()]).status().unwrap().success());let s=session(&path);let c=&s.project.tracks[0].clips[0];assert_eq!(strict_decode(path.to_str().unwrap(),c).unwrap_err(),AudioError::NoAudioTrack);assert!(mix_strict(&s.project).unwrap().iter().all(|v|*v==0.));std::fs::remove_file(&path).unwrap();assert!(matches!(strict_decode(path.to_str().unwrap(),c),Err(AudioError::DecodeFailed(_))));let mut c=(**c).clone();c.speed=0.;assert!(matches!(strict_decode("unused",&c),Err(AudioError::InvalidInput(_))));}
-#[test]fn oversized_timeline_rejected_before_allocation(){assert!(strict_audio_cap()<=64*1024*1024);assert!(strict_audio_cap()<=crate::guard::limits().mem_bytes/16);assert!(strict_samples(f64::INFINITY).is_err());assert!(strict_samples(-1.).is_err());}
+#[test]fn oversized_timeline_rejected_before_allocation(){
+    let floor=64*1024*1024;
+    assert_eq!(strict_audio_cap_for_budget(0),floor);
+    assert_eq!(strict_audio_cap_for_budget(128*1024*1024),floor);
+    assert_eq!(strict_audio_cap_for_budget(256*1024*1024),floor);
+    assert_eq!(strict_audio_cap_for_budget(1024*1024*1024),256*1024*1024);
+    assert_eq!(strict_audio_cap_for_budget(usize::MAX),usize::MAX/4);
+    assert_eq!(strict_audio_cap(),(crate::guard::limits().mem_bytes/4).max(floor));
+    assert!(matches!(strict_samples(f64::INFINITY),Err(AudioError::InvalidInput(_))));
+    assert!(matches!(strict_samples(-1.),Err(AudioError::InvalidInput(_))));
+    assert!(matches!(strict_samples(f64::MAX),Err(AudioError::ResourceLimit(_))));
+    assert_eq!(strict_samples(0.).unwrap(),0);
+    assert_eq!(strict_samples(1. / SR as f64).unwrap(),2);
+    let mut s=crate::commands::Session::new();
+    let track=crate::commands::dispatch(&mut s,"add_track",&serde_json::json!({})).unwrap()["track_id"].clone();
+    crate::commands::dispatch(&mut s,"add_clip",&serde_json::json!({"track_id":track,"source_type":"solid","color":[0,0,0],"start":0,"duration":1})).unwrap();
+    // Direct construction bypasses editor duration limits to exercise the audio boundary itself.
+    s.project.tracks[0].cm(0).duration=strict_audio_cap() as f64/(SR*2*4) as f64+1.;
+    let error=mix_strict(&s.project).unwrap_err();
+    assert_eq!(error,AudioError::ResourceLimit(format!("timeline PCM exceeds{}byte cap",strict_audio_cap())));
+}
 }

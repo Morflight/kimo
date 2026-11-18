@@ -6,11 +6,16 @@
       "status": "legacy-unverified",
       "docs": [
         "FEATURES.md",
-        "docs/features/preview.md"
+        "docs/features/preview.md",
+        "docs/features/native-test-environment.md"
       ],
       "tests": [
         "crates/kimo-core/tests/preview_stream.rs",
-        "crates/kimo-core/tests/preview_range.rs"
+        "crates/kimo-core/tests/preview_range.rs",
+        "crates/kimo-core/src/ext/editorial_tools.rs",
+        "crates/kimo-core/src/audio.rs",
+        "crates/kimo-core/src/color/adjust_v2_proof.rs",
+        "crates/kimo-core/src/color/film_fast_proof.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",
@@ -466,7 +471,6 @@
         "crates/kimo-gui/src/cli_agents.rs",
         "crates/kimo-gui/src/crash.rs",
         "crates/kimo-gui/src/download.rs",
-        "crates/kimo-gui/src/engine.rs",
         "crates/kimo-gui/src/keys.rs",
         "crates/kimo-gui/src/ledger.rs",
         "crates/kimo-gui/src/lib.rs",
@@ -507,7 +511,6 @@
         "crates/kimo-gui/ui/cov_b.js",
         "crates/kimo-gui/ui/fix2.js",
         "crates/kimo-gui/ui/panels.js",
-        "crates/kimo-gui/ui/project_ops.js",
         "crates/kimo-gui/ui/router.js"
       ]
     },
@@ -577,7 +580,8 @@
       ],
       "tests": [
         "crates/kimo-gui/tests/mock_bridge_test.mjs",
-        "crates/kimo-gui/tests/studio_ui_test.py"
+        "crates/kimo-gui/tests/studio_ui_test.py",
+        "crates/kimo-gui/tests/frame_step_precision_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/dev/mock-bridge.js",
@@ -662,6 +666,33 @@
       ],
       "sources": [
         "crates/kimo-gui/src/agents.rs"
+      ]
+    },
+    {
+      "id": "desktop-engine-connection",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/desktop-engine-connection.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/src/engine.rs"
+      ],
+      "sources": [
+        "crates/kimo-gui/src/engine.rs"
+      ]
+    },
+    {
+      "id": "project-event-visuals",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/project-event-visuals.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/project_ops_test.mjs",
+        "crates/kimo-gui/tests/cov_c_test.py"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/project_ops.js"
       ]
     }
   ],

@@ -121,6 +121,8 @@ jobs:
         scope: [workspace, desktop]
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Reclaim unused hosted-runner SDK space
@@ -132,7 +134,20 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ffmpeg libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y build-essential cmake ffmpeg
+          if [[ '${{ matrix.scope }}' == desktop ]]; then
+            sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          fi
+      - name: Use the Windows volume with most free space for build artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $buildDrive = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -in @('C', 'D') } | Sort-Object Free -Descending | Select-Object -First 1
+          if (-not $buildDrive) { throw 'No Windows build volume available' }
+          $buildTarget = Join-Path $buildDrive.Root 'kimo-coverage-target'
+          New-Item -ItemType Directory -Force -Path $buildTarget | Out-Null
+          "CARGO_TARGET_DIR=$buildTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Build target $buildTarget; free GiB $([math]::Round($buildDrive.Free / 1GB, 1))
       - if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
       - shell: bash
@@ -152,6 +167,25 @@ jobs:
           else
             python3 -m playwright install chromium --only-shell
           fi
+      - name: Prepare native proof inputs and output directories
+        if: matrix.scope == 'workspace'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import os, pathlib, subprocess, tempfile
+          root = pathlib.Path(tempfile.gettempdir())
+          image = root / 'perf1080.rgba'
+          subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i',
+              'crates/kimo-core/src/vision/testdata/astronaut_176x220.ppm',
+              '-vf', 'scale=1920:1080', '-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'rawvideo', str(image)], check=True)
+          assert image.stat().st_size == 1920 * 1080 * 4
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              for key in ['KIMO_CSM_FRAMES', 'KIMO_PBR_FRAMES', 'KIMO_PRIMITIVE_FRAMES']:
+                  directory = root / 'kimo-native-proofs' / key
+                  directory.mkdir(parents=True, exist_ok=True)
+                  env.write(f'{key}={directory}\n')
+          PYTHON
       - name: Workspace tests and coverage
         if: matrix.scope == 'workspace'
         shell: bash
@@ -159,16 +193,43 @@ jobs:
           set -euo pipefail
           # Native tests mutate process-wide model/cache/resource environment.
           # Serialize test cases; all tests (including ignored proofs) still execute.
-          cargo llvm-cov --locked --workspace --all-targets --json --output-path rust-workspace.json -- --include-ignored --test-threads=1
+          cargo llvm-cov --locked --workspace --all-targets --no-fail-fast --no-report -- --include-ignored --test-threads=1
+      - name: Report workspace coverage even when a test fails
+        if: always() && matrix.scope == 'workspace'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report --json --output-path rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-core/ rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-cli/ rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-mcp/ rust-workspace.json
+      - name: Build real engine for the required desktop probe
+        if: matrix.scope == 'desktop'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p kimo-mcp
+          python3 - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1']))
+          name = 'kimo-mcp.exe' if os.name == 'nt' else 'kimo-mcp'
+          binary = pathlib.Path(metadata['target_directory']) / 'debug' / name
+          assert binary.is_file(), binary
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write(f'KIMO_MCP_BIN={binary}\n')
+          PYTHON
       - name: Desktop tests and coverage
         if: matrix.scope == 'desktop'
         shell: bash
         run: |
           set -euo pipefail
-          cargo llvm-cov --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --json --output-path rust-desktop.json -- --include-ignored --test-threads=1
+          cargo llvm-cov --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --no-fail-fast --no-report -- --include-ignored --test-threads=1
+      - name: Report desktop coverage even when a test fails
+        if: always() && matrix.scope == 'desktop'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report --manifest-path crates/kimo-gui/Cargo.toml --json --output-path rust-desktop.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-gui/ rust-desktop.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()

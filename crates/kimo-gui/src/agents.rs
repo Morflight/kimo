@@ -22,7 +22,7 @@ pub struct AgentState {
 
 /// Find an executable on a PATH string (PATHEXT-aware on Windows). Pure: PATH and PATHEXT are passed in.
 pub fn which_in(name: &str, path_var: &str, pathext: Option<&str>) -> Option<PathBuf> {
-    let sep = if cfg!(windows) { ';' } else { ':' };
+    let sep = path_separator(cfg!(windows));
     let exts: Vec<String> = match pathext {
         Some(pe) => std::iter::once(String::new()).chain(pe.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase())).collect(),
         None => vec![String::new()],
@@ -44,14 +44,21 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(p: &Path) -> bool { p.is_file() }
 
+// Keep platform policy pure so both conventions can be checked on either host.
+fn path_separator(windows: bool) -> char { if windows { ';' } else { ':' } }
+fn home_variable(windows: bool) -> &'static str { if windows { "USERPROFILE" } else { "HOME" } }
+fn executable_extensions(windows: bool, configured: Option<String>) -> Option<String> {
+    if windows { Some(configured.unwrap_or_else(|| ".EXE;.CMD;.BAT".into())) } else { None }
+}
+
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var("PATH").unwrap_or_default();
-    let pathext = if cfg!(windows) { Some(std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())) } else { None };
+    let pathext = executable_extensions(cfg!(windows), std::env::var("PATHEXT").ok());
     which_in(name, &path, pathext.as_deref())
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    std::env::var_os(home_variable(cfg!(windows))).map(PathBuf::from)
 }
 
 /// Claude Code keeps user/local-scope servers in ~/.claude.json: top-level `mcpServers` (user scope) and
@@ -273,6 +280,88 @@ mod tests {
         assert_eq!(which_in("absent", ":", Some(";.EXE;;.CMD")), None);
         assert_eq!(which_in("claude", d.to_str().unwrap(), Some(";.EXE;;")), Some(cli));
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn detection_uses_isolated_process_environment_without_running_clients() {
+        const FIXTURE: &str = "KIMO_AGENT_DETECTION_TEST";
+        if let Ok(mode) = std::env::var(FIXTURE) {
+            let home = home_dir();
+            if mode == "absent" {
+                assert!(home.is_none());
+                for state in detect(None) {
+                    assert!(state.cli.is_none());
+                    assert!(state.config_path.is_none());
+                    assert!(!state.linked);
+                    assert!(state.linked_command.is_none());
+                    assert!(state.note.is_none());
+                }
+                return;
+            }
+            let home = home.unwrap();
+            let states = detect(Some(&home));
+            assert_eq!(states.len(), 2);
+            assert_eq!(states[0].id, "claude");
+            assert_eq!(states[1].id, "codex");
+            for state in &states {
+                assert!(Path::new(state.cli.as_ref().unwrap()).is_file());
+                assert!(state.note.is_none());
+            }
+            assert_eq!(states[0].linked_command.as_deref(), Some("fixture-claude"));
+            assert!(states[0].linked);
+            if mode == "override" {
+                assert_eq!(states[1].linked_command.as_deref(), Some("fixture-codex"));
+                assert!(states[1].linked);
+                assert_eq!(codex_config_path(&home), home.join("override/config.toml"));
+            } else {
+                assert!(!states[1].linked);
+                assert_eq!(codex_config_path(&home), home.join(".codex/config.toml"));
+            }
+            let encoded = serde_json::to_value(states).unwrap();
+            assert_eq!(encoded[0]["name"], "Claude Code");
+            assert_eq!(encoded[1]["name"], "Codex");
+            return;
+        }
+        let d = tmp("detection-subprocess");
+        std::fs::write(d.join(".claude.json"), r#"{"mcpServers":{"kimo":{"command":"fixture-claude"}}}"#).unwrap();
+        std::fs::create_dir(d.join("override")).unwrap();
+        std::fs::write(d.join("override/config.toml"), "[mcp_servers.kimo]\ncommand='fixture-codex'\n").unwrap();
+        std::fs::create_dir(d.join(".codex")).unwrap();
+        std::fs::write(d.join(".codex/config.toml"), "unrelated = true").unwrap();
+        for name in ["claude", "codex", "claude.exe", "codex.exe"] {
+            let p = d.join(name);
+            // Detection only checks executability; running this fixture would fail.
+            std::fs::write(&p, "not an executable program").unwrap();
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        for mode in ["override", "default", "absent"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "agents::tests::detection_uses_isolated_process_environment_without_running_clients", "--nocapture"])
+                .env(FIXTURE, mode).env("PATH", &d).env_remove("CODEX_HOME");
+            child.env("HOME", &d).env("USERPROFILE", &d);
+            if mode == "override" { child.env("CODEX_HOME", d.join("override")).env("PATHEXT", ".EXE;.CMD"); }
+            else { child.env_remove("PATHEXT"); }
+            if mode == "absent" { child.env_remove("HOME").env_remove("USERPROFILE").env("PATH", ""); }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{mode}: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn platform_search_policy_preserves_explicit_extensions_and_defaults() {
+        assert_eq!(path_separator(true), ';');
+        assert_eq!(path_separator(false), ':');
+        assert_eq!(home_variable(true), "USERPROFILE");
+        assert_eq!(home_variable(false), "HOME");
+        assert_eq!(executable_extensions(false, Some(".EXE".into())), None);
+        assert_eq!(executable_extensions(true, None).as_deref(), Some(".EXE;.CMD;.BAT"));
+        assert_eq!(executable_extensions(true, Some(String::new())), Some(String::new()));
+        assert_eq!(executable_extensions(true, Some(".CUSTOM".into())).as_deref(), Some(".CUSTOM"));
     }
 
 }

@@ -1,0 +1,82 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {dirname, resolve} from 'node:path';
+import vm from 'node:vm';
+const directory = fileURLToPath(new URL('../ui/', import.meta.url));
+const context = vm.createContext({performance:{now:()=>1000}}), modules = new Map();
+function get(filename) {
+  if (!modules.has(filename)) modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8'),{identifier:filename,context}));
+  return modules.get(filename);
+}
+// Enter through router, as the UI does, so the real cyclic imports initialize in order.
+const root=get(resolve(directory,'router.js'));
+await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));
+await root.evaluate();
+const modes=get(resolve(directory,'modes.js'));
+if(modes.status==='unlinked') await modes.link(()=>{throw Error('unexpected mode dependency');});
+await modes.evaluate();
+const {MODES}=modes.namespace;
+const {space,pipelineOps,cPush}=get(resolve(directory,'project_ops.js')).namespace;
+const plain=x=>JSON.parse(JSON.stringify(x));
+for(const [g,t,expected] of [[3,0,'ACEScg'],[3,3,'ACEScct'],[0,1,'Rec.709 sRGB'],[0,8,'Rec.709 BT.709'],
+  [1,6,'Rec.2100 PQ'],[1,7,'Rec.2100 HLG'],[5,4,'ARRI LogC3'],[6,5,'S-Log3'],[7,5,'S-Log3 Cine'],
+  [2,2,'P3-D65 gamma 2.4'],[null,null,null],[99,99,null],[99,1,'sRGB'],[2,null,'P3-D65']]) {
+  assert.equal(space(g,t),expected,`${g}/${t}`);
+}
+const state={mode:'color',views:{}};
+const event=(tool,phase='complete',args={},result={})=>({tool_name:tool,phase,call_id:'test',payload:{args,result}});
+assert.equal(pipelineOps(state,MODES,event('set_color_pipeline','queued')),false);
+assert.equal(pipelineOps(state,MODES,event('set_color_pipeline','start',{settings:{input_gamut:0,input_transfer:8,working_gamut:3,output_gamut:1,output_transfer:6}})),false);
+assert.equal(pipelineOps(state,MODES,event('set_color_pipeline')),true);
+assert.equal(state._pipe.input,'Rec.709 BT.709');
+assert.equal(state._pipe.working,'ACEScg');
+assert.equal(state._pipe.output,'Rec.2100 PQ');
+assert.deepEqual(plain(state._covArgs),{});
+const before=plain(state);
+assert.equal(pipelineOps(state,MODES,event('set_hdr_mastering','error',{metadata:{max_nits:999}})),false);
+assert.deepEqual(plain(state),before);
+assert.equal(pipelineOps(state,MODES,event('set_color_pipeline','complete',{settings:{enabled:false}})),true);
+assert.equal(state._pipe.working,'off (display-referred)');
+assert.equal(pipelineOps(state,MODES,event('set_color_pipeline','complete',{settings:{working_gamut:99}})),true);
+assert.equal(state._pipe.working,'gamut 99 linear');
+assert.equal(pipelineOps(state,MODES,event('set_clip_input_color','complete',{clip_id:'@Hero.mp4',gamut:3,transfer:0})),true);
+assert.equal(state._pipe.clips.Hero,'ACEScg');
+assert.equal(pipelineOps(state,MODES,event('set_clip_input_color','complete',{clip_id:'@Hero.mp4',gamut:3,transfer:3})),true);
+assert.equal(state._pipe.clips.Hero,'ACEScct');
+assert.equal(pipelineOps(state,MODES,event('set_clip_input_color')),false);
+assert.equal(pipelineOps({views:{}},MODES,event('set_hdr_mastering','complete',{clear:true})),false);
+pipelineOps(state,MODES,event('set_hdr_mastering','complete',{metadata:{max_cll:1000,max_fall:400,max_nits:1200,min_nits:0.0014}}));
+assert.deepEqual(plain(state._pipe.hdr),{max_cll:'1000 nits',max_fall:'400 nits',max_nits:'1200 nits',min_nits:'0.001 nits'});
+pipelineOps(state,MODES,event('set_hdr_mastering','complete',{clear:true}));
+assert.deepEqual(plain(state._pipe.hdr),{max_cll:'cleared',max_fall:'cleared',max_nits:'cleared',min_nits:'cleared'});
+const error=event('set_ocio_view_delivery','error',{selection:{view:'AgX'}});
+error.payload.error='native-ocio unavailable';
+assert.equal(pipelineOps(state,MODES,error),true);
+assert.equal(state._pipe.view,'✗ AgX');
+assert.equal(state._pipe._viewErr,true);
+assert.match(error._hudErr,/engine-disabled/);
+assert.equal(pipelineOps(state,MODES,event('set_ocio_view_delivery','complete',{selection:{display:'Monitor',output_gamut:0,output_transfer:1}})),true);
+assert.equal(state._pipe.view,'Monitor');
+assert.equal(state._pipe._viewErr,false);
+assert.equal(state._pipe.output,'Rec.709 sRGB');
+assert.equal(pipelineOps(state,MODES,event('set_ocio_view_delivery')),false);
+assert.equal(pipelineOps(state,MODES,event('unknown')),false);
+assert.equal(pipelineOps({views:{}},{},event('set_color_pipeline','complete',{settings:{enabled:false}})),true);
+console.log('PASS color pipeline defaults, refused calls, clip overrides, HDR clearing and OCIO recovery');
+const history={};
+cPush(history,{before:true},{after:true},'trim_clip',{});
+assert.deepEqual(plain(history._covHist),{undo:[],redo:[]});
+history._covHist.undo=[null];
+cPush(history,'before','after','trim_clip',{});
+assert.deepEqual(plain(history._covHist.undo),[{tool:'trim_clip',c:true,before:'before',after:'after'}]);
+cPush(history,'ignored','ignored','move_clip',{});
+assert.equal(history._covHist.undo[0].tool,'trim_clip');
+cPush(history,'before','after','load_project',{undo_steps:100});
+assert.equal(history._covHist.undo.length,48);
+assert.ok(history._covHist.undo.slice(0,47).every(x=>x===null));
+assert.equal(history._covHist.undo[47].tool,'load_project');
+assert.deepEqual(plain(history._covHist.redo),[]);
+cPush(history,null,null,'load_project',null);
+assert.equal(history._covHist.undo.length,1);
+console.log('PASS history associates only the pending slot and bounds unseen loaded steps');

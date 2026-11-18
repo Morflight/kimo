@@ -1083,7 +1083,7 @@ mod tests {
         call(s,"add_clip",json!({"track_id":t,"source_type":"media","asset_id":a,"start":start,"duration":duration}))["clip_id"].as_str().unwrap().into()
     }
     fn fixture(name: &str, src: &str) -> String {
-        let p = format!("/tmp/kimo-gap4-{}-{name}.wav", std::process::id());
+        let p = std::env::temp_dir().join(format!("kimo-gap4-{}-{name}.wav", std::process::id())).to_string_lossy().into_owned();
         assert!(std::process::Command::new("ffmpeg")
             .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-ac", "2", &p])
             .status()
@@ -1095,7 +1095,7 @@ mod tests {
     fn caption_timing_style_edit_burnin_undo_and_reload() {
         let mut s = Session::new();
         let t = track(&mut s);
-        let path = format!("/tmp/gap4-caption-{}.srt", std::process::id());
+        let path = std::env::temp_dir().join(format!("gap4-caption-{}.srt", std::process::id())).to_string_lossy().into_owned();
         std::fs::write(&path,"1\n00:00:00,000 --> 00:00:01,500\nHello Kimo\n\n2\n00:00:01,500 --> 00:00:03,000\nSecond line\n").unwrap();
         let v = call(
             &mut s,
@@ -1157,7 +1157,11 @@ mod tests {
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&out.stderr);
-        let j: Value = serde_json::from_str(&text[text.rfind('{').unwrap()..]).unwrap();
+        assert!(out.status.success(), "reference ffmpeg failed: {text}");
+        // FFmpeg may append progress/summary diagnostics after loudnorm's JSON.
+        // Read exactly that JSON value; its measurement and tolerance stay unchanged.
+        let j = serde_json::Deserializer::from_str(&text[text.rfind('{').unwrap()..])
+            .into_iter::<Value>().next().unwrap().unwrap();
         let expected = j["input_i"].as_str().unwrap().parse::<f64>().unwrap();
         assert!(
             (measured - expected).abs() < 0.15,
@@ -1355,7 +1359,7 @@ mod more_tests {
     }
     #[test]
     fn sync_actual_modulated_audio() {
-        let path = format!("/tmp/gap4-sync-{}.wav", std::process::id());
+        let path = std::env::temp_dir().join(format!("gap4-sync-{}.wav", std::process::id())).to_string_lossy().into_owned();
         let pcm: Vec<f32> = (0..48000 * 3)
             .flat_map(|i| {
                 let hop = i / 240;

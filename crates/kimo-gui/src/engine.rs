@@ -11,7 +11,8 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub fn engine_file_name() -> &'static str { if cfg!(windows) { "kimo-mcp.exe" } else { "kimo-mcp" } }
+pub fn engine_file_name() -> &'static str { engine_file_name_for(cfg!(windows)) }
+fn engine_file_name_for(windows: bool) -> &'static str { if windows { "kimo-mcp.exe" } else { "kimo-mcp" } }
 
 /// Where the engine binary is, first hit wins: $KIMO_MCP_BIN, next to the GUI binary (Tauri sidecar layout), `bin/`
 /// beside it, `../lib/kimo/` (deb layout), the Tauri resource dir, then PATH.
@@ -75,9 +76,17 @@ impl Rpc {
         }
         #[cfg(windows)]
         { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); } // CREATE_NO_WINDOW
-        let mut child = c.spawn().map_err(|e| format!("could not start {}: {e}", cmd.display()))?;
-        let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let child = c.spawn().map_err(|e| format!("could not start {}: {e}", cmd.display()))?;
+        Self::from_child(child)
+    }
+
+    // Own cleanup even if a caller supplies a child without the required pipes.
+    fn from_child(mut child: Child) -> Result<Rpc, String> {
+        let pipes: Result<_, &str> = (|| Ok((child.stdin.take().ok_or("no stdin")?, child.stdout.take().ok_or("no stdout")?)))();
+        let (stdin, stdout) = match pipes {
+            Ok(pipes) => pipes,
+            Err(error) => { let _ = child.kill(); let _ = child.wait(); return Err(error.into()); }
+        };
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
         let (p2, a2) = (pending.clone(), alive.clone());
@@ -220,7 +229,11 @@ impl Supervisor {
     fn conn(&self) -> Result<Arc<Rpc>, String> {
         if let Some(r) = self.rpc.lock().unwrap().as_ref() { if r.alive() { return Ok(r.clone()); } }
         self.restarts.fetch_add(1, Ordering::SeqCst);
-        match self.start() { Status::Running { .. } => self.rpc.lock().unwrap().clone().ok_or_else(|| "engine not running".into()), s => Err(format!("engine not running: {}", serde_json::to_string(&s).unwrap_or_default())) }
+        match self.start() { Status::Running { .. } => self.running_connection(), s => Err(format!("engine not running: {}", serde_json::to_string(&s).unwrap_or_default())) }
+    }
+    // The connection can disappear if stop races with a successful start.
+    fn running_connection(&self) -> Result<Arc<Rpc>, String> {
+        self.rpc.lock().unwrap().clone().ok_or_else(|| "engine not running".into())
     }
     pub fn tools(&self) -> Vec<Value> { self.tools.lock().unwrap().clone() }
     /// tools/call; returns the MCP result object ({content, isError, structuredContent?}).
@@ -262,11 +275,14 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("fake-mcp.py");
         std::fs::write(&p, r#"#!/usr/bin/env python3
-import sys, json
+import sys, json, os
 for line in sys.stdin:
     m = json.loads(line)
     if "id" not in m: continue
     meth = m["method"]
+    if meth == "initialize" and os.environ.get("KIMO_TEST_INIT_ERROR"):
+        print(json.dumps({"id":m["id"],"error":{"message":"fixture initialization rejected"}}),flush=True)
+        continue
     if meth == "initialize": r = {"protocolVersion":"2024-11-05","serverInfo":{"name":"kimo","version":"9.9.9"}}
     elif meth == "tools/list": r = {"tools":[{"name":"project","description":"P [3 actions]"},{"name":"search_tools","description":"s"}]}
     elif meth == "tools/call":
@@ -305,10 +321,10 @@ for line in sys.stdin:
         assert_eq!(result_text(&r), "called timeline");
         s.stop();
     }
-    /// The real engine, when one is on this machine (KIMO_MCP_BIN): what a client sees on tools/list.
+    /// Required real-engine handshake: what an external client sees on tools/list.
     #[test]
-    fn probe_real_engine_when_present() {
-        let Some(bin) = std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from) else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+    fn probe_real_engine() {
+        let bin = std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).expect("build kimo-mcp and set KIMO_MCP_BIN before running desktop tests");
         let p = probe(&bin, &[], &[]);
         assert!(p.ok, "{:?}", p.error);
         assert!(p.tools >= 16, "tools/list returned {}", p.tools);
@@ -316,4 +332,175 @@ for line in sys.stdin:
         assert!(p.actions > 100);
         eprintln!("real engine {} answered: {} tools, {} actions, {} ms", p.version, p.tools, p.actions, p.ms);
     }
+    #[test]
+    fn malformed_result_blocks_and_probe_defaults_are_explicit() {
+        assert_eq!(engine_file_name_for(true), "kimo-mcp.exe");
+        assert_eq!(engine_file_name_for(false), "kimo-mcp");
+        assert_eq!(count_actions(&[json!({}), json!({"description":"["}), json!({"description":"[2 widgets]"})]), 3);
+        assert_eq!(result_text(&json!({"content":[{}, {"type":"text"}, {"type":"audio"}]})), "\n\n[audio]");
+        assert_eq!(result_text(&Value::Null), "");
+        assert!(!is_error(&json!({"isError":"true"})));
+        assert!(is_error(&json!({"isError":true})));
+        let info = info_from(&json!({}), &[json!({}), json!({"name":"valid"})], 19);
+        assert_eq!(info.version, "?");
+        assert_eq!(info.protocol, "?");
+        assert_eq!(info.names, vec!["valid"]);
+        assert_eq!((info.tools, info.actions, info.ms), (2, 2, 19));
+        assert_eq!(serde_json::to_value(info).unwrap()["ok"], true);
+        let missing = Supervisor::new(None, vec![], None);
+        assert!(matches!(missing.start(), Status::Missing { .. }));
+        assert!(missing.call("project", &json!({})).unwrap_err().contains("engine not running"));
+        assert!(missing.tools().is_empty());
+        let broken = Supervisor::new(Some(PathBuf::from("/nonexistent/kimo-engine-test")), vec![], None);
+        assert!(matches!(broken.start(), Status::Crashed { .. }));
+        broken.stop();
+        assert!(matches!(broken.status(), Status::Stopped));
+    }
+    #[test]
+    fn engine_discovery_precedence_in_an_isolated_process() {
+        const FIXTURE: &str = "KIMO_ENGINE_DISCOVERY_TEST";
+        if let Some(root) = std::env::var_os(FIXTURE).map(PathBuf::from) {
+            let app = root.join("app");
+            let resource = root.join("resource");
+            let name = engine_file_name();
+            let candidates = vec![root.join("override"), app.join(name), app.join("bin").join(name),
+                app.join("../lib/kimo").join(name), resource.join(name), resource.join("bin").join(name),
+                app.join("target/release").join(name), app.join("target/dist").join(name), app.join("target/debug").join(name)];
+            for path in &candidates {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "fixture").unwrap();
+            }
+            for expected in &candidates {
+                assert_eq!(find_engine(Some(&app), Some(&resource)).as_ref(), Some(expected));
+                std::fs::remove_file(expected).unwrap();
+            }
+            // This branch runs only in the isolated child test process.
+            std::env::remove_var("KIMO_MCP_BIN");
+            let path_bin = root.join("path").join(name);
+            std::fs::create_dir_all(path_bin.parent().unwrap()).unwrap();
+            std::fs::write(&path_bin, "fixture").unwrap();
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            assert_eq!(find_engine(None, None), Some(path_bin.clone()));
+            std::fs::remove_file(path_bin).unwrap();
+            assert_eq!(find_engine(None, None), None);
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("kimo-engine-discovery-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "engine::tests::engine_discovery_precedence_in_an_isolated_process", "--nocapture"])
+            .env(FIXTURE, &root).env("KIMO_MCP_BIN", root.join("override"))
+            .env("PATH", root.join("path")).env("PATHEXT", ".EXE").output().unwrap();
+        assert!(output.status.success(), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rpc_faults_clear_pending_requests_and_preserve_engine_errors() {
+        let dir=std::env::temp_dir().join(format!("kimo-rpc-faults-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script=dir.join("server.py");
+        std::fs::write(&script,r#"import json, os, sys, time
+mode=sys.argv[1]
+print('fixture stderr',file=sys.stderr,flush=True)
+if mode == 'closed':
+    os.close(0)
+    open(sys.argv[2],'w').close()
+    time.sleep(30)
+for line in sys.stdin:
+    m=json.loads(line)
+    if 'id' not in m: continue
+    method=m['method']
+    if method == 'never': continue
+    if method == 'bad-bytes':
+        sys.stdout.buffer.write(b'\xff\n'); sys.stdout.buffer.flush(); continue
+    response={'id':m['id']}
+    if method == 'error':
+        print('not json',flush=True)
+        print(json.dumps({'method':'notification'}),flush=True)
+        print(json.dumps({'id':999999,'result':'unrelated'}),flush=True)
+        response['error']={'message':'specific engine failure'}
+    elif method == 'empty-error': response['error']={}
+    elif method == 'initialize' and mode == 'reject-init': response['error']={'message':'initialization rejected'}
+    elif method == 'tools/list' and mode == 'reject-list': response['error']={'message':'tool listing rejected'}
+    elif method == 'tools/list': response['result']={'tools':None}
+    print(json.dumps(response),flush=True)
+"#).unwrap();
+        let log=dir.join("stderr.log");
+        let args=vec![script.display().to_string(),"normal".into()];
+        let rpc=Rpc::spawn(Path::new("python3"),&args,&[("KIMO_RPC_FIXTURE".into(),"1".into())],Some(&log)).unwrap();
+        let timeout=Duration::from_secs(2);
+        assert_eq!(rpc.request("error",json!({}),timeout).unwrap_err(),"specific engine failure");
+        assert_eq!(rpc.request("empty-error",json!({}),timeout).unwrap_err(),"engine error");
+        assert_eq!(rpc.request("no-result",json!({}),timeout).unwrap(),Value::Null);
+        assert!(rpc.handshake().unwrap().1.is_empty());
+        assert!(rpc.request("never",json!({}),Duration::from_millis(20)).unwrap_err().contains("no answer"));
+        assert!(rpc.pending.lock().unwrap().is_empty());
+        assert_eq!(rpc.request("bad-bytes",json!({}),timeout).unwrap_err(),"the engine exited");
+        assert_eq!(rpc.request("after-exit",json!({}),timeout).unwrap_err(),"the engine is not running");
+        rpc.kill();
+        assert!(std::fs::read_to_string(&log).unwrap().contains("fixture stderr"));
+        for (mode,message) in [("reject-init","initialization rejected"),("reject-list","tool listing rejected")] {
+            let args=vec![script.display().to_string(),mode.into()];
+            let rpc=Rpc::spawn(Path::new("python3"),&args,&[],Some(&dir)).unwrap();
+            assert_eq!(rpc.handshake().unwrap_err(),message);
+        }
+        let ready=dir.join("closed-ready");
+        let args=vec![script.display().to_string(),"closed".into(),ready.display().to_string()];
+        let rpc=Rpc::spawn(Path::new("python3"),&args,&[],None).unwrap();
+        let deadline=std::time::Instant::now()+Duration::from_secs(2);
+        while !ready.exists() && std::time::Instant::now()<deadline { std::thread::sleep(Duration::from_millis(5)); }
+        assert!(ready.exists(),"fixture must close stdin before transport assertion");
+        assert_eq!(rpc.request("closed",json!({}),timeout).unwrap_err(),"the engine closed its input");
+        assert!(rpc.pending.lock().unwrap().is_empty());
+        rpc.notify("closed-notification");
+        rpc.kill();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_child_pipes_and_stopped_connection_are_reported() {
+        for (piped_input,expected) in [(false,"no stdin"),(true,"no stdout")] {
+            let child=Command::new("python3").args(["-c","import time; time.sleep(30)"])
+                .stdin(if piped_input { Stdio::piped() } else { Stdio::null() })
+                .stdout(Stdio::null()).spawn().unwrap();
+            let started=std::time::Instant::now();
+            let error=Rpc::from_child(child).err().expect("missing pipes must be rejected");
+            assert_eq!(error,expected);
+            assert!(started.elapsed()<Duration::from_secs(2),"failed connection must reap its child promptly");
+        }
+        let supervisor=Supervisor::new(None,vec![],None);
+        let error=supervisor.running_connection().err().expect("missing connection must be rejected");
+        assert_eq!(error,"engine not running");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_preserves_handshake_failure() {
+        let s=Supervisor::new(Some(fake_server()),vec![("KIMO_TEST_INIT_ERROR".into(),"1".into())],None);
+        let state=serde_json::to_value(s.start()).unwrap();
+        assert_eq!(state["state"],"crashed");
+        assert_eq!(state["error"],"fixture initialization rejected");
+        assert!(s.rpc.lock().unwrap().is_none());
+        assert!(s.tools().is_empty());
+    }
+
+    #[test]
+    fn real_engine_startup_failure_is_a_crashed_supervisor() {
+        let bin=std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).expect("real engine required");
+        let log=std::env::temp_dir().join(format!("kimo-engine-startup-failure-{}.log",std::process::id()));
+        let supervisor=Supervisor::new(Some(bin),vec![("KIMO_MEMORY_BUDGET_BYTES".into(),"invalid-budget".into()),("KIMO_SPECTATOR".into(),"off".into())],Some(log.clone()));
+        let status=serde_json::to_value(supervisor.start()).unwrap();
+        assert_eq!(status["state"],"crashed");
+        let error=status["error"].as_str().unwrap();
+        assert!(["the engine exited","the engine is not running","the engine closed its input"].contains(&error),"{error}");
+        assert!(supervisor.rpc.lock().unwrap().is_none());
+        assert!(std::fs::read_to_string(&log).unwrap().contains("KIMO_MEMORY_BUDGET_BYTES must be integer"));
+        std::fs::remove_file(log).unwrap();
+    }
+
 }

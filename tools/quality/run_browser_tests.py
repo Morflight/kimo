@@ -31,7 +31,7 @@ def coverage_cases(output):
     functional = {'cov_a_test', 'cov_b_test', 'cov_c_test', 'router_test',
                   'studio_ui_test', 'studio_ui_dark', 'playback_ui_test',
                   'preview_rev_test', 'proxy_badge_test', 'feed_gap_test',
-                  'keyframe_test', 'ruler_test', 'transition_test', 'flash_edit_scope_test'}
+                  'keyframe_test', 'ruler_test', 'transition_test', 'flash_edit_scope_test', 'frame_step_precision_test'}
     wrapper = ROOT / 'tools/quality/browser_coverage.py'
     return [(name, wrapper, ['--output', str(Path(output).resolve()), str(script), *args], env, kind)
             for name, script, args, env, kind in cases()
