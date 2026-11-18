@@ -63,6 +63,8 @@ jobs:
       - run: |
           python3 -m pip install coverage==7.6.12
           python3 -m coverage run --branch --source=crates/kimo-core/src,tools/quality,tools/ci -m unittest discover -s tools/quality -p 'test_*.py'
+          python3 -m coverage json -o python-coverage.json
+          python3 tools/quality/check_python_coverage.py python-coverage.json
           python3 -m coverage report --fail-under=100
       - if: always()
         run: python3 -m coverage json -o python-coverage.json

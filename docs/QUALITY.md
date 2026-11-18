@@ -40,3 +40,11 @@ On 2026-11-18, all six controller suites passed under Node 22 with c8 10.1.3. Th
 ## Solo workflow authorization
 
 On 2026-11-18 the owner explicitly authorized moving the initial documentation and controls onto main with their known coverage gaps. Mandatory PR/review restrictions are removed. Required checks remain configured, with owner/admin bypass enabled to permit direct development pushes. CI failures remain visible and the 100% thresholds and strict acceptance job are unchanged. This integration is not evidence that inherited failures or coverage debt have been resolved.
+
+## Python evidence and inventory
+
+The Python job must produce a branch-enabled JSON report before acceptance. `tools/quality/check_python_coverage.py` compares it to tracked Python runtime files under every crate's `src` tree, including nested directories, and all Python files in `tools/quality` and `tools/ci`. A missing file, missing/invalid counter or nonzero uncovered line/branch fails independently of aggregate rounding. This matters because coverage.py source discovery can omit unimported nested directories without `__init__.py`. Tests must not make that omission invisible.
+
+The helper protocol suites run under unittest discovery alongside quality-control tests. Code clip browser/Pillow and OpenColorIO processor doubles establish protocol handling only; real browser pixels, real OCIO transforms and platform behavior remain qualification requirements. Coverage.py measures lines and branches, not an independent function counter. Inlined JavaScript inside the sidecar is still subject to the existing inline-JavaScript blocker.
+
+On 2026-11-18 the expanded local Python suite passed 43 tests under Python 3.10 / coverage.py 7.6.12: **739/739 executable lines and 174/174 measured branches** across the two runtime helpers and quality/CI Python tooling, including tests. The explicit inventory check, feature coherence check and 448-entry native manifest check passed. This scoped result does not certify JavaScript, Rust, embedded JavaScript, real browser/OCIO behavior or the wider repository's Python proof scripts.

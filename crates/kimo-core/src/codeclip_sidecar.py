@@ -62,7 +62,8 @@ def out(o):
     sys.stdout.write(json.dumps(o) + '\n'); sys.stdout.flush()
 
 def main():
-    job = json.load(open(sys.argv[1]))
+    with open(sys.argv[1]) as job_file:
+        job = json.load(job_file)
     root = os.path.realpath(job['dir']); W = int(job['width']); H = int(job['height'])
     entry = job.get('entry') or 'index.html'
     fms = int(job.get('frame_timeout_ms') or 20000); lms = int(job.get('load_timeout_ms') or 60000)
@@ -93,7 +94,9 @@ def main():
             return route.fulfill(status=404, body='not found')
         ct = mimetypes.guess_type(f)[0] or 'application/octet-stream'
         if f.endswith('.js') or f.endswith('.mjs'): ct = 'text/javascript'
-        route.fulfill(status=200, body=open(f, 'rb').read(), headers={'Content-Type': ct})
+        with open(f, 'rb') as asset_file:
+            body = asset_file.read()
+        route.fulfill(status=200, body=body, headers={'Content-Type': ct})
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=exe if exe and os.path.exists(exe) else None, args=args)
         ctx = b.new_context(viewport={'width': W, 'height': H}, device_scale_factor=1, service_workers='block', java_script_enabled=True)

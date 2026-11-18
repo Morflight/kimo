@@ -23,7 +23,6 @@
         "crates/kimo-core/src/caption_validate.rs",
         "crates/kimo-core/src/castshadow.rs",
         "crates/kimo-core/src/codeclip.rs",
-        "crates/kimo-core/src/codeclip_sidecar.py",
         "crates/kimo-core/src/color.rs",
         "crates/kimo-core/src/color/adaptation.rs",
         "crates/kimo-core/src/color/adjust_v2_proof.rs",
@@ -70,7 +69,6 @@
         "crates/kimo-core/src/color/neutral.rs",
         "crates/kimo-core/src/color/node_graph.rs",
         "crates/kimo-core/src/color/ocio.rs",
-        "crates/kimo-core/src/color/ocio_bridge.py",
         "crates/kimo-core/src/color/ocio_config.rs",
         "crates/kimo-core/src/color/output_audit.rs",
         "crates/kimo-core/src/color/pipeline.rs",
@@ -513,6 +511,32 @@
         "crates/kimo-gui/ui/reads.js",
         "crates/kimo-gui/ui/router.js",
         "crates/kimo-gui/ui/studio.js"
+      ]
+    },
+    {
+      "id": "code-clip-sidecar",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/code-clip-sidecar.md"
+      ],
+      "tests": [
+        "tools/quality/test_codeclip_sidecar.py"
+      ],
+      "sources": [
+        "crates/kimo-core/src/codeclip_sidecar.py"
+      ]
+    },
+    {
+      "id": "ocio-reference-bridge",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/ocio-reference-bridge.md"
+      ],
+      "tests": [
+        "tools/quality/test_ocio_bridge.py"
+      ],
+      "sources": [
+        "crates/kimo-core/src/color/ocio_bridge.py"
       ]
     }
   ],

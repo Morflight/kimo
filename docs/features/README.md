@@ -17,6 +17,13 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 | Automation | MCP tool discovery/execution and CLI commands | `FEATURES.md`: Use from an MCP client / starter tools |
 | Desktop | Project interaction, native dialogs, engine connection and updates | `docs/FORK.md`: fork identity and engine/update limitations |
 
+## Focused runtime contracts
+
+- [Code clip rendering sidecar](code-clip-sidecar.md): job defaults, frame output, local request routing, errors and browser qualification limits.
+- [OpenColorIO reference bridge](ocio-reference-bridge.md): pinned color configuration, binary streaming, failures and reference-library qualification limits.
+
+These own the Python helpers separately from the broad core entry. They do not certify their Rust callers.
+
 ## Coherence rules
 
 `catalog.json` inventories every first-party Rust/Python/JavaScript runtime source under crates and maps ownership to documentation and tests. The checker rejects missing files, unclassified new sources, duplicate ownership, and implementation changes without simultaneous updates to linked docs and tests. The initial catalog is deliberately marked `legacy-unverified`: broad inherited links are a starting inventory, not proof that every behavior is documented or tested. Split areas into focused feature contracts as work touches them.
