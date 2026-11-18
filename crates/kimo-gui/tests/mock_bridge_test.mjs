@@ -90,4 +90,44 @@ await test('setup readiness follows required parts and onboarding is recorded', 
   assert.ok(progress.some(p => p.phase === 'downloading' && p.bytes_per_s > 0 && p.total > p.done));
   await b.invoke('onboarded_set'); assert.equal((await b.invoke('app_state')).settings.onboarded, true);
 });
+await test('connection controls and project opening return their synthetic protocol results', async () => {
+  const {bridge: b} = await fixture();
+  assert.deepEqual(await b.invoke('engine_restart'), (await b.invoke('app_state')).engine);
+  const agents = await b.invoke('agents_detect');
+  for (const id of ['claude','codex']) {
+    assert.ok(agents.some(a => a.id === id));
+    assert.match(await b.invoke('agent_add', {id}), id === 'claude' ? /Added stdio MCP server/ : /wrote \[mcp_servers.kimo\]/);
+    const linked = (await b.invoke('agents_detect')).find(a => a.id === id);
+    assert.equal(linked.linked, true); assert.ok(linked.linked_command);
+  }
+  assert.equal(await b.invoke('project_open', {path:'/synthetic/project.kimo'}), 'loaded /synthetic/project.kimo');
+  assert.equal(await b.invoke('open_spectator'), null);
+  assert.deepEqual(await b.invoke('mcp_set', {enabled:false}), {enabled:false});
+  assert.equal((await b.invoke('app_state')).external_port, null);
+  assert.equal((await b.invoke('mcp_set', {enabled:true})).probe.ok, true);
+});
+await test('clearing synthetic API keys rejects connection tests and preserves other keys', async () => {
+  const {bridge: b} = await fixture();
+  await assert.rejects(b.invoke('key_test', {provider:'openai'}), e => e === 'Paste a key first.');
+  await b.invoke('key_set', {provider:'openai',key:'first-fixture-key',remember:true});
+  await b.invoke('key_set', {provider:'openai',key:'replacement-fixture-key',remember:false});
+  await b.invoke('key_set', {provider:'anthropic',key:'second-fixture-key',remember:false});
+  assert.match(await b.invoke('key_test', {provider:'openai'}), /54 models visible/);
+  assert.deepEqual(await b.invoke('key_clear', {provider:'openai'}), {provider:'openai',set:false});
+  const keys = (await b.invoke('app_state')).keys;
+  assert.equal(keys.find(k=>k.provider==='openai').set, false);
+  assert.equal(keys.find(k=>k.provider==='openai').hint, null);
+  assert.equal(keys.find(k=>k.provider==='anthropic').set, true);
+  await assert.rejects(b.invoke('key_test', {provider:'openai'}));
+});
+await test('setup pause and skip do not claim missing components were installed', async () => {
+  const {bridge: b} = await fixture('?setup=show');
+  const before = await b.invoke('setup_status');
+  assert.equal(await b.invoke('setup_pause'), null);
+  assert.deepEqual(await b.invoke('setup_status'), before);
+  await b.invoke('setup_skip');
+  const skipped = await b.invoke('setup_status');
+  assert.equal(skipped.done,true); assert.equal(skipped.ready,false);
+  assert.deepEqual(skipped.parts,before.parts);
+});
 console.log(`${count} synthetic bridge cases passed`);

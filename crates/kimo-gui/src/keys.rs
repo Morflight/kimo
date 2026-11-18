@@ -83,7 +83,11 @@ impl SecretStore for OsKeychain {
         let e = keyring::Entry::new(SERVICE, &format!("api-key:{p}")).map_err(|e| e.to_string())?;
         match e.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(e) => Err(e.to_string()) }
     }
-    fn label(&self) -> &'static str { if cfg!(windows) { "Windows Credential Manager" } else if cfg!(target_os = "macos") { "macOS Keychain" } else { "Secret Service keyring" } }
+    fn label(&self) -> &'static str { keychain_label(std::env::consts::OS) }
+}
+
+fn keychain_label(os: &str) -> &'static str {
+    match os { "windows" => "Windows Credential Manager", "macos" => "macOS Keychain", _ => "Secret Service keyring" }
 }
 
 /// Session keys (memory) with optional persistence through a `SecretStore`.
@@ -215,5 +219,100 @@ mod tests {
     fn unreachable_is_plain() {
         let e = test_connection(Wire::OpenAi, "http://127.0.0.1:9/v1", &Secret::new("k-123456789")).unwrap_err();
         assert!(e.starts_with("Could not reach the provider"), "{e}");
+    }
+
+    #[test]
+    fn provider_catalog_and_empty_remembered_keys() {
+        for expected in PROVIDERS {
+            assert_eq!(provider(expected.id).unwrap().base_url, expected.base_url);
+        }
+        assert!(provider("unknown").is_none());
+        assert_eq!(Secret::new("éééabcdefgh").hint(), "ééé…efgh");
+        let store = MemoryStore::default();
+        store.save("empty", &Secret::new(" \t")).unwrap();
+        let ring = KeyRing::new(Box::new(store));
+        assert_eq!(ring.store_label(), "memory");
+        assert!(!ring.restore("empty").unwrap());
+        assert!(ring.get("empty").is_none());
+        assert_eq!(KeyRing::new(Box::new(Failing)).restore("openai").unwrap_err(), "no keyring daemon");
+        let ring = KeyRing::new(Box::new(Failing));
+        assert!(ring.clear("absent").note.is_none());
+        for (os, expected) in [("windows", "Windows Credential Manager"), ("macos", "macOS Keychain"), ("linux", "Secret Service keyring")] {
+            assert_eq!(keychain_label(os), expected);
+        }
+    }
+
+    #[test]
+    fn provider_errors_and_unreadable_responses() {
+        for (status, body, expected) in [
+            (403, r#"{"message":"denied"}"#, "The provider refused the key (403): denied"),
+            (404, r#"{"error":"missing"}"#, "Not found at that address (404). Check the base URL. missing"),
+            (429, r#"{"error":{"message":"quota"}}"#, "Rate limited or out of credit (429): quota"),
+            (500, "broken", "The provider answered 500: broken"),
+            (502, r#"{"error":42}"#, "The provider answered 502: {\"error\":42}"),
+        ] {
+            let response = ureq::Response::new(status, "fixture", body).unwrap();
+            assert_eq!(plain_error(ureq::Error::Status(status, response)), expected);
+        }
+        let body = "é".repeat(170);
+        assert_eq!(plain_error(ureq::Error::Status(503, ureq::Response::new(503, "fixture", &body).unwrap())), format!("The provider answered 503: {}", "é".repeat(160)));
+        for body in [json!({}), json!({"data": null}), json!({"data": []})] {
+            let fx = serve(move |_| Resp::json(200, &body));
+            assert_eq!(test_connection(Wire::OpenAi, &format!("{}/", fx.base), &Secret::new("fixture-key")).unwrap(), "Connected. The key works (0 models visible).");
+        }
+        let fx = serve(|_| Resp::bytes(200, b"not JSON".to_vec()));
+        assert!(test_connection(Wire::OpenAi, &fx.base, &Secret::new("fixture-key")).unwrap_err().starts_with("Unreadable answer: "));
+    }
+
+    #[test]
+    fn os_keychain_adapter_errors_are_isolated_from_real_credentials() {
+        const CHILD: &str = "KIMO_TEST_KEYCHAIN_ADAPTER";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "keys::tests::os_keychain_adapter_errors_are_isolated_from_real_credentials", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(output.status.success(), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        use keyring::credential::{Credential, CredentialApi, CredentialBuilderApi};
+        struct Builder;
+        impl CredentialBuilderApi for Builder {
+            fn build(&self, _: Option<&str>, service: &str, user: &str) -> keyring::Result<Box<Credential>> {
+                assert_eq!(service, "dev.kimo.app");
+                if user == "api-key:construction-error" {
+                    return Err(keyring::Error::Invalid("fixture".into(), "construction".into()));
+                }
+                let credential = keyring::mock::MockCredential::default();
+                if user == "api-key:present" { credential.set_password("  fixture-secret  ").unwrap(); }
+                if user == "api-key:operation-error" {
+                    credential.set_error(keyring::Error::Invalid("fixture".into(), "operation".into()));
+                }
+                Ok(Box::new(credential))
+            }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let builder = Box::new(Builder);
+        assert!(builder.as_any().is::<Builder>());
+        keyring::set_default_credential_builder(builder);
+        let store = OsKeychain;
+        assert_eq!(store.load("present").unwrap().unwrap().expose(), "fixture-secret");
+        assert!(store.load("missing").unwrap().is_none());
+        store.save("present", &Secret::new("new-fixture-secret")).unwrap();
+        store.delete("present").unwrap();
+        store.delete("missing").unwrap();
+        assert!(!store.label().is_empty());
+        for provider in ["construction-error", "operation-error"] {
+            assert!(store.load(provider).unwrap_err().contains("fixture"));
+            assert!(store.save(provider, &Secret::new("fixture-key")).unwrap_err().contains("fixture"));
+            assert!(store.delete(provider).unwrap_err().contains("fixture"));
+        }
+        let ring = KeyRing::new(Box::new(store));
+        ring.set("operation-error", Secret::new("session-secret"), false);
+        assert_eq!(ring.get("operation-error").unwrap().expose(), "session-secret");
+        let cleared = ring.clear("operation-error");
+        assert!(!cleared.set && cleared.hint.is_none() && !cleared.remembered);
+        assert!(cleared.note.unwrap().contains("fixture"));
+        assert!(ring.get("operation-error").is_none());
     }
 }

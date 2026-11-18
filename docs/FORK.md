@@ -73,3 +73,9 @@ Those measurements are inherited evidence from the tested local session, not new
 Fork setup verification (2026-11-18): all six JavaScript regression suites passed under Node 22, both production JS files passed syntax checks, build scripts passed Bash syntax checks, and all 17 original changed/new source files matched the reviewed checkout byte for byte. No new Rust build or full native suite was run during setup.
 
 The subsequent portability commit changes only the buffer test default source path to resolve relative to the test file; the original exact source snapshot remains in the preceding commits. GitHub CI exposed the former Docker-only `/src` assumption.
+
+## API key storage acceptance
+
+Session keys are trimmed and never printed by `Debug`; hints expose only three leading and four trailing characters for keys longer than eight characters. Restoring an absent or empty stored key leaves the session unset. Storage failures preserve a newly supplied session key and report a note; clearing removes the session key even if deleting its persisted copy fails. The OS adapter treats a missing credential as absence and propagates construction and operation errors. Its deterministic tests install the keyring library's mock credential builder only in a dedicated child process, so they never access real credentials. These adapter tests do not certify a live platform keychain service.
+
+Connection tests authenticate only in headers against a localhost fixture, accept missing/non-array model lists as zero visible models, reject unreadable JSON and preserve the HTTP error category. Provider error text is selected from nested error/message, message or error strings, with a 160-character fallback for unstructured bodies. No external provider or user's API key is needed by these tests.

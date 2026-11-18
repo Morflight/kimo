@@ -135,3 +135,38 @@ assert.deepEqual(plain(callRows('validate_captions', {})), []);
 assert.equal(scopeLine('analyze_color', {mean:[0,1,0,0.72],min:[0],max:[1]}), 'analyze_color · mean 0 1 0 · luma 0.72 · range 0–1');
 for (const tool of ['analyze_color','describe_frame','pick_white_balance','pick_key_color','match_color','match_grade']) assert.equal(scopeLine(tool, {}), null, tool);
 console.log('PASS incomplete measurements stay absent and documented empty/default summaries remain explicit');
+const sparseContracts = [
+  ['edit_check', {outside:{changed_pixels:2},allowed_count:1}, [['Changed outside band','2 px','stack']]],
+  ['av_offset', {runner_up_lag_ms:5,runner_up_r:0.2}, [['Runner-up','5 ms · r 0.200','stack']]],
+  ['text_contrast_series', {captions:[],worst_ratio:2,worst_time:1,caption_count:4,captions_crossing_cut:0}, [['Worst ratio','2:1','wrap'],['Worst at','1s','wrap'],['Captions','4','wrap'],['Cross a cut','none','wrap']]],
+  ['text_contrast_series', {captions:[],captions_crossing_cut:5,crossing_cut:[{name:'A'},{name:'B',cut_times:[2]}]}, [['Cross a cut','A, B @ 2s and 2 more','wrap']]],
+  ['text_contrast_series', {captions:[],captions_crossing_cut:1}, [['Captions crossing cut','1'],['Captions','none']]],
+  ['text_contrast_series', {captions:[]}, [['Captions','none']]],
+  ['text_contrast_series', {worst_time:1,threshold:3,frames_below:1,cut_count:0}, [['Worst at','1s','wrap'],['Below bar','1 of ? frames','wrap'],['Cuts','none inside','wrap']]],
+  ['text_contrast_series', {threshold:3,frames_below:1,suggested_fix:'scrim',cut_count:1}, [['Below bar','1 of ? frames · scrim','wrap'],['Cuts','1 inside','wrap']]],
+  ['query_safe_margins', {overlaps:[],worst_edge:'left',worst_edge_px:3}, [['Max outside safe','no safe zone','wrap'],['Max in avoid','no avoid zone','wrap'],['Worst edge','left 3 px','wrap']]],
+  ['query_safe_margins', {estimated:true}, [['Estimated','yes']]],
+  ['saliency_map', {rects:[{mass_frac:0.5}]}, [['In rect 1','50% of the mass','stack']]],
+  ['frozen_frames', {run_count:2,held_frames:1,longest_run:1,runs:[{length:1,start_frame:0,end_frame:0}]}, [['Held','2 runs · 1 held frame','wrap'],['Longest run','1 frames · 0–0','stack']]],
+  ['black_frames', {run_count:1,black_frames:1,longest_run:1,runs:[{length:1,start_frame:0,end_frame:0}],limited_range_suspect:[null,{}, {length:1}]}, [['Black','1 run · 1 black frame','wrap'],['Longest run','1 frames · 0–0','stack'],['Range','no media tag · 1 frame flat at 16/255','wrap']]],
+  ['black_frames', {range_tag:'full'}, [['Range','full','wrap']]],
+  ['focus_series', {rects:[{},{}]}, [['Per rect','2 rects · none inside the frame','wrap']]],
+  ['focus_series', {params:{soft_max:1},soft_runs:[{samples:0},{samples:1}]}, [['Soft','2 runs · 1 frame at lap ≤ 1','wrap']]],
+  ['render_flow', {flow_stats:{mean_u:3,mean_v:4}}, [['Motion','5 px/f']]],
+  ['render_flow', {flow_stats:{moving_frac:0}}, [['Moving','0%']]],
+  ['validate_captions', {clean:true,legibility:{min_cap_frac:0.1}}, [['Captions','clean'],['Min caps','10%']]],
+  ['validate_captions', {clean:true,legibility:{}}, [['Captions','clean']]],
+];
+for (const [tool, result, expected] of sparseContracts) assert.deepEqual(plain(readRows(tool,result)),expected, `${tool} sparse ${JSON.stringify(result)}`);
+assert.deepEqual(plain(readRows('cache_stats', null)), [['Used','0 B of 0 B'],['Hit rate','0%']]);
+assert.deepEqual(plain(callRows('add_text_animator', {fill:'red'})), [['Animator','custom',true],['Fill','red',false]]);
+assert.deepEqual(plain(callRows('add_text_animator', null)), [['Animator','custom',true]]);
+assert.deepEqual(plain(callRows('unknown', null)), []);
+for (const tool of ['pick_white_balance','pick_key_color']) assert.deepEqual(plain(colourRows(tool,{},{})), []);
+assert.deepEqual(plain(colourRows('match_color',{}, {src_mean:[null,1,0],ref_mean:[0]})), [['Match','colour']]);
+assert.deepEqual(plain(colourRows('match_grade',{}, {source_lab_mean:[],reference_lab_mean:null})), [['Match','Lab']]);
+console.log('PASS sparse readouts distinguish missing measurements, zero counts and singular/plural summaries');
+assert.deepEqual(plain(genericRows([NaN])), []);
+assert.deepEqual(plain(genericRows({samples:[NaN],mean:0})), [['Mean','0']]);
+assert.deepEqual(plain(readRows('focus_series',{rects:[{}]})), [['Per rect','1 rect · none inside the frame','wrap']]);
+console.log('PASS invalid-only numeric samples do not produce empty rows');

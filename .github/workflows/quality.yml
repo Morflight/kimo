@@ -147,7 +147,7 @@ jobs:
           $buildTarget = Join-Path $buildDrive.Root 'kimo-coverage-target'
           New-Item -ItemType Directory -Force -Path $buildTarget | Out-Null
           "CARGO_TARGET_DIR=$buildTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Build target $buildTarget; free GiB $([math]::Round($buildDrive.Free / 1GB, 1))
+          Write-Host 'Build target' $buildTarget 'free GiB' ([math]::Round($buildDrive.Free / 1GB, 1))
       - if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
       - shell: bash
