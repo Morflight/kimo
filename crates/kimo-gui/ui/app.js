@@ -70,12 +70,16 @@ export function apply(ev) {
     case 'stats':
       merge(state.stats, ev); delete state.stats.type;
       break;
+    case 'feed_gap':
+      // Preserve transport ordering even when a start is still waiting for paint.
+      if (state._gapAt == null) state._gapAt = performance.now();
+      break;
     case 'tool_start': {
       const m = ev.mode || (state.explicitMode ? null : inferMode(ev.name));
       if (m && MODES[m] && m !== state.mode) { state.mode = m; layoutDirty = true; }
       // the engine runs one call at a time: a new start after a feed drop means a call left 'running' across the gap
       // finished while we could not hear it; its outcome is unknown, so it says so instead of ticking forever
-      if (state._gapAt != null) { for (const x of state.calls) if (x.status === 'running' && x.t < state._gapAt) { x.status = 'lost'; x.dur_ms = null; } state._gapAt = null; }
+      if (state._gapAt != null) { for (const x of state.calls) if (x.status === 'running') { x.status = 'lost'; x.dur_ms = null; } state._gapAt = null; }
       const c = { id: ev.id, name: ev.name, args: ev.args, t: performance.now() - (ev.elapsed_ms || 0), elapsed_ms: ev.elapsed_ms, dur_ms: null, status: 'running', progress: ev.progress };
       const i = state.calls.findIndex(x => x.id === ev.id && ev.id !== undefined);
       if (i >= 0) state.calls[i] = c; else { state.calls.push(c); state.callCount++; }
@@ -687,7 +691,7 @@ async function watchTauriWindow() {
 }
 
 document.fonts.ready.then(() => {
-  connect(enqueue, (kind, label) => { state.status = { kind, label }; if (label === 'reconnecting' && state._gapAt == null) state._gapAt = performance.now(); schedule(); });
+  connect(enqueue, (kind, label) => { state.status = { kind, label }; if (label === 'reconnecting') enqueue({ type: 'feed_gap' }); schedule(); });
   watchTauriWindow();
   schedule();
 });

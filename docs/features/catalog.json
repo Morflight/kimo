@@ -498,20 +498,22 @@
         "crates/kimo-gui/tests/playback_sync_test.mjs",
         "crates/kimo-gui/tests/prepare_ui_test.mjs",
         "crates/kimo-gui/tests/flash_expiry_row_test.py",
-        "crates/kimo-gui/tests/flash_stamps_test.py"
+        "crates/kimo-gui/tests/flash_stamps_test.py",
+        "crates/kimo-gui/tests/spring_test.py",
+        "crates/kimo-gui/tests/timeline_perf_test.py",
+        "crates/kimo-gui/tests/feed_gap_test.py",
+        "crates/kimo-gui/tests/reconnect_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
         "crates/kimo-gui/ui/cov_a.js",
         "crates/kimo-gui/ui/cov_b.js",
-        "crates/kimo-gui/ui/dev/mock-bridge.js",
         "crates/kimo-gui/ui/fix2.js",
         "crates/kimo-gui/ui/modes.js",
         "crates/kimo-gui/ui/panels.js",
         "crates/kimo-gui/ui/project_ops.js",
         "crates/kimo-gui/ui/reads.js",
-        "crates/kimo-gui/ui/router.js",
-        "crates/kimo-gui/ui/studio.js"
+        "crates/kimo-gui/ui/router.js"
       ]
     },
     {
@@ -571,10 +573,25 @@
       "sources": [
         "crates/kimo-gui/ui/playback.js"
       ]
+    },
+    {
+      "id": "studio-shell",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/studio-shell.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/mock_bridge_test.mjs",
+        "crates/kimo-gui/tests/studio_ui_test.py"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/dev/mock-bridge.js",
+        "crates/kimo-gui/ui/studio.js"
+      ]
     }
   ],
   "qualification_blockers": [
-    "Browser end-to-end suite not yet integrated into required CI",
+    "Required browser acceptance is integrated; passing evidence for all cases is still required",
     "Optional native feature combinations and first-party C/C++ coverage not yet qualified",
     "Inline JavaScript and physical audiovisual acceptance not yet qualified"
   ]

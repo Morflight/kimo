@@ -19,6 +19,8 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 
 ## Focused runtime contracts
 
+- [Studio shell and synthetic bridge](studio-shell.md): onboarding, connections, agent events, change history and fixture limits.
+
 - [Editor transient feedback](editor-feedback.md): flash lifetime, expiry repaint and teardown.
 
 - [Editor event transport](event-bridge.md): Tauri/SSE selection, liveness, reconnect backoff and replay limits.

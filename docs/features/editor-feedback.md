@@ -13,3 +13,15 @@ The spectator editor marks changed rows, clips and other affected panels with fl
 The overlap fixture schedules its three events at 250 ms intervals inside the browser. Setup, stamps and deadline snapshots stay in the same JavaScript task sequence so Python/CDP round trips cannot accidentally push the third event beyond the first stamp's 700 ms lifetime. Production duration and assertions remain unchanged. Reads that miss the next expiry window now fail explicitly rather than being treated as unjudged passes. Test frame waits are separate from the app's own animation-frame metric.
 
 This remains a focused contract within the legacy editor area. A passing synthetic Chromium proof does not qualify all editor rendering, browser platforms, native presentation or frame performance.
+
+## Panel transition timing
+
+`spring_test.py` requires panel transitions to settle within 200 ms of the mode event, with at most 0.5 px overshoot/still-node movement, 16.7 ms frame intervals plus the existing 0.5 ms clock tolerance, and no lingering app animation frames or newly created timers. The timing origin is captured in the same browser call that injects the event. Starting from the observer's first sample before a separate Python/CDP event call incorrectly included transport delay in the spring budget. The corrected proof retains every performance limit and rejects samples predating the event. These are measured local-browser limits, not a certification of every workstation.
+
+## Timeline performance proof
+
+`timeline_perf_test.py` measures 1,000 clips over three fresh-page edit runs, with 240 split/move events per run. Event injection and frame collection run in a single browser call at the existing 34 ms cadence, avoiding thousands of Python/CDP round trips. It retains per-frame p95/max <10 ms edit-work assertions, mutation attribution, <=400 DOM elements, names/seams, heap growth, pan and scrub measurements. The enclosing runner deadline is not a performance allowance; reported browser timings remain separate from transport/setup time.
+
+## Interrupted calls
+
+A reconnecting status enters the same ordered queue as tool events. When a subsequent tool start proves the serial engine moved on, any still-running earlier call becomes `lost` with unknown duration. A replayed result can settle it normally. Queued starts from before the rupture must be reduced before the gap marker; comparing their paint-time timestamps to a transport-time timestamp could otherwise leave an interrupted call running forever. The deterministic `feed_gap_test.py` covers this ordering, and the no-replay reconnect proof checks actual EventSource delivery. Calls entirely missed during a gap cannot be reconstructed.

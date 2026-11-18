@@ -5,3 +5,4 @@ cd "$(dirname "$0")/../.."
 bash tools/fork/test-preview.sh
 node --experimental-vm-modules crates/kimo-gui/tests/bridge_test.mjs
 node crates/kimo-gui/tests/playback_lifecycle_test.mjs
+node --experimental-vm-modules crates/kimo-gui/tests/mock_bridge_test.mjs

@@ -26,7 +26,12 @@ const providers = [
 const params = new URLSearchParams(location.search);
 const M = {
   mcp: false, port: null, keys: {}, settings: { mcp_enabled: false, provider: 'openai', models: {}, base_urls: {}, remembered: [], setup_done: params.get('setup') !== 'show' },
-  undo: [], cards: 0, snaps: [],
+  undo: [], cards: 0, snaps: [], changes: [], agentEpoch: 0,
+  cli: [
+    { id: 'claude-code', name: 'Claude Code', plan: 'Synthetic test plan', installed: true, signed_in: true, sign_in_note: 'Signed in (mock)', registered: false, version: 'test' },
+    { id: 'codex', name: 'Codex', plan: 'Synthetic test plan', installed: false, signed_in: false, sign_in_note: 'Not installed', registered: false, install_url: 'https://example.invalid/codex' },
+    { id: 'antigravity', name: 'Antigravity', plan: 'Synthetic test plan', installed: false, signed_in: false, sign_in_note: 'Not installed', registered: false, install_url: 'https://example.invalid/antigravity' },
+  ],
   edit: { caption: 54, warm: 0, cut: false, title: false, sat: 1 }, empty: params.get('project') === 'empty',
   viewerCalls: { frame: 0, draft: 0, stream: 0 }, viewerDelay: 280, failViewer: null, draftNoFrames: false,
   // ?stream=1: the real-time preview commands (preview_start / _update / _frame / _stop) answer; without it they are unknown, like an older app
@@ -137,9 +142,14 @@ const psRestart = (t, rate) => { PS.gen++; PS.t = t; PS.rate = rate ?? PS.rate; 
 let callN = 0;
 async function engineCall(src, name, action, args, change, ms = 260) {
   const id = 'c' + (++callN), t = Date.now();
-  emit('live-event', { source: src, t, ev: { tool_name: action || name, call_id: id, phase: 'start', target: change?.target || {}, payload: { args: { action, args } } } });
+  const external = src.kind === 'external';
+  const actor = src.agent || (src.kind === 'gui' ? 'kimo-chat' : 'you');
+  if (external) emit('external-event', { conn: src.conn, t, ev: { tool_name: action || name, call_id: id, phase: 'start', target: change?.target || {}, payload: { args } } });
+  else emit('live-event', { id, actor, t, tool: name, action, args, summary: JSON.stringify(args), phase: 'start', read_only: !change });
   await sleep(ms);
-  emit('live-event', { source: src, t: Date.now(), ev: { tool_name: action || name, call_id: id, phase: 'complete', target: change?.target || {}, payload: { dur_ms: ms - 40, ...(change?.payload || {}) } } });
+  if (external) emit('external-event', { conn: src.conn, t: Date.now(), ev: { tool_name: action || name, call_id: id, phase: 'complete', target: change?.target || {}, payload: { dur_ms: ms - 40, ...(change?.payload || {}) } } });
+  else emit('live-event', { id, actor, t: Date.now(), tool: name, action, phase: 'end', ok: true, ms, result: 'ok' });
+  return { id, actor, t: Date.now(), tool: name, action, phase: 'end', ok: true, ms, result: 'ok' };
 }
 const applyEdit = a => { const e = M.edit; if (a === 'set_caption_style') e.caption = 72; else if (a === 'ripple_delete') e.cut = true; else if (a === 'set_temperature') e.warm = .12; else e.title = true; };
 const handlers = {
@@ -166,50 +176,74 @@ const handlers = {
     M.mcp = M.settings.mcp_enabled = enabled; M.port = enabled ? 7421 : null;
     return enabled ? { enabled, external_port: 7421, snippets, probe: { ok: true, version: '8.12.1', protocol: '2024-11-05', tools: 17, actions: 540, ms: 41 } } : { enabled };
   },
+  cli_status: () => M.cli,
+  cli_models: () => ({ models: [{ id: 'test-model', label: 'Synthetic model' }], efforts: ['low', 'high'], source: 'synthetic fixture' }),
+  cli_register: ({ id }) => { const a = M.cli.find(a => a.id === id); if (!a?.installed) throw 'agent not installed'; a.registered = true; return 'Added kimo to ' + a.name; },
+  cli_install: ({ id }) => { const a = M.cli.find(a => a.id === id); if (!a) throw 'unknown agent'; a.installed = true; return 'Synthetic installation complete'; },
+  cli_signin: ({ id }) => { const a = M.cli.find(a => a.id === id); if (!a?.installed) throw 'agent not installed'; a.signed_in = true; a.sign_in_note = 'Signed in (mock)'; return a.sign_in_note; },
+  agent_select: ({ agent, model, effort, select }) => {
+    if (agent !== 'api' && !M.cli.some(a => a.id === agent)) throw 'unknown agent';
+    if (select !== false) M.settings.agent = agent;
+    if (model != null) (M.settings.agent_models ??= {})[agent] = model.trim();
+    if (effort != null) (M.settings.agent_efforts ??= {})[agent] = effort.trim();
+  },
+  changes_list: () => M.changes,
   agents_detect: () => M.agents,
   agent_add: async ({ id }) => { const a = M.agents.find(x => x.id === id); a.linked = true; a.linked_command = BIN; return id === 'claude' ? 'Added stdio MCP server kimo to user config' : 'wrote [mcp_servers.kimo] to /home/naman/.codex/config.toml'; },
   key_set: ({ provider, key, remember }) => { M.keys[provider] = key; M.settings.provider = provider; M.settings.remembered = M.settings.remembered.filter(p => p !== provider); if (remember) M.settings.remembered.push(provider); return { provider, set: true, hint: key.slice(0, 3) + '…' + key.slice(-4), remembered: remember, store: 'Secret Service keyring', note: null }; },
   key_clear: ({ provider }) => { delete M.keys[provider]; return { provider, set: false }; },
   key_test: async ({ provider }) => { await sleep(300); if (!M.keys[provider]) throw 'Paste a key first.'; return 'Connected. The key works (54 models visible).'; },
   settings_set: ({ provider, model, baseUrl }) => { M.settings.provider = provider; if (model != null) M.settings.models[provider] = model; if (baseUrl != null) M.settings.base_urls[provider] = baseUrl; },
-  chat_send: async ({ text }) => {
-    if (!M.keys[M.settings.provider]) throw 'Add your OpenAI key in Connections first, or link Claude Code / Codex and edit from there.';
-    const gui = { kind: 'gui' };
-    emit('chat-event', { kind: 'thinking', step: 0 }); await sleep(400);
+  agent_send: async ({ text, turn }) => {
+    const agent = M.settings.agent || 'claude-code';
+    const epoch = M.agentEpoch;
+    const checkStopped = () => { if (epoch !== M.agentEpoch) throw 'Synthetic agent stopped'; };
+    const send = ev => emit('agent-event', { agent, turn, ev });
+    if (agent === 'api' && !M.keys[M.settings.provider]) throw 'Add your OpenAI key in Connections first, or link Claude Code / Codex and edit from there.';
+    const gui = { kind: 'agent', agent: agent === 'api' ? 'kimo-chat' : agent };
+    send({ kind: 'thinking', text: 'Preparing a synthetic edit' }); await sleep(400); checkStopped();
     const plan = /caption/i.test(text) ? [['text', 'set_caption_style', { size: 72, track: 'T1' }, 'Caption size 54 → 72', { target: { track_id: 'T1', param: 'font_size' }, payload: { from: 54, to: 72 } }]]
       : /pause|cut/i.test(text) ? [['audio', 'detect_silence', { from: 11.5, to: 13 }, null], ['timeline', 'ripple_delete', { clip_id: 'v1_c3', start: 12.0, end: 12.8 }, 'Cut 0.8 s pause at 0:12', { target: { track_id: 'V1', clip_id: 'v1_c3' }, payload: { s: 12.0, e: 12.8, ripple: true } }]]
       : [['color_grade', 'set_temperature', { value: 0.12 }, 'Warmer colour', { target: { clip_id: 'v1_c1', param: 'temperature' }, payload: { from: 0, to: 0.12 } }]];
     for (const [tool, action, args, label, change] of plan) {
       const call = 'tc' + (++callN), summary = `${tool} · ${action} · ` + Object.entries(args).map(([k, v]) => `${k}=${v}`).join(', ');
-      emit('chat-event', { kind: 'tool_start', call, tool, args: { action, args }, summary });
-      await engineCall(gui, tool, action, args, change);
+      send({ kind: 'tool_start', id: call, tool, input: { action, args } });
+      const live = await engineCall(gui, tool, action, args, change); checkStopped();
       let card = null;
       if (label) { M.snaps.push(JSON.stringify(M.edit)); applyEdit(action);
-        M.undo.push(label); card = { id: ++M.cards, depth: M.undo.length, label, tool, summary, undone: false }; }
-      emit('chat-event', { kind: 'tool_end', call, tool, ok: true, result: 'ok', card });
+        M.undo.push(label); card = { id: ++M.cards, actor: gui.agent, depth: M.undo.length, steps: 1, t: Date.now(), action, tool, summary: label, undone: false, findings: [] };
+        M.changes.push(card); emit('live-event', { ...live, change: structuredClone(card) }); emit('changes', structuredClone(M.changes)); emit('project-changed', { actor: gui.agent, action }); }
+      send({ kind: 'tool_end', id: call, tool, ok: true, output: 'ok' });
     }
-    emit('chat-event', { kind: 'thinking', step: 1 }); await sleep(300);
+    send({ kind: 'thinking', text: 'Checking the synthetic result' }); await sleep(300);
     const reply = /caption/i.test(text) ? 'Captions are bigger: font size 54 → 72 on the caption track.' : /pause|cut/i.test(text) ? 'Cut the 0.8 s pause at 0:12 and closed the gap.' : 'Warmed the grade slightly (+0.12 temperature).';
-    emit('chat-event', { kind: 'reply', text: reply });
-    return reply;
+    send({ kind: 'done', text: reply });
+    return { reply };
   },
-  chat_undo: async ({ card }) => {
-    await engineCall({ kind: 'gui' }, 'project', 'undo', {}, { payload: {} }, 120);
-    const depth = card; const steps = M.undo.length - depth + 1; M.undo.length = depth - 1;
+  change_undo: async ({ id }) => {
+    const card = M.changes.find(c => c.id === id && !c.undone);
+    if (!card) throw 'change is not undoable';
+    await engineCall({ kind: 'user' }, 'project', 'undo', {}, { payload: {} }, 120);
+    const depth = card.depth; const steps = M.undo.length - depth + 1; M.undo.length = depth - 1;
     M.edit = JSON.parse(M.snaps[depth - 1]); M.snaps.length = depth - 1;
-    return { steps, undone: Array.from({ length: steps }, (_, i) => depth + i) };
+    const undone = M.changes.filter(c => !c.undone && c.depth >= depth);
+    for (const change of undone) change.undone = true;
+    emit('changes', structuredClone(M.changes)); emit('project-changed', { actor: 'you', action: 'undo' });
+    return { steps, undone: undone.map(c => c.id) };
   },
-  chat_reset: () => { M.undo = []; M.cards = 0; },
+  agent_reset: () => null,
+  agent_stop: () => { M.agentEpoch++; return { stopped: true }; },
   project_open: async ({ path }) => { await sleep(200); return 'loaded ' + path; },
   open_spectator: () => null,
-  setup_status: () => ({ done: M.settings.setup_done, parts: M.parts, dir: '/home/naman/.local/share/dev.kimo.app' }),
+  setup_status: () => ({ done: M.settings.setup_done, ready: M.parts.filter(p => !p.optional).every(p => p.installed), parts: M.parts.map(p => ({ ...p, satisfied: p.installed ? 'downloaded' : null })), dir: '/home/naman/.local/share/dev.kimo.app' }),
   setup_start: async () => { for (const p of M.parts) { if (p.installed) continue; for (let d = 0; d <= p.size; d += p.size / 10) { emit('setup-progress', { id: p.id, done: Math.round(d), total: p.size, bytes_per_s: 11.4e6, eta_s: (p.size - d) / 11.4e6, phase: 'downloading', mirror: 0 }); await sleep(30); } p.installed = true; emit('setup-progress', { id: p.id, done: p.size, total: p.size, bytes_per_s: 0, eta_s: 0, phase: 'done', mirror: 0 }); } M.settings.setup_done = true; return { ready: true, results: [] }; },
   setup_pause: () => null,
+  onboarded_set: () => { M.settings.onboarded = true; return null; },
   setup_skip: () => { M.settings.setup_done = true; },
 };
 export const bridge = {
   kind: 'mock',
-  invoke: async (c, a) => { const h = handlers[c]; if (!h) throw 'unknown command ' + c; return h(a || {}); },
+  invoke: async (c, a) => { const h = handlers[c]; if (!h) throw 'unknown command ' + c; return structuredClone(await h(a || {})); },
   listen: (e, f) => { (listeners[e] = listeners[e] || []).push(f); },
 };
 // test/screenshot hooks

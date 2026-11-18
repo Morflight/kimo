@@ -93,7 +93,8 @@ async def main():
             await b.close()
     finally:
         feed.kill(); srv.shutdown(); os.unlink(tf.name)
-    print('RESULT:', 'no call lost across the drop, no stall' if ok else 'FAIL'); return 0 if ok else 1
+    result = 'heard calls accounted for; gap-only calls unavailable, no stale running calls' if A.no_replay else 'no call lost across the drop, no stall'
+    print('RESULT:', result if ok else 'FAIL'); return 0 if ok else 1
 
 if __name__ == '__main__':
     sys.exit(asyncio.run(main()))

@@ -125,6 +125,7 @@ async def main():
         async def edit_run(pg, rnd):
             per = {'split_clip': [], 'move_clip': []}; catch = []
             await pg.evaluate(MUT_ON); await pg.evaluate('() => __watch()')
+            batches = []
             for k in range(A.edits):
                 cid, tid, s, e = clips[rnd.randrange(len(clips))]; n = 'split_clip' if k % 2 == 0 else 'move_clip'
                 if n == 'split_clip':
@@ -133,10 +134,23 @@ async def main():
                 else:
                     to = round(s + .25, 3); ev = {'tool_name': n, 'call_id': f'e{k}', 'phase': 'complete', 'target': {'track_id': tid, 'clip_id': cid}, 'payload': {'dur_ms': 1.0, 'result': {'ok': True}, 'param': 'start', 'from': s, 'to': to, 's': to, 'e': to + (e - s)}}
                     st = {'tool_name': n, 'call_id': f'e{k}', 'phase': 'start', 'target': {'track_id': tid, 'clip_id': cid}, 'payload': {'args': {'clip_id': cid, 'start': to}}}
-                await pg.evaluate('() => { window.__app = []; }')
-                await pg.evaluate('es => { window.__editFr = window.__fr + 1; es.forEach(e => __kimo.apply(e)); }', [st, ev]); await pg.wait_for_timeout(34)
-                app = await pg.evaluate('window.__app')
-                if app: per[n].append(app[0][1]); catch.extend(x[1] for x in app[1:])
+                batches.append([n, st, ev])
+            # Keep the same 34 ms event cadence and per-frame app measurements,
+            # without three Python/CDP round trips for each of 720 edits.
+            measured = await pg.evaluate("""async batches => {
+              const per = {split_clip: [], move_clip: []}, catchUp = [];
+              for (const [name, start, end] of batches) {
+                window.__app = []; window.__editFr = window.__fr + 1;
+                __kimo.apply(start); __kimo.apply(end);
+                await new Promise(resolve => setTimeout(resolve, 34));
+                if (window.__app.length) {
+                  per[name].push(window.__app[0][1]);
+                  catchUp.push(...window.__app.slice(1).map(x => x[1]));
+                }
+              }
+              return {per, catchUp};
+            }""", batches)
+            per, catch = measured['per'], measured['catchUp']
             await pg.evaluate('() => { window.__stop = true; }'); await pg.wait_for_timeout(50)
             doms = [o[1] for o in await pg.evaluate('window.__obs')]
             return per, await pg.evaluate(MUT_OFF), catch, doms
@@ -162,7 +176,8 @@ async def main():
         for r, (per, mut, catch, doms) in enumerate(runs):
             for n, xs in per.items():
                 miss = [round(x, 1) for x in xs if x >= 10]
-                good = pct(xs, 95) < 10 and max(xs or [99]) < 10; ok &= good
+                expected = (A.edits + 1) // 2 if n == 'split_clip' else A.edits // 2
+                good = len(xs) == expected and pct(xs, 95) < 10 and max(xs or [99]) < 10; ok &= good
                 print(f"(d) run {r + 1}/{len(runs)}: GUI processing per {n} on the 1k timeline ({len(xs)} events, reducer + render + DOM write, not engine latency): {tri(xs)} "
                       f"[{'ok' if good else 'MISS'} p95 and max < 10]; frames >= 10 ms: {len(miss)}{' ' + str(miss) if miss else ''}")
             stray = {k: v for k, v in mut['edit'].items() if k not in EDIT_SCOPE | TICKS}

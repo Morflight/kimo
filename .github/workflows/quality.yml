@@ -93,15 +93,24 @@ jobs:
           path: browser-results/
           if-no-files-found: error
   rust:
-    name: rust-coverage (${{ matrix.os }})
+    name: rust-coverage (${{ matrix.os }}, ${{ matrix.scope }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
+        scope: [workspace, desktop]
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Reclaim unused hosted-runner SDK space
+        if: runner.os == 'Linux'
+        run: |
+          # These are preinstalled SDKs unused by this Rust/Chromium job.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          df -h /
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -126,6 +135,7 @@ jobs:
             python3 -m playwright install chromium --only-shell
           fi
       - name: Workspace tests and coverage
+        if: matrix.scope == 'workspace'
         shell: bash
         run: |
           set -euo pipefail
@@ -134,7 +144,7 @@ jobs:
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-cli/ rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-mcp/ rust-workspace.json
       - name: Desktop tests and coverage
-        if: always()
+        if: matrix.scope == 'desktop'
         shell: bash
         run: |
           set -euo pipefail
@@ -143,7 +153,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: rust-coverage-${{ matrix.os }}
+          name: rust-coverage-${{ matrix.os }}-${{ matrix.scope }}
           path: rust-*.json
           if-no-files-found: error
 

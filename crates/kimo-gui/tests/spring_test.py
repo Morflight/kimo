@@ -63,8 +63,10 @@ async def main():
             await pg.evaluate(f"() => __kimo.apply({{type: 'mode', mode: '{a}'}})"); await pg.wait_for_timeout(900)
             await pg.evaluate('() => { window.__app = []; }')
             tm0, tp0 = await pg.evaluate('[window.__tMade, window.__tPend.size]')
-            await pg.evaluate('n => __watch(n)', 50)
-            await pg.evaluate(f"() => __kimo.apply({{type: 'mode', mode: '{z}'}})")
+            # Anchor the promised event-to-settle interval at the event itself.
+            # A separate CDP call after __watch can leave observer frames before
+            # the mode event, incorrectly charging transport latency to the spring.
+            hop_at = await pg.evaluate("mode => { __watch(50); const t = performance.now(); __kimo.apply({type: 'mode', mode}); return t; }", z)
             await pg.wait_for_timeout(1100)
             obs = await pg.evaluate('window.__obs'); app = await pg.evaluate('window.__app')
             # frames while springing: observer frames where any panel carries data-anim
@@ -97,15 +99,16 @@ async def main():
                         if abs(S0[c] - F[c]) < .5: continue
                         past = (v[c] - F[c]) * (-1 if S0[c] > F[c] else 1)   # > 0 means beyond the target
                         if past > over: over, ow = past, k
-            settle = (sp[-1] - obs[0][0]) if sp else 0
+            settle = (sp[-1] - hop_at) if sp else 0
             for k in moved:   # residual (px from the final box) per observed frame, for SPRING_TRACE
-                if k in fin: traces[f'{a}->{z} {k}'] = [[t - obs[0][0], max(abs(o[k][c] - fin[k][c]) for c in range(4))] for t, o, _, _g in obs if k in o and t >= sp[0]]
+                if k in fin: traces[f'{a}->{z} {k}'] = [[t - hop_at, max(abs(o[k][c] - fin[k][c]) for c in range(4))] for t, o, _, _g in obs if k in o and t >= sp[0]]
             pend0 = await pg.evaluate('window.__rafPend.size')
             r0 = await pg.evaluate('window.__appRaf'); await pg.wait_for_timeout(1000); r1 = await pg.evaluate('window.__appRaf')
             tm1, tp1 = await pg.evaluate('[window.__tMade, window.__tPend.size]')
             hop_timers = tm1 - tm0   # every timer made in the hop window except the header's session clock (armTicker)
             allint += ints; allwork += work; settles.append(settle); overs.append(over)
             fail = []
+            if settle < 0: fail.append('spring samples predate the hop event')
             if settle > 200: fail.append(f'settle {settle:.0f} > 200 ms')
             if over > .5: fail.append(f'overshoot {over:.2f} px ({ow})')
             if ints and max(ints) > 16.7 + .5: fail.append(f'frame interval {max(ints):.1f} > 16.7 ms')

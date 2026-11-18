@@ -1329,7 +1329,7 @@ function onProgress(p) {
   if (p.phase === 'system') { el.classList.add('done'); el.querySelector('.st').textContent = 'Using the copy already on this computer'; el.querySelector('.bar i').style.width = '100%'; return; }
   if (p.phase === 'error' || p.phase === 'unavailable') { el.querySelector('.st').textContent = p.error || 'Not available'; return; }
   if (p.total) el.querySelector('.bar i').style.width = (100 * p.done / p.total).toFixed(1) + '%';
-  el.querySelector('.spd').textContent = p.bps ? (p.bps / 1e6).toFixed(1) + ' MB/s' : '';
+  el.querySelector('.spd').textContent = p.bytes_per_s ? (p.bytes_per_s / 1e6).toFixed(1) + ' MB/s' : '';
   if (p.phase === 'done' || p.phase === 'verified') { el.classList.add('done'); el.querySelector('.st').textContent = 'Installed'; el.querySelector('.spd').textContent = ''; }
 }
 $('#setup-go').onclick = async () => {
