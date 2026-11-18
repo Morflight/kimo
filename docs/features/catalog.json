@@ -462,8 +462,6 @@
         "crates/kimo-gui/tests/playback_delivery_test.mjs"
       ],
       "sources": [
-        "crates/kimo-gui/src/agent.rs",
-        "crates/kimo-gui/src/agents.rs",
         "crates/kimo-gui/src/bridge.rs",
         "crates/kimo-gui/src/cli_agents.rs",
         "crates/kimo-gui/src/crash.rs",
@@ -473,9 +471,7 @@
         "crates/kimo-gui/src/ledger.rs",
         "crates/kimo-gui/src/lib.rs",
         "crates/kimo-gui/src/main.rs",
-        "crates/kimo-gui/src/mcp_config.rs",
         "crates/kimo-gui/src/recovery.rs",
-        "crates/kimo-gui/src/settings.rs",
         "crates/kimo-gui/src/system.rs",
         "crates/kimo-gui/src/telemetry.rs",
         "crates/kimo-gui/src/testutil.rs",
@@ -502,17 +498,16 @@
         "crates/kimo-gui/tests/spring_test.py",
         "crates/kimo-gui/tests/timeline_perf_test.py",
         "crates/kimo-gui/tests/feed_gap_test.py",
-        "crates/kimo-gui/tests/reconnect_test.py"
+        "crates/kimo-gui/tests/reconnect_test.py",
+        "crates/kimo-gui/tests/flash_edit_scope_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
         "crates/kimo-gui/ui/cov_a.js",
         "crates/kimo-gui/ui/cov_b.js",
         "crates/kimo-gui/ui/fix2.js",
-        "crates/kimo-gui/ui/modes.js",
         "crates/kimo-gui/ui/panels.js",
         "crates/kimo-gui/ui/project_ops.js",
-        "crates/kimo-gui/ui/reads.js",
         "crates/kimo-gui/ui/router.js"
       ]
     },
@@ -587,6 +582,86 @@
       "sources": [
         "crates/kimo-gui/ui/dev/mock-bridge.js",
         "crates/kimo-gui/ui/studio.js"
+      ]
+    },
+    {
+      "id": "desktop-settings",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/desktop-settings.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/src/settings.rs"
+      ],
+      "sources": [
+        "crates/kimo-gui/src/settings.rs"
+      ]
+    },
+    {
+      "id": "api-agent",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/api-agent.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/src/agent.rs"
+      ],
+      "sources": [
+        "crates/kimo-gui/src/agent.rs"
+      ]
+    },
+    {
+      "id": "mode-routing",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/mode-routing.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/modes_test.mjs"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/modes.js"
+      ]
+    },
+    {
+      "id": "read-formatting",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/read-formatting.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/read_format_test.mjs",
+        "crates/kimo-gui/tests/scopes_row_test.py",
+        "crates/kimo-gui/tests/caption_legibility_row_test.py"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/reads.js"
+      ]
+    },
+    {
+      "id": "mcp-client-configuration",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/mcp-client-configuration.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/src/mcp_config.rs"
+      ],
+      "sources": [
+        "crates/kimo-gui/src/mcp_config.rs"
+      ]
+    },
+    {
+      "id": "agent-client-linking",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/agent-client-linking.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/src/agents.rs"
+      ],
+      "sources": [
+        "crates/kimo-gui/src/agents.rs"
       ]
     }
   ],

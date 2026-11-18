@@ -25,6 +25,24 @@ class BrowserRunner(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'inventory'):
                 runner.cases()
 
+    def test_coverage_suite_wraps_functional_proofs_without_changing_acceptance(self):
+        cases = runner.coverage_cases('raw')
+        names = {row[0] for row in cases}
+        self.assertIn('cov_c_test', names)
+        self.assertIn('av_offset_row_test', names)
+        self.assertNotIn('timeline_perf_test', names)
+        self.assertIn('timeline_perf_test', {row[0] for row in runner.cases()})
+        for name, script, args, env, kind in cases:
+            self.assertEqual(script, runner.ROOT / 'tools/quality/browser_coverage.py')
+            self.assertEqual(args[:2], ['--output', str(Path('raw').resolve())])
+            self.assertTrue(Path(args[2]).is_file())
+        with patch.object(sys, 'argv', ['runner', '--output', 'logs', '--coverage-output', 'raw']), \
+             patch.object(runner, 'coverage_cases', return_value=['instrumented']) as select, \
+             patch.object(runner, 'run', return_value=False) as run:
+            self.assertFalse(runner.main())
+        select.assert_called_once_with('raw')
+        run.assert_called_once_with(['instrumented'], 'logs', 300)
+
     def test_records_failures_and_keeps_running_without_screenshots(self):
         child = MagicMock()
         codes = iter([0, 1, 0])

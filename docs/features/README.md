@@ -19,6 +19,13 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 
 ## Focused runtime contracts
 
+- [Agent client linking](agent-client-linking.md): read-only discovery and explicit registration failure handling.
+
+- [MCP client configuration](mcp-client-configuration.md): launch arguments, copyable commands, JSON and TOML escaping.
+
+- [API editing agent](api-agent.md): provider envelopes, tool history, errors and step limits.
+- [Desktop preferences](desktop-settings.md): defaults, persistence, recent paths and write failures.
+
 - [Studio shell and synthetic bridge](studio-shell.md): onboarding, connections, agent events, change history and fixture limits.
 
 - [Editor transient feedback](editor-feedback.md): flash lifetime, expiry repaint and teardown.

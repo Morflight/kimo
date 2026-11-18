@@ -1,0 +1,7 @@
+# Agent client linking
+
+Detection reads Claude and Codex configuration and searches PATH for their CLIs. It does not run a CLI or modify configuration. Claude detection accepts user-level and project-level MCP entries, preferring the user-level entry. An existing entry without a string command is still linked and reports an empty command. Codex detection is a limited table/line scanner, not a general TOML parser; malformed or unsupported syntax is not qualified.
+
+Explicit registration writes a Codex table only when none already exists. Existing nonempty text is copied to a `.toml.bak` file before appending; missing parent directories are created. Write and directory failures return errors. This is not atomic replacement. Claude registration invokes the supplied executable directly with argv and closed stdin, combines stdout/stderr, and returns an error on launch failure or unsuccessful exit. Empty failure output is replaced with the exit status.
+
+Tests cover user/project precedence, missing commands, quoted and literal paths, unrelated tables, new and existing configurations, backup preservation, duplicate refusal, blocked parent/backup/destination paths and CLI launch failure. Unix tests additionally check executable permission filtering, literal argv delivery and unsuccessful subprocess diagnostics. Windows subprocess parity, full environment discovery and complete coverage remain unverified.

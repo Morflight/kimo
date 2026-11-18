@@ -425,7 +425,11 @@ function armFlashEnd(e, whole) {
   flashTo = setTimeout(flashExpired, Math.max(0, Math.ceil(e - performance.now())));
 }
 function flashExpired() {
-  flashTo = 0; flashAt = Infinity; metrics.flashEnds++; dirty = true;
+  flashTo = 0; flashAt = Infinity; metrics.flashEnds++;
+  // An expiry must not promote a queued clip-only edit to a full repaint.
+  // Its remaining panels catch up on the already-owed non-edit frame.
+  if (rafId && !dirty && queue.length && queue.every(isClipEdit)) { deferred.on = true; return; }
+  dirty = true;
   if (rafId || hidden) return;
   freezeNow(performance.now());
   try { dirty = false; deferred.on = false; panDirty.clear(); render(); metrics.renders++; } finally { freezeNow(0); }

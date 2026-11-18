@@ -151,7 +151,10 @@ impl Chat {
         for step in 0..MAX_STEPS {
             emit(Event::Thinking { step });
             let v = match llm.send(&llm.body(&self.items, &list)) { Ok(v) => v, Err(e) => { emit(Event::Error { message: e.clone() }); self.items.pop_if_dangling(); return Err(e); } };
-            let (reply, calls) = llm.parse(&v)?;
+            let (reply, calls) = match llm.parse(&v) {
+                Ok(parsed) => parsed,
+                Err(e) => { emit(Event::Error { message: e.clone() }); self.items.pop_if_dangling(); return Err(e); }
+            };
             self.items.push(Item::Assistant { text: reply.clone(), calls: calls.clone() });
             if calls.is_empty() {
                 emit(Event::Reply { text: reply.clone() });
@@ -175,11 +178,15 @@ impl Chat {
     fn card_if_changed(&mut self, tools: &dyn Tools, before: Option<usize>, tool: &str, summary: &str) -> Option<Card> {
         let (after, label) = history(tools)?;
         if after <= before.unwrap_or(after) { return None; }
-        // anything at or past this depth from an earlier branch was replaced by this new change
-        for c in self.cards.iter_mut() { if c.depth >= after && !c.undone { c.undone = true; } }
-        let card = Card { id: self.cards.len() + 1, depth: after, label: label.unwrap_or_else(|| tool.to_string()), tool: tool.to_string(), summary: summary.to_string(), undone: false };
+        Some(self.record_card(after, label, tool, summary))
+    }
+
+    fn record_card(&mut self, depth: usize, label: Option<String>, tool: &str, summary: &str) -> Card {
+        // Anything at or past this depth from an earlier branch was replaced.
+        for c in self.cards.iter_mut() { if c.depth >= depth && !c.undone { c.undone = true; } }
+        let card = Card { id: self.cards.len() + 1, depth, label: label.unwrap_or_else(|| tool.to_string()), tool: tool.to_string(), summary: summary.to_string(), undone: false };
         self.cards.push(card.clone());
-        Some(card)
+        card
     }
 
     /// Undo one card: the engine's history is linear, so undoing a card also undoes every later live change.
@@ -315,4 +322,162 @@ mod tests {
         assert_eq!(summarize("timeline", &json!({"action":"split_clip","args":{"clip_id":"c1","at":12.5}})), "timeline · split_clip · at=12.5, clip_id=c1");
         assert_eq!(summarize("search_tools", &json!({})), "search_tools");
     }
+    struct Replies { history: Result<Value, String>, undo: Result<Value, String> }
+    impl Tools for Replies {
+        fn list(&self) -> Vec<Value> { vec![] }
+        fn call(&self, _: &str, args: &Value) -> Result<Value, String> {
+            if args["action"] == "history_list" { self.history.clone() } else { self.undo.clone() }
+        }
+    }
+    fn history_reply(value: Value) -> Replies {
+        Replies { history: Ok(json!({"content":[{"type":"text","text":value.to_string()}]})), undo: Ok(json!({"content":[]})) }
+    }
+    #[test]
+    fn history_requires_readable_undo_and_accepts_legacy_labels() {
+        for value in [json!({}), json!({"undo":null}), json!({"undo":3})] {
+            assert_eq!(history(&history_reply(value)), None);
+        }
+        for reply in [Err("offline".into()), Ok(json!({"isError":true})), Ok(json!({"content":[{"type":"text","text":"not json"}]}))] {
+            assert_eq!(history(&Replies {history: reply, undo: Ok(json!({}))}), None);
+        }
+        assert_eq!(history(&history_reply(json!({"undo":[]}))), Some((0, None)));
+        for (entry, label) in [(json!("caption"), "caption"), (json!({"label":"cut","tool":"ignored"}), "cut"),
+                               (json!({"tool":"split"}), "split"), (json!({}), "change")] {
+            assert_eq!(history(&history_reply(json!({"undo":[entry]}))), Some((1, Some(label.into()))));
+        }
+    }
+    #[test]
+    fn undo_errors_leave_the_ledger_intact_and_branching_invalidates_old_cards() {
+        let mut chat = Chat::default();
+        assert_eq!(chat.undo(&history_reply(json!({"undo":[]})), 99).unwrap_err(), "no such change");
+        let tools = history_reply(json!({"undo":["first"]}));
+        assert!(chat.card_if_changed(&tools, None, "text", "caption").is_none());
+        chat.card_if_changed(&tools, Some(0), "text", "caption").unwrap();
+        chat.card_if_changed(&tools, Some(0), "text", "replacement").unwrap();
+        assert!(chat.cards[0].undone); assert!(!chat.cards[1].undone);
+        for (reply, error) in [(history_reply(json!({})), "could not read"),
+                               (history_reply(json!({"undo":[]})), "already undone")] {
+            assert!(chat.undo(&reply, 2).unwrap_err().contains(error));
+            assert!(!chat.cards[1].undone);
+        }
+        let mut tools = tools;
+        tools.undo = Err("engine disconnected".into());
+        assert_eq!(chat.undo(&tools, 2).unwrap_err(), "engine disconnected");
+        tools.undo = Ok(json!({"isError":true,"content":[{"type":"text","text":"undo refused"}]}));
+        assert_eq!(chat.undo(&tools, 2).unwrap_err(), "undo refused");
+        assert!(!chat.cards[1].undone);
+    }
+    #[test]
+    fn summaries_and_clipping_preserve_unicode_boundaries() {
+        let long = "é".repeat(40);
+        assert_eq!(clip(&long, 3), "ééé… [cut at 3 chars]");
+        assert_eq!(clip("éé", 2), "éé");
+        let summary = summarize("tool", &json!({"args":{"a":long,"b":true,"c":2,"d":null,"e":"omitted"}}));
+        assert!(summary.contains(&format!("a={}…", "é".repeat(27))));
+        assert!(summary.contains("b=true")); assert!(!summary.contains("omitted"));
+        assert_eq!(summarize("tool", &json!({"action":"inspect"})), "tool · inspect");
+        assert_eq!(summarize("tool", &json!([])), "tool");
+    }
+    #[test]
+    fn provider_parsers_reject_missing_envelopes_and_default_optional_tool_fields() {
+        let mut llm = Llm {wire: Wire::OpenAi, base_url: String::new(), model: "m".into(), key: Secret::new("synthetic")};
+        assert!(llm.parse(&json!({})).unwrap_err().contains("no message"));
+        let (text, calls) = llm.parse(&json!({"choices":[{"message":{"tool_calls":[{"function":{"arguments":"bad"}}, {}]}}]})).unwrap();
+        assert_eq!(text, ""); assert_eq!(calls, vec![("call".into(), "".into(), json!({})); 2]);
+        llm.wire = Wire::Anthropic;
+        assert!(llm.parse(&json!({})).unwrap_err().contains("no content"));
+        let (text, calls) = llm.parse(&json!({"content":[{"type":"text","text":"one"},{"type":"text"},{"type":"text","text":"two"},{"type":"tool_use"}]})).unwrap();
+        assert_eq!(text, "one\ntwo"); assert_eq!(calls, vec![("".into(), "".into(), json!({}))]);
+    }
+    #[test]
+    fn anthropic_batches_consecutive_tool_results_without_merging_plain_user_text() {
+        let llm = Llm {wire: Wire::Anthropic, base_url: String::new(), model: "m".into(), key: Secret::new("synthetic")};
+        let items = vec![Item::User("request".into()),
+            Item::Assistant {text: "checking".into(), calls: vec![("a".into(), "tool".into(), json!({}))]},
+            Item::Result {id:"a".into(), text:"ok".into(), error:false}, Item::Result {id:"b".into(), text:"failed".into(), error:true}];
+        let body = llm.body(&items, &[json!({"name":"tool"})]);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(body["messages"][1]["content"][0]["text"], "checking");
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(body["messages"][2]["content"][1]["is_error"], true);
+        assert_eq!(body["tools"][0]["input_schema"], json!({"type":"object"}));
+    }
+    #[test]
+    fn endless_tool_requests_stop_at_the_step_limit() {
+        let fx = serve(|_| Resp::json(200, &json!({"choices":[{"message":{"tool_calls":[{"id":"again","function":{"name":"text","arguments":"{\"action\":\"set_caption_style\"}"}}]}}]})));
+        let llm = Llm {wire:Wire::OpenAi, base_url:fx.base.clone(), model:"m".into(), key:Secret::new("synthetic")};
+        let mut chat = Chat::default(); let mut steps = vec![];
+        let reply = chat.send(&llm, &FakeEngine::default(), "edit", &mut |event| {
+            if let Event::Thinking {step} = event { steps.push(step); }
+        }).unwrap();
+        assert_eq!(steps, (0..MAX_STEPS).collect::<Vec<_>>());
+        assert_eq!(chat.cards.len(), MAX_STEPS);
+        assert_eq!(reply, format!("Stopped after {MAX_STEPS} steps. Ask again to continue."));
+        assert_eq!(fx.log.lock().unwrap().len(), MAX_STEPS);
+    }
+
+    #[test]
+    fn provider_decode_and_envelope_errors_emit_failure_and_remove_the_unanswered_turn() {
+        for body in [b"not json".to_vec(), b"{}".to_vec()] {
+            let fx = serve(move |_| Resp::bytes(200, body.clone()));
+            let llm = Llm {wire:Wire::OpenAi, base_url:fx.base.clone(), model:"m".into(), key:Secret::new("synthetic")};
+            let mut chat = Chat::default(); let mut errors = vec![];
+            let result = chat.send(&llm, &history_reply(json!({"undo":[]})), "request", &mut |e| {
+                if let Event::Error {message} = e { errors.push(message); }
+            });
+            assert_eq!(errors, vec![result.unwrap_err()]);
+            assert!(chat.items.is_empty()); assert!(chat.cards.is_empty());
+        }
+    }
+    #[test]
+    fn completed_assistant_text_is_preserved_in_both_wire_formats() {
+        let mut llm = Llm {wire:Wire::OpenAi, base_url:String::new(), model:"m".into(), key:Secret::new("synthetic")};
+        let items = vec![Item::Assistant {text:"completed".into(), calls:vec![]}];
+        let body = llm.body(&items, &[]);
+        assert_eq!(body["messages"][1]["content"], "completed");
+        assert!(body["messages"][1].get("tool_calls").is_none());
+        llm.wire = Wire::Anthropic;
+        let body = llm.body(&[Item::Assistant {text:String::new(), calls:vec![]}], &[]);
+        assert_eq!(body["messages"][0]["content"], json!([]));
+    }
+    #[test]
+    fn tool_transport_and_engine_errors_do_not_create_change_cards() {
+        for disconnected in [false, true] {
+            let turn = Mutex::new(0);
+            let fx = serve(move |r| {
+                let mut turn = turn.lock().unwrap(); *turn += 1;
+                if *turn == 1 {
+                    Resp::json(200, &json!({"choices":[{"message":{"tool_calls":[{"id":"failed-call","function":{"name":"unknown","arguments":"{}"}}]}}]}))
+                } else {
+                    let body: Value = serde_json::from_str(&r.body).unwrap();
+                    assert_eq!(body["messages"].as_array().unwrap().last().unwrap()["content"], if disconnected {"transport refused"} else {"unknown"});
+                    Resp::json(200, &json!({"choices":[{"message":{"content":"Cannot apply this edit."}}]}))
+                }
+            });
+            let llm = Llm {wire:Wire::OpenAi, base_url:fx.base.clone(), model:"m".into(), key:Secret::new("synthetic")};
+            let engine: Box<dyn Tools> = if disconnected {Box::new(Replies {history:history_reply(json!({"undo":[]})).history, undo:Err("transport refused".into())})} else {Box::new(FakeEngine::default())};
+            let mut chat = Chat::default(); let mut failures = 0;
+            assert_eq!(chat.send(&llm, engine.as_ref(), "edit", &mut |e| {
+                if let Event::ToolEnd {ok, card, ..} = e { assert!(!ok); assert!(card.is_none()); failures += 1; }
+            }).unwrap(), "Cannot apply this edit.");
+            assert_eq!(failures, 1); assert!(chat.cards.is_empty());
+        }
+    }
+    #[test]
+    fn optional_card_labels_and_partial_undo_preserve_earlier_changes() {
+        let mut chat = Chat::default();
+        assert!(chat.card_if_changed(&history_reply(json!({})), Some(0), "text", "edit").is_none());
+        let first = chat.record_card(1, None, "text", "caption");
+        assert_eq!(first.label, "text");
+        chat.record_card(2, Some("cut".into()), "timeline", "cut");
+        let tools = history_reply(json!({"undo":["caption", "cut"]}));
+        assert_eq!(chat.undo(&tools, 2).unwrap(), (1, vec![2]));
+        assert!(!chat.cards[0].undone); assert!(chat.cards[1].undone);
+        chat.record_card(2, Some("replacement".into()), "timeline", "replace");
+        assert!(!chat.cards[0].undone); assert!(chat.cards[1].undone); assert!(!chat.cards[2].undone);
+        let mut items = vec![Item::Result {id:"call".into(), text:"result".into(), error:false}];
+        items.pop_if_dangling(); assert_eq!(items.len(), 1);
+        items.clear(); items.pop_if_dangling(); assert!(items.is_empty());
+    }
+
 }

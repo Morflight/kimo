@@ -221,4 +221,58 @@ mod tests {
         assert_eq!(v["env"]["K"], "v w");
         let _ = std::fs::remove_dir_all(&d);
     }
+    #[test]
+    fn configuration_detection_handles_missing_commands_and_literal_strings() {
+        for text in [r#"{"mcpServers":{"kimo":{}}}"#, r#"{"mcpServers":{"kimo":{"command":42}}}"#] {
+            assert_eq!(claude_entry(text), Some(String::new()));
+        }
+        assert_eq!(claude_entry(r#"{"projects":[]}"#), None);
+        assert_eq!(claude_entry(r#"{"projects":{"a":{},"b":{"mcpServers":{"kimo":{"command":"local"}}}}}"#).as_deref(), Some("local"));
+        assert_eq!(codex_entry("[mcp_servers.\"kimo\"]\ncommand = 'literal/path'\n[other]\ncommand = 'other'" ).as_deref(), Some("literal/path"));
+        assert_eq!(codex_entry("[mcp_servers.kimo]\ncommand_extra = 'x'\nargs=[]"), Some(String::new()));
+        assert_eq!(codex_entry("[mcp_servers.kimo]\ncommand = bare" ).as_deref(), Some("bare"));
+        assert_eq!(unquote_toml("\"unterminated"), "\"unterminated");
+        assert_eq!(unquote_toml("'unterminated"), "'unterminated");
+    }
+    #[test]
+    fn codex_add_creation_newline_and_io_errors() {
+        let d = tmp("codex-errors");
+        let l = Launch { command: "engine".into(), args: vec![], env: vec![] };
+        let cfg = d.join("fresh/config.toml");
+        add_codex(&cfg, &l).unwrap();
+        assert!(std::fs::read_to_string(&cfg).unwrap().starts_with("# added by kimo GUI\n"));
+        assert!(!cfg.with_extension("toml.bak").exists());
+        std::fs::write(&cfg, "model='x'\n").unwrap();
+        add_codex(&cfg, &l).unwrap();
+        assert!(std::fs::read_to_string(&cfg).unwrap().starts_with("model='x'\n\n#"));
+        let blocker = d.join("file");
+        std::fs::write(&blocker, "keep").unwrap();
+        assert!(add_codex(&blocker.join("config.toml"), &l).is_err());
+        let blocked = d.join("blocked.toml");
+        std::fs::write(&blocked, "model='original'").unwrap();
+        std::fs::create_dir(blocked.with_extension("toml.bak")).unwrap();
+        assert!(add_codex(&blocked, &l).is_err());
+        assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "model='original'");
+        assert!(add_codex(&d, &l).is_err());
+        assert!(add_codex(Path::new(""), &l).is_err());
+        assert!(add_claude(&d.join("absent-cli"), &l).is_err());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_claude_registration_returns_diagnostics_or_exit_status() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("claude-errors");
+        let cli = d.join("claude");
+        let l = Launch { command: "engine".into(), args: vec![], env: vec![] };
+        for (body, expected) in [("printf out; printf err >&2; exit 7", "outerr"), ("exit 8", "claude exited with")] {
+            std::fs::write(&cli, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(add_claude(&cli, &l).unwrap_err().contains(expected));
+        }
+        assert_eq!(which_in("absent", ":", Some(";.EXE;;.CMD")), None);
+        assert_eq!(which_in("claude", d.to_str().unwrap(), Some(";.EXE;;")), Some(cli));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
 }

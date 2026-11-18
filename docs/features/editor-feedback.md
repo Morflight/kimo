@@ -25,3 +25,5 @@ This remains a focused contract within the legacy editor area. A passing synthet
 ## Interrupted calls
 
 A reconnecting status enters the same ordered queue as tool events. When a subsequent tool start proves the serial engine moved on, any still-running earlier call becomes `lost` with unknown duration. A replayed result can settle it normally. Queued starts from before the rupture must be reduced before the gap marker; comparing their paint-time timestamps to a transport-time timestamp could otherwise leave an interrupted call running forever. The deterministic `feed_gap_test.py` covers this ordering, and the no-replay reconnect proof checks actual EventSource delivery. Calls entirely missed during a gap cannot be reconstructed.
+
+A flash expiry arriving while a clip-only frame is queued preserves that frame's timeline/rail-only paint. Other expired panels are refreshed by the following deferred frame. `flash_edit_scope_test.py` holds and then delivers a real expiry callback at this interleaving, verifies the scoped repaint counter and unchanged header during the edit, then verifies the header catches up. The full timeline performance limits remain unchanged.

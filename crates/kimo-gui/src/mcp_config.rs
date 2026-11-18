@@ -190,4 +190,36 @@ mod tests {
         assert_eq!(win_quote(r#"a "b""#), r#""a ""b""""#);
         assert_eq!(toml_str("a\"b\\c"), r#""a\"b\\c""#);
     }
+    #[test]
+    fn complete_snippets_preserve_launch_and_client_configuration() {
+        for (launch, windows) in [(win(), true), (nix(), false)] {
+            let bundle = snippets(&launch, windows);
+            assert_eq!(bundle.launch, launch);
+            let decoded: Value = serde_json::from_str(&bundle.json).unwrap();
+            assert_eq!(decoded, mcp_servers_json(&launch));
+            assert_eq!(bundle.claude_add, claude_add_command(&launch, windows));
+            assert_eq!(bundle.codex_add, codex_add_command(&launch, windows));
+            assert_eq!(bundle.codex_toml, codex_toml(&launch));
+            assert_eq!(bundle.claude_doc, CLAUDE_DOC);
+            assert_eq!(bundle.codex_doc, CODEX_DOC);
+            assert!(bundle.claude_add_json.starts_with("claude mcp add-json --scope user kimo "));
+            assert!(bundle.claude_add_json.contains("stdio"));
+            let serialized = serde_json::to_value(&bundle).unwrap();
+            assert_eq!(serialized["launch"]["command"], launch.command);
+        }
+    }
+    #[test]
+    fn controls_and_non_bare_keys_are_escaped_in_toml() {
+        assert_eq!(toml_str("\n\t\r\0é"), "\"\\n\\t\\u000D\\u0000é\"");
+        assert_eq!(toml_key(""), "\"\"");
+        assert_eq!(toml_key("a b"), "\"a b\"");
+        assert_eq!(toml_key("a_b-c9"), "a_b-c9");
+        assert_eq!(win_quote(""), "\"\"");
+        assert_eq!(win_quote("safe.exe"), "safe.exe");
+        let launch = Launch { command: "engine".into(), args: vec!["a b".into()],
+            env: vec![("a b".into(), "x\ny".into())] };
+        assert_eq!(codex_add_command(&launch, false), "codex mcp add kimo --env 'a b=x\ny' -- engine 'a b'");
+        assert_eq!(codex_toml(&launch), "[mcp_servers.kimo]\ncommand = \"engine\"\nargs = [\"a b\"]\nenv = { \"a b\" = \"x\\ny\" }\n");
+    }
+
 }

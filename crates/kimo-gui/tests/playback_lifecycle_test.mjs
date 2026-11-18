@@ -219,4 +219,49 @@ await test('preparation engine errors skip readiness and release the failed sess
   assert.equal(warm.at(-1), 'skipped'); assert.equal(h.p.started, false);
   assert.equal(h.calls.at(-1).command, 'preview_stop'); assert.equal(h.errors[0], 'cannot prepare');
 });
+await test('play adopts an in-flight preparation at the same playhead without stopping its session', async () => {
+  const response = deferred(), warm = [];
+  const h = harness({ invoke: async command => command === 'preview_start' ? response.promise : {gen: 4, audio_on: false} });
+  h.o.onWarm = state => warm.push(state);
+  const preparation = h.p.prepare(2); await settle();
+  const play = h.p.play(2); response.resolve({gen: 4, audio_on: false});
+  await preparation; assert.equal(await play, true);
+  assert.ok(warm.includes('playing')); assert.equal(h.p.playing, true);
+  assert.equal(h.calls.filter(c => c.command === 'preview_start').length, 1);
+  assert.equal(h.calls.filter(c => c.command === 'preview_stop').length, 0);
+  h.p.pause();
+});
+await test('a changed generation re-buffers active playback and ingests its audio chunks', async () => {
+  const h = harness(); const p = h.p;
+  p.ctx = {decodeAudioData: async () => ({duration: 1}), state: 'running', currentTime: 1};
+  await p.play(0); const old = h.makeBitmap(); p.frames.set(0, {bmp: old});
+  p.take({gen: 9, audio_on: true, audio: [{name: 'generation-9', url: 'chunk', start: 0, end: 1, audible: false}]});
+  await settle();
+  assert.equal(old.closed, 1); assert.equal(p.gen, 9); assert.equal(p.buffering, true);
+  assert.equal(p.chunks.get('generation-9').buf.duration, 1);
+  assert.equal(h.states.at(-1)[0], 'buffering'); p.pause();
+});
+await test('a successful audio resume unlocks the device clock for playback', async () => {
+  let resumes = 0;
+  class Audio { constructor() { this.state = 'suspended'; this.currentTime = 1; } async resume() { resumes++; this.state = 'running'; } }
+  const h = harness({audio: {AudioContext: Audio}, invoke: async () => ({gen: 1, audio_on: true})});
+  assert.equal(await h.p.play(0), true); assert.equal(resumes, 1);
+  assert.equal(h.p.ctx.state, 'running'); assert.equal(h.p.nowS(), 1); h.p.pause();
+});
+await test('callbacks already dispatched before pause or rebuffer cannot restart the clock', async () => {
+  const h = harness(); await h.p.play(0);
+  const waiting = [...h.raf.values()].at(-1); h.p.pause();
+  const states = h.states.length; waiting();
+  assert.equal(h.p.playing, false); assert.equal(h.p.clock, null); assert.equal(h.states.length, states);
+  h.p.playing = true; h.p.go(); const ticking = [...h.raf.values()].at(-1);
+  h.p.rebuffer(); ticking(); assert.equal(h.p.buffering, true); assert.equal(h.p.clock, null);
+  h.p.pause(); ticking(); assert.equal(h.p.playing, false); assert.equal(h.raf.size, 0);
+});
+await test('shuttle statistics remain readable when session metadata is unavailable', async () => {
+  const h = harness(); h.p.rate = 2; h.p.info = null;
+  const stats = h.p.stats();
+  assert.equal(stats.rate, 2); assert.equal(stats.audio, false);
+  assert.equal(stats.render_fps, 0); assert.equal(stats.buffered, 0);
+  assert.equal(stats.size, ''); assert.equal(stats.proxies, 0); assert.equal(stats.skip, 1);
+});
 console.log(`${count} lifecycle cases passed`);

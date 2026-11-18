@@ -25,6 +25,19 @@ def cases():
     return result
 
 
+def coverage_cases(output):
+    # Additional instrumented functional run. The separate acceptance job still
+    # runs EVERY case, including timing proofs, without profiler overhead.
+    functional = {'cov_a_test', 'cov_b_test', 'cov_c_test', 'router_test',
+                  'studio_ui_test', 'studio_ui_dark', 'playback_ui_test',
+                  'preview_rev_test', 'proxy_badge_test', 'feed_gap_test',
+                  'keyframe_test', 'ruler_test', 'transition_test', 'flash_edit_scope_test'}
+    wrapper = ROOT / 'tools/quality/browser_coverage.py'
+    return [(name, wrapper, ['--output', str(Path(output).resolve()), str(script), *args], env, kind)
+            for name, script, args, env, kind in cases()
+            if name in functional or name.endswith('_row_test')]
+
+
 def run(selected, output, timeout):
     if os.name != 'posix':
         raise RuntimeError('browser proof runner requires POSIX process groups (Linux CI)')
@@ -66,8 +79,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', required=True)
     parser.add_argument('--timeout', type=float, default=300)
+    parser.add_argument('--coverage-output', help='run additional functional proofs with Chromium V8 profiling')
     args = parser.parse_args()
-    return run(cases(), args.output, args.timeout)
+    selected = coverage_cases(args.coverage_output) if args.coverage_output else cases()
+    return run(selected, args.output, args.timeout)
 
 
 if __name__ == '__main__':
