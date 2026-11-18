@@ -1,10 +1,11 @@
+import {fileURLToPath} from 'node:url';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const src=readFileSync(new URL('../ui/playback.js',import.meta.url),'utf8');
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve()};
 function setup(invoke){let now=0;const timers=[],calls=[],states=[];
- const ctx={window:{},performance:{now:()=>now},setTimeout:f=>timers.push(f),clearTimeout(){},requestAnimationFrame(){},cancelAnimationFrame(){}};vm.createContext(ctx);vm.runInContext(src,ctx);
+ const ctx={window:{},performance:{now:()=>now},setTimeout:f=>timers.push(f),clearTimeout(){},requestAnimationFrame(){},cancelAnimationFrame(){}};vm.createContext(ctx);vm.runInContext(src,ctx, {filename: fileURLToPath(new URL('../ui/playback.js', import.meta.url))});
  const p=new ctx.window.KimoPlayer({fps:()=>60,duration:()=>30,scale:()=>.5,onWarm:s=>states.push(s),invoke:async(c,a)=>{calls.push([c,a]);return invoke(c,a)}});
  p.take=r=>{p.info=r;p.run={start:0,dir:1,stride:2};if(r.ready)for(let i=0;i<32;i++)p.frames.set(i*2,{bmp:{close(){}}});};
  return {p,calls,states,async step(dt=150){now+=dt;timers.splice(0).forEach(f=>f());await flush();}};

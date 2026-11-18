@@ -1,3 +1,4 @@
+import {fileURLToPath} from 'node:url';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
@@ -5,7 +6,7 @@ const source = readFileSync(process.env.KIMO_PLAYBACK_SOURCE || new URL('../ui/p
 function setup(end=10,stride=4) {
  let ms=0,id=0;const jobs=new Map();
  const ctx={window:{},performance:{now:()=>ms},requestAnimationFrame:f=>{jobs.set(++id,f);return id;},cancelAnimationFrame:id=>jobs.delete(id),clearTimeout(){},setTimeout(){}};
- vm.createContext(ctx);vm.runInContext(source,ctx);
+ vm.createContext(ctx);vm.runInContext(source,ctx, {filename: fileURLToPath(new URL('../ui/playback.js', import.meta.url))});
  const p=new ctx.window.KimoPlayer({fps:()=>60,duration:()=>end,scale:()=>.5,onTime(){},onState(){},canvas:{width:1,height:1,getContext:()=>({drawImage(){}})}});
  p.info={audio_on:false};p.playing=true;p.run={start:0,dir:1,stride};
  return {p,fill(a,b){for(let i=a;i<b;i++)p.frames.set(i*stride,{bmp:{width:1,height:1},time:i*stride/60});},step(dt){ms+=dt;const callbacks=[...jobs.values()];jobs.clear();callbacks.forEach(f=>f());}};

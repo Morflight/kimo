@@ -1,0 +1,141 @@
+name: quality
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    name: feature-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check inventory and coherence
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$BASE" && "$BASE" != 0000000000000000000000000000000000000000 ]]; then
+            python3 tools/quality/check_contracts.py --base "$BASE"
+          else
+            python3 tools/quality/check_contracts.py
+          fi
+          python3 tests/gate_check.py
+          python3 -m unittest discover -s tools/quality -p 'test_*.py'
+          git diff --exit-code
+  javascript:
+    name: javascript-coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - run: >-
+          npm exec --yes --package=c8@10.1.3 -- c8
+          --all --src crates/kimo-gui/ui --include 'crates/kimo-gui/ui/**/*.js' --exclude '**/vendor/**'
+          --check-coverage --per-file --lines 100 --functions 100 --branches 100 --statements 100
+          --reporter text --reporter json --reporter lcov
+          bash tools/fork/test-preview.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: javascript-coverage
+          path: coverage/
+          if-no-files-found: error
+  python:
+    name: python-coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: |
+          python3 -m pip install coverage==7.6.12
+          python3 -m coverage run --branch --source=crates/kimo-core/src,tools/quality,tools/ci -m unittest discover -s tools/quality -p 'test_*.py'
+          python3 -m coverage report --fail-under=100
+      - if: always()
+        run: python3 -m coverage json -o python-coverage.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: python-coverage
+          path: python-coverage.json
+          if-no-files-found: error
+  rust:
+    name: rust-coverage (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ffmpeg libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.100.0 --profile minimal --component llvm-tools-preview
+          rustup default 1.100.0
+          cargo install cargo-llvm-cov --version 0.6.16 --locked
+          bash fonts/fetch.sh
+      - name: Workspace tests and coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --locked --workspace --all-targets --json --output-path rust-workspace.json -- --include-ignored
+          python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-core/ rust-workspace.json
+          python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-cli/ rust-workspace.json
+          python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-mcp/ rust-workspace.json
+      - name: Desktop tests and coverage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --json --output-path rust-desktop.json -- --include-ignored
+          python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-gui/ rust-desktop.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rust-coverage-${{ matrix.os }}
+          path: rust-*.json
+          if-no-files-found: error
+
+  acceptance:
+    name: quality-acceptance
+    if: always()
+    needs: [contracts, javascript, python, rust]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Require every job and complete qualification
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in jobs.items() if job['result'] != 'success']
+          policy = json.load(open('docs/features/catalog.json'))
+          debt = [f['id'] for f in policy['features'] if f['status'] != 'verified']
+          blockers = policy.get('qualification_blockers', [])
+          if failed or debt or blockers:
+              raise SystemExit(f'Not qualified: failed/pending jobs={failed}; unverified features={debt}; blockers={blockers}')
+          PY

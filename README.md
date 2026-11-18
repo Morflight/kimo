@@ -1,3 +1,5 @@
+> **Quality requirement:** [feature contracts](docs/features/README.md), [mandatory tests and 100% coverage](docs/QUALITY.md). The inherited baseline is not yet quality-qualified.
+
 > **Morflight maintained fork:** our tested preview baseline starts at upstream v9.0.0.
 > See [fork development, builds and validation](docs/FORK.md). Upstream documentation follows.
 

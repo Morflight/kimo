@@ -62,7 +62,7 @@ for kind, name, _ in ent:
         path = "tests/" + name
         if "kimo-oracle" in open(path).read() and not os.path.exists(env["KIMO_ORACLE"]):
             rows.append((f"py {name}", f"skipped(oracle unavailable: {env['KIMO_ORACLE']} missing)", 0, "")); continue
-        subprocess.run(["pkill", "kimo-mcp"], capture_output=True)
+        # Tests own and clean up their own children; never terminate unrelated engines.
         a = [sys.executable, path] + (["/tmp/kimo-gate-metric-bin"] if False else [])
         rc, out, sec = sh([sys.executable, path] + ([env["KIMO_BIN"]] if name == "discovery_metric.py" else []), timeout=int(os.environ.get("PROOF_TIMEOUT", "300")))
         last = out.strip().splitlines()[-1] if out.strip() else ""

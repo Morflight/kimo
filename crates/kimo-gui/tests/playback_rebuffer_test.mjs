@@ -1,3 +1,4 @@
+import {fileURLToPath} from 'node:url';
 // Run: node crates/kimo-gui/tests/playback_rebuffer_test.mjs
 // A 60 fps player must not rewind behind frames the engine has already evicted on an underrun.
 import { readFileSync } from 'node:fs';
@@ -9,7 +10,7 @@ const jobs = new Map(), states = [];
 const c = { window: {}, performance: { now: () => ms },
   requestAnimationFrame: f => { jobs.set(++id, f); return id; }, cancelAnimationFrame: n => jobs.delete(n),
   clearTimeout() {}, setTimeout() {} };
-vm.createContext(c); vm.runInContext(src, c);
+vm.createContext(c); vm.runInContext(src, c, {filename: fileURLToPath(new URL('../ui/playback.js', import.meta.url))});
 const p = new c.window.KimoPlayer({ fps: () => 60, duration: () => 10,
   canvas: { width: 1, height: 1, getContext: () => ({ drawImage() {} }) },
   onTime() {}, onState: s => states.push(s), scale: () => .5 });

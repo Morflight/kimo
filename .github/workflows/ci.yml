@@ -1,7 +1,5 @@
 # Everyday CI: the full engine and app test suites on Windows and Linux, on every push and pull request.
-# Tests that already fail are listed in tests/known_failures/<os>.txt; CI fails only on NEW failures, so the
-# baseline can be paid down over time without hiding regressions. The first run on each OS (no list yet) reports
-# its failures and uploads the list as an artifact to commit.
+# All failures, ignored tests and missing execution evidence block acceptance. No legacy waiver.
 name: ci
 
 on:
@@ -46,7 +44,7 @@ jobs:
 
       - name: Rust toolchain
         shell: bash
-        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+        run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0 && rustc -V
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -55,7 +53,7 @@ jobs:
             ~/.cargo/git
             target
             crates/kimo-gui/target
-          key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'crates/kimo-gui/Cargo.toml') }}
+          key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'crates/kimo-gui/Cargo.lock') }}
           restore-keys: ci-${{ matrix.os }}-
 
       - name: Fonts (SIL OFL) for text rendering tests
@@ -69,16 +67,22 @@ jobs:
           # feature-gated targets are skipped (they need --features libav / flat-sah)
           ARGS=""
           for f in crates/kimo-core/tests/*.rs; do n=$(basename "$f" .rs); case "$n" in libav_vfr_conform|flat_sah) ;; *) ARGS="$ARGS --test $n";; esac; done
-          cargo test --profile gate -p kimo-core --lib $ARGS --no-fail-fast -- --test-threads=4 2>&1 | tee engine-tests.log || true
+          cargo test --locked --profile gate -p kimo-core --lib $ARGS --no-fail-fast -- --test-threads=4 --include-ignored 2>&1 | tee engine-tests.log
 
       - name: App tests
         shell: bash
         working-directory: crates/kimo-gui
-        run: cargo test --release --lib 2>&1 | tee ../../app-tests.log
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib -- --include-ignored 2>&1 | tee ../../app-tests.log
 
-      - name: Compare with the known failures
+      - name: Require complete passing test evidence
+        if: always()
         shell: bash
-        run: python3 tools/ci/compare_failures.py engine-tests.log "tests/known_failures/${{ runner.os }}.txt" failures-now.txt
+        run: |
+          set -euo pipefail
+          python3 tools/ci/compare_failures.py engine-tests.log unused failures-now.txt
+          python3 tools/ci/compare_failures.py app-tests.log unused app-failures-now.txt
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

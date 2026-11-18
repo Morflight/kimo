@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const src = readFileSync(fileURLToPath(new URL('../ui/playback.js', import.meta.url)), 'utf8');
-const ctx = { window: {} }; vm.createContext(ctx); vm.runInContext(src, ctx);
+const ctx = { window: {} }; vm.createContext(ctx); vm.runInContext(src, ctx, {filename: fileURLToPath(new URL('../ui/playback.js', import.meta.url))});
 const AV = ctx.window.KimoAV;
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 let n = 0; const test = (name, f) => { f(); n++; console.log('ok', name); };

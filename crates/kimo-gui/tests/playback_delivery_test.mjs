@@ -1,3 +1,4 @@
+import {fileURLToPath} from 'node:url';
 // Run: node crates/kimo-gui/tests/playback_delivery_test.mjs
 // Set KIMO_PLAYBACK_SOURCE to test the unpatched player against the same regressions.
 import { readFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ function harness(fetcher = async () => ({ ok: true, blob: async () => ({}), arra
   const ctx = { window: { createImageBitmap: decode }, createImageBitmap: decode, fetch: fetcher,
     performance: { now: () => now }, requestAnimationFrame: f => { callbacks.set(++next, f); return next; },
     cancelAnimationFrame: id => callbacks.delete(id), clearTimeout() {}, setTimeout() {} };
-  vm.createContext(ctx); vm.runInContext(src, ctx);
+  vm.createContext(ctx); vm.runInContext(src, ctx, {filename: fileURLToPath(new URL('../ui/playback.js', import.meta.url))});
   const p = new ctx.window.KimoPlayer({ fps: () => 30, duration: () => 10, scale: () => .5,
     onError: e => errors.push(e), onState: s => states.push(s), invoke: async () => ({}) });
   p.gen = 1; p.info = { audio_on: false }; p.playing = true;
