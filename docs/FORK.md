@@ -1,6 +1,6 @@
 # Maintaining Morflight Kimo
 
-Source: https://github.com/Morflight/kimo (default development branch: `maintained`).
+Source: https://github.com/Morflight/kimo (default development branch: `main`).
 Upstream: https://github.com/naman-sharma12345/kimo.
 Baseline: v9.0.0, `8ca3a54d8b99d31c871d270f029379787cce7b54`.
 Original MIT license, copyright and third-party notices remain in place.
@@ -9,14 +9,14 @@ This fork is independently maintained; upstream README/product claims are upstre
 ## Development
 
 ```sh
-git clone --branch maintained https://github.com/Morflight/kimo.git
+git clone --branch main https://github.com/Morflight/kimo.git
 cd kimo
 git remote add upstream https://github.com/naman-sharma12345/kimo.git
 git switch -c feature/description
 bash tools/fork/test-preview.sh
 ```
 
-Open pull requests against `maintained`. Fetch upstream with `git fetch upstream --tags`, then merge a reviewed upstream revision on an integration branch and run checks before merging. Do not reset maintained onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
+Open pull requests against `main`. Fetch upstream with `git fetch upstream --tags`, then merge a reviewed upstream revision on an integration branch and run checks before merging. Do not reset main onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
 
 Keep media, real editing projects/history, bridge credentials, caches and binaries outside this repository. Tests must use synthetic fixtures or explicitly supplied local paths. Two decoder capture artifacts inherited from upstream were removed from the maintained tree; upstream history is retained unchanged.
 
@@ -31,7 +31,7 @@ docker run --rm --mount "type=bind,src=$PWD,dst=/src,readonly" -w /src node:22 \
   bash -c 'for n in playback_delivery playback_sync playback_buffer playback_rebuffer playback_prepare prepare_ui; do node crates/kimo-gui/tests/${n}_test.mjs || exit; done'
 ```
 
-`fork-preview` CI runs the same regression script on pushes/PRs to maintained. It covers delivery failures/timeouts, sync, startup reserve, underrun without rewind, preparation cancellation/reuse and editor preparation controls. These controller tests do not verify physical audio or desktop presentation.
+`fork-preview` CI runs the same regression script on pushes/PRs to main. It covers delivery failures/timeouts, sync, startup reserve, underrun without rewind, preparation cancellation/reuse and editor preparation controls. These controller tests do not verify physical audio or desktop presentation.
 
 For wider native validation (Rust, FFmpeg/ffprobe and platform build dependencies required):
 
