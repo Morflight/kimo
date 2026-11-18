@@ -7,7 +7,7 @@ import runpy
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from test_controls import ROOT, rustcov
 
 
@@ -65,3 +65,14 @@ class ControlCli(unittest.TestCase):
         with patch('unittest.main') as main:
             runpy.run_path(str(ROOT / 'tools/quality/test_controls.py'), run_name='__main__')
         main.assert_called_once_with()
+
+    def test_browser_cli_executes_full_inventory_and_writes_receipts(self):
+        def launch(*args, **kwargs):
+            kwargs['stdout'].write('PASS synthetic runner fixture\n')
+            return MagicMock(wait=MagicMock(return_value=0))
+        with tempfile.TemporaryDirectory() as temp, patch('subprocess.Popen', side_effect=launch) as launched:
+            self.invoke('tools/quality/run_browser_tests.py', ['--output', temp], 0)
+            results = json.loads((Path(temp) / 'results.json').read_text())
+            self.assertGreater(len(results), 1)
+            self.assertEqual(len(results), launched.call_count)
+            self.assertTrue(all(row['exit'] == 0 for row in results))

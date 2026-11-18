@@ -123,20 +123,48 @@ async def main():
         await pg.close()
         # ---- three overlapping stamps, then idle ----
         pg, errs = await page()
-        await apply(pg, cp('c1', 'k1')); await pg.wait_for_timeout(250)
-        await apply(pg, cp('c2', 'k2')); await pg.wait_for_timeout(250)
-        await apply(pg, cp('c3', 'k3'))
-        st = await pg.evaluate(STAMPS); s = [st.get('c1'), st.get('c2'), st.get('c3')]; on = await pg.evaluate(ROWS); tm0 = await pg.evaluate(TIMER); fe0 = await M(pg, 'flashEnds')
+        # Keep setup and deadline reads in the browser: Python/CDP round trips can
+        # otherwise take longer than the flash lifetime before c3 is even injected.
+        overlap = await pg.evaluate("""async groups => {
+          const frames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const at = t => new Promise(r => setTimeout(r, Math.max(0, t - performance.now()) + 1));
+          const rows = () => Object.fromEntries([...document.querySelectorAll('[data-panel=hist] .hrow')]
+            .map(r => [r.textContent.replace(/\\s+/g, '').slice(0, 2), r.classList.contains('flash')]));
+          const stamps = () => { const out = {}; const walk = (o, d) => {
+            if (!o || typeof o !== 'object' || d > 6) return;
+            if (Array.isArray(o.items)) for (const it of o.items)
+              if (it && it._flash != null && it.id != null) out[it.id] = it._flash;
+            for (const k in o) if (k[0] !== '_') walk(o[k], d + 1);
+          }; walk(__kimo.state, 0); return out; };
+          const start = performance.now();
+          for (let i = 0; i < groups.length; i++) {
+            await at(start + i * 250);
+            for (const event of groups[i]) __kimo.apply(event);
+            await frames();
+          }
+          const st = stamps(), s = [st.c1, st.c2, st.c3], on = rows();
+          const tm0 = __kimo.flashTimer(), fe0 = __kimo.metrics.flashEnds || 0, ra0 = __kimo.metrics.raf;
+          const steps = [];
+          for (const stamp of s) {
+            await at(stamp + 700); await frames();
+            steps.push({t: performance.now(), rows: rows(), timer: __kimo.flashTimer()});
+          }
+          return {s, on, tm0, steps, repaints: (__kimo.metrics.flashEnds || 0) - fe0,
+            raf: __kimo.metrics.raf - ra0, n: document.querySelectorAll('.flash').length,
+            html: document.querySelector('[data-panel=hist]').innerHTML};
+        }""", [cp('c1', 'k1'), cp('c2', 'k2'), cp('c3', 'k3')])
+        s, on, tm0 = overlap['s'], overlap['on'], overlap['tm0']
         steps, good = [], None not in s and on == {'c1': True, 'c2': True, 'c3': True} and near(tm0, s[0] + FLASH_MS)
-        ra0 = await M(pg, 'raf')
-        for i in range(3):
-            t = await until(pg, s[i] + FLASH_MS); rows = await pg.evaluate(ROWS); tm = await pg.evaluate(TIMER)
-            judged = i == 2 or t < s[i + 1] + FLASH_MS   # read before the next stamp ran out too
+        for i, step in enumerate(overlap['steps']):
+            t, rows, tm = step['t'], step['rows'], step['timer']
+            timely = i == 2 or t < s[i + 1] + FLASH_MS
             want = {f'c{k + 1}': k > i for k in range(3)}; nxt = s[i + 1] + FLASH_MS if i < 2 else None
-            ok_i = (rows == want and (near(tm, nxt) if nxt else tm is None)) if judged else True
-            good = good and ok_i; steps.append(f"c{i + 1}+{t - s[i]:.0f} ms rows {rows} timer {'+%.0f' % (tm - s[0]) if isinstance(tm, (int, float)) else tm}{'' if judged else ' (late read, not judged)'}")
-        n = await pg.evaluate(NFLASH); h1 = await pg.evaluate(HIST); fe1 = await M(pg, 'flashEnds'); ra1 = await M(pg, 'raf'); h2 = await full_render(pg)
-        report(good and n == 0 and h1 == h2 and fe1 - fe0 == 3 and ra1 == ra0, f"three stamps at +0/+{s[1] - s[0]:.0f}/+{s[2] - s[0]:.0f} ms: drawn {on}; " + '; '.join(steps) + f"; after: .flash in DOM {n}, panel == full render {h1 == h2}, expiry repaints {fe1 - fe0}, app rAF across the 3 expiries {ra1 - ra0}", errs)
+            good = good and timely and rows == want and (near(tm, nxt) if nxt else tm is None)
+            steps.append(f"c{i + 1}+{t - s[i]:.0f} ms rows {rows} timer {'+%.0f' % (tm - s[0]) if isinstance(tm, (int, float)) else tm}{'' if timely else ' (late read: FAIL)'}")
+        h2 = await full_render(pg)
+        report(good and overlap['n'] == 0 and overlap['html'] == h2 and overlap['repaints'] == 3 and overlap['raf'] == 0,
+               f"three stamps at +0/+{s[1] - s[0]:.0f}/+{s[2] - s[0]:.0f} ms: drawn {on}; " + '; '.join(steps) +
+               f"; after: .flash in DOM {overlap['n']}, panel == full render {overlap['html'] == h2}, expiry repaints {overlap['repaints']}, app rAF across the 3 expiries {overlap['raf']}", errs)
         r0 = await M(pg, 'raf'); await pg.wait_for_timeout(1000); r1 = await M(pg, 'raf')
         report(r1 == r0, f"idle after the last expiry: {r1 - r0} animation frames in 1 s", errs)
         await pg.close()

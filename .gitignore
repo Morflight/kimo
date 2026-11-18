@@ -21,3 +21,5 @@ bridge.json
 /python-coverage.json
 /rust-workspace.json
 /rust-desktop.json
+
+/browser-results/

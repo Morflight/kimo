@@ -31,7 +31,7 @@ The catalog's `legacy-unverified` state explicitly records inherited documentati
 
 The GitHub quality workflow enforces contract checks and attempts strict Rust/JavaScript coverage. Failures are expected until inherited coverage debt is resolved; they must remain visible. Full feature-matrix and browser acceptance qualification is still outstanding and must not be inferred from a green focused preview job.
 
-Coverage jobs use pinned collectors (cargo-llvm-cov 0.6.16, c8 10.1.3, coverage.py 7.6.12). JavaScript includes all non-vendored UI files, even if untouched by tests. Rust compares LLVM reports against the tracked runtime source inventory and rejects absent files. Python includes the core runtime sidecar and quality/CI tooling. The present collectors do not certify inline JavaScript embedded in Rust/HTML, optional native feature combinations, C/C++ runtime bridges or build scripts; these remain explicit qualification blockers, not covered exclusions. Branch counters unavailable from a stable Rust collector must be reported as unavailable, never 100%.
+Coverage jobs use pinned collectors (cargo-llvm-cov 0.9.1, c8 10.1.3, coverage.py 7.6.12). JavaScript includes all non-vendored UI files, even if untouched by tests. Rust compares LLVM reports against the tracked runtime source inventory and rejects absent files. Python includes the core runtime sidecar and quality/CI tooling. The present collectors do not certify inline JavaScript embedded in Rust/HTML, optional native feature combinations, C/C++ runtime bridges or build scripts; these remain explicit qualification blockers, not covered exclusions. Branch counters unavailable from a stable Rust collector must be reported as unavailable, never 100%.
 
 ## Initial measured JavaScript evidence
 
@@ -50,3 +50,25 @@ The helper protocol suites run under unittest discovery alongside quality-contro
 On 2026-11-18 the expanded local Python suite passed 43 tests under Python 3.10 / coverage.py 7.6.12: **739/739 executable lines and 174/174 measured branches** across the two runtime helpers and quality/CI Python tooling, including tests. The explicit inventory check, feature coherence check and 448-entry native manifest check passed. This scoped result does not certify JavaScript, Rust, embedded JavaScript, real browser/OCIO behavior or the wider repository's Python proof scripts.
 
 The expanded Node 22 / c8 10.1.3 controller run also passed all six preview suites and eight event-bridge cases. `bridge.js` measured **58/58 lines, 7/7 functions and 35/35 branches**. Full-UI line coverage in that run was **310/7,378 (4.20%)**; strict per-file acceptance correctly failed. Browser-script results are separate and are not represented by this controller-only coverage number. Use `bash tools/fork/test-ui.sh` for the expanded controller suite.
+
+## Required browser proofs
+
+The quality workflow now includes `browser-acceptance`, and the aggregate acceptance job requires it. It installs Playwright 1.58.0, its matching Chromium headless shell and Pillow 12.1.0 on Linux. Run the same suite with:
+
+```sh
+python3 tools/quality/run_browser_tests.py --output /path/to/browser-results
+```
+
+The runner discovers every `crates/kimo-gui/tests/*_test.py` plus `idle_proof.py`, then runs dark-theme studio, refused-reconnect and no-replay variants. Each script has a 300-second deadline. It writes individual logs and an incrementally updated `results.json`; launch errors, timeouts, nonzero exits and empty logs fail the run, while remaining scripts still execute. A timeout terminates only that script's newly created process group. Screenshot capture is disabled for the routine gate. The runner is intentionally POSIX-only; Windows desktop acceptance remains separate.
+
+`coverage_test.py` is a tool-family routing report, not a code-coverage measurement or behavioral pass. Its receipt is explicitly labelled `report`. The other scripts own their assertions and exit status. Browser proofs exercise synthetic local feeds and the development bridge, not the user's engine, projects or physical audio. Their coverage is not yet merged into c8: passing browser tests cannot be described as 100% JavaScript coverage. The browser qualification blocker remains until the integrated gate and required scope are actually validated.
+
+## Native collector and fixture repairs
+
+The initial Linux run on `7dfb17b` failed to compile `color_cache` because two dense-frame fixtures omitted the newly required `Frames.step`. Both now explicitly use stride 1; their pixel/window assertions are retained. GUI library execution in that coverage job passed 81 tests, but collector 0.6.16 produced no object filenames and therefore no report. That is not successful coverage.
+
+The collector is now pinned to 0.9.1, which includes the new Cargo build-directory layout support and Windows path matching fixes documented in the [upstream releases](https://github.com/taiki-e/cargo-llvm-cov/releases/tag/v0.9.1). Matching the observed `debug/build/.../out` test executable layout to that issue is a diagnosis; a new successful report is still required to validate the repair. Both native workflows now install the pinned Playwright/Pillow runtime and Chromium required by the existing real code-clip integration tests. App tests run even after engine test failure so one failure cannot suppress desktop execution. Optional native configurations and tests that return early when oracle/config inputs are absent remain unqualified.
+
+The next local run passed **51 Python tests**, with **875/875 executable lines and 190/190 measured branches** including the browser runner and its failure-path tests. The completed Node 22 controller run passed all prior suites, eight bridge cases and seventeen lifecycle cases: playback.js reached **332/332 lines, 45/45 functions and 316/323 branches**; full UI lines were **390/7,378 (5.28%)**. The strict JavaScript gate still fails. No branch counter or runtime file was excluded to obtain these results.
+
+The first full local browser pass exposed two obsolete/test-harness assumptions: cross-process setup let the first of three supposedly overlapping 700 ms flashes expire, and a blanket Rust-source text ban rejected the intentional active viewer's render calls. Both received behavioral repairs and focused contracts. Targeted reruns passed 10/10 flash assertions and 98 revision assertions, respectively. The original failed logs remain evidence; they are not accepted as a baseline.

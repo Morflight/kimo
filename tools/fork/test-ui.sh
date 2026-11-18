@@ -4,3 +4,4 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 bash tools/fork/test-preview.sh
 node --experimental-vm-modules crates/kimo-gui/tests/bridge_test.mjs
+node crates/kimo-gui/tests/playback_lifecycle_test.mjs

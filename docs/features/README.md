@@ -19,6 +19,8 @@ Start with the capability map below. `FEATURES.md` is the detailed inherited ref
 
 ## Focused runtime contracts
 
+- [Editor transient feedback](editor-feedback.md): flash lifetime, expiry repaint and teardown.
+
 - [Editor event transport](event-bridge.md): Tauri/SSE selection, liveness, reconnect backoff and replay limits.
 
 - [Code clip rendering sidecar](code-clip-sidecar.md): job defaults, frame output, local request routing, errors and browser qualification limits.

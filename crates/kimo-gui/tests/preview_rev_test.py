@@ -14,13 +14,24 @@ Asserts, replaying the engine's events in its own order:
   - the race: the mark reads rev 8 until the rev 8 frame lands; viewer image swaps <= mutations (7 frames, 8 mutations)
   - a stale frame never overwrites a newer one: the session's real rev 5 frame delivered after its rev 6 frame is dropped
     (viewer keeps rev 6, metrics.staleFrames == 1), and a k4-style frame with no rev still shows (older engines)
-  - the GUI never asks for a frame: no "render_frame" in ui/*.js or src/
+  - the passive spectator never asks the native bridge for a frame while replaying telemetry;
+    the active editor's explicit viewer requests are supported and tested separately
+  - UI scripts do not call the low-level render_frame tool directly
 Exit 0 when all hold.
 """
 import asyncio, functools, http.server, json, socketserver, sys, threading
 from pathlib import Path
 CRATE = Path(__file__).resolve().parents[1]
 EV = json.loads((CRATE / 'tests' / 'ev_engine_k5_preview.json').read_text())['events']
+PASSIVE_BRIDGE = """(() => {
+  window.__nativeRequests = [];
+  const invoke = (command, args) => {
+    window.__nativeRequests.push({command, args});
+    return Promise.reject(new Error('passive spectator requested native work: ' + command));
+  };
+  window.__TAURI__ = {core: {invoke}, invoke, event: {listen: async () => () => {}}};
+})();"""
+
 class Q(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
 fails = []; checks = [0]
@@ -36,8 +47,8 @@ SNAP = """() => { const vs = [...document.querySelectorAll('[data-panel] .frame'
     ids: [f && f.closest('[data-panel]'), f, img].map(x => x ? (x.__kid || (x.__kid = (window.__kidn = (window.__kidn || 0) + 1))) : null), mode: window.__kimo.state.mode }; }"""
 async def settle(pg): await pg.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
 async def main():
-    for p in list((CRATE / 'ui').glob('*.js')) + list((CRATE / 'src').rglob('*.rs')):
-        ok('render_frame' not in p.read_text(), f'{p.name} mentions render_frame: the GUI must never ask for a frame')
+    for p in (CRATE / 'ui').glob('*.js'):
+        ok('render_frame' not in p.read_text(), f'{p.name} calls low-level render_frame directly')
     from playwright.async_api import async_playwright
     srv = socketserver.ThreadingTCPServer(('127.0.0.1', 0), functools.partial(Q, directory=str(CRATE))); srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -48,6 +59,7 @@ async def main():
         # ---- 1. the engine's own order ----
         pg = await b.new_page(viewport={'width': 1376, 'height': 768})
         msgs = []; pg.on('console', lambda m: msgs.append(m.type + ': ' + m.text) if m.type in ('warning', 'error') else None); pg.on('pageerror', lambda e: msgs.append('PAGEERR ' + str(e)))
+        await pg.add_init_script(PASSIVE_BRIDGE)
         await pg.goto(url); await pg.wait_for_function('window.__kimo'); await settle(pg)
         swaps, last_src, mutations, pending = 0, None, 0, None
         idswaps = 0
@@ -99,6 +111,7 @@ async def main():
         ok(not msgs, f'console: {msgs[:3]}')
         # ---- 2. out of order: the real rev 5 frame arrives after the real rev 6 frame ----
         pg2 = await b.new_page(viewport={'width': 1376, 'height': 768})
+        await pg2.add_init_script(PASSIVE_BRIDGE)
         await pg2.goto(url); await pg2.wait_for_function('window.__kimo'); await settle(pg2)
         fr = {e['rev']: e for e in EV if e.get('type') == 'frame_rendered'}
         pc = {e['rev']: e for e in EV if e.get('type') == 'project_changed'}
@@ -118,6 +131,7 @@ async def main():
         ok(s9['stale'] is None and s9['src'] == frames[8], 'rev 8 frame clears the mark')
         # ---- 3. an engine without auto-preview (no rev on its frames): frames still show, no mark ever ----
         pg3 = await b.new_page(viewport={'width': 1376, 'height': 768})
+        await pg3.add_init_script(PASSIVE_BRIDGE)
         await pg3.goto(url); await pg3.wait_for_function('window.__kimo'); await settle(pg3)
         await pg3.evaluate('e => window.__kimo.apply(e)', pc[5]); await settle(pg3)
         k4 = {k: v for k, v in fr[5].items() if k not in ('rev', 'gen', 'auto')}
@@ -125,6 +139,9 @@ async def main():
         await pg3.evaluate('e => window.__kimo.apply(e)', pc[6]); await settle(pg3)
         s3 = await pg3.evaluate(SNAP)
         ok(s3['src'] == frames[5] and s3['stale'] is None, f'rev-less frame: src shown {s3["src"] == frames[5]}, mark {s3["stale"]!r}')
+        for page in (pg, pg2, pg3):
+            requests = await page.evaluate('window.__nativeRequests')
+            ok(requests == [], f'passive spectator initiated native requests: {requests}')
         await b.close()
     srv.shutdown()
     print(f'preview_rev: {checks[0]} checks, {len(fails)} fail')

@@ -60,6 +60,17 @@ jobs:
         shell: bash
         run: bash fonts/fetch.sh
 
+      - name: Native code-clip browser dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install playwright==1.58.0 pillow==12.1.0
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            python3 -m playwright install --with-deps chromium --only-shell
+          else
+            python3 -m playwright install chromium --only-shell
+          fi
+
       - name: Engine tests (gate profile, every target that builds on this OS)
         shell: bash
         run: |
@@ -70,6 +81,7 @@ jobs:
           cargo test --locked --profile gate -p kimo-core --lib $ARGS --no-fail-fast -- --test-threads=4 --include-ignored 2>&1 | tee engine-tests.log
 
       - name: App tests
+        if: always()
         shell: bash
         working-directory: crates/kimo-gui
         run: |

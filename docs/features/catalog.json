@@ -487,7 +487,8 @@
       "status": "legacy-unverified",
       "docs": [
         "docs/features/preview.md",
-        "FEATURES.md"
+        "FEATURES.md",
+        "docs/features/editor-feedback.md"
       ],
       "tests": [
         "crates/kimo-gui/tests/playback_buffer_test.mjs",
@@ -495,7 +496,9 @@
         "crates/kimo-gui/tests/playback_prepare_test.mjs",
         "crates/kimo-gui/tests/playback_rebuffer_test.mjs",
         "crates/kimo-gui/tests/playback_sync_test.mjs",
-        "crates/kimo-gui/tests/prepare_ui_test.mjs"
+        "crates/kimo-gui/tests/prepare_ui_test.mjs",
+        "crates/kimo-gui/tests/flash_expiry_row_test.py",
+        "crates/kimo-gui/tests/flash_stamps_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
@@ -505,7 +508,6 @@
         "crates/kimo-gui/ui/fix2.js",
         "crates/kimo-gui/ui/modes.js",
         "crates/kimo-gui/ui/panels.js",
-        "crates/kimo-gui/ui/playback.js",
         "crates/kimo-gui/ui/project_ops.js",
         "crates/kimo-gui/ui/reads.js",
         "crates/kimo-gui/ui/router.js",
@@ -550,6 +552,24 @@
       ],
       "sources": [
         "crates/kimo-gui/ui/bridge.js"
+      ]
+    },
+    {
+      "id": "playback-controller",
+      "status": "legacy-unverified",
+      "docs": [
+        "docs/features/preview.md"
+      ],
+      "tests": [
+        "crates/kimo-gui/tests/playback_delivery_test.mjs",
+        "crates/kimo-gui/tests/playback_sync_test.mjs",
+        "crates/kimo-gui/tests/playback_buffer_test.mjs",
+        "crates/kimo-gui/tests/playback_rebuffer_test.mjs",
+        "crates/kimo-gui/tests/playback_prepare_test.mjs",
+        "crates/kimo-gui/tests/playback_lifecycle_test.mjs"
+      ],
+      "sources": [
+        "crates/kimo-gui/ui/playback.js"
       ]
     }
   ],
