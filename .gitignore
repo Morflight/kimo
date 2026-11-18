@@ -4,3 +4,14 @@ dist/
 __pycache__/
 fonts/*.ttf
 nope
+
+# Local editor sessions and build/runtime data
+*.kimo
+*.kimo.history
+bridge.json
+.env
+.env.*
+/cache/
+/work/
+/build/
+**/*decode-capture-pid-*

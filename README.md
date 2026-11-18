@@ -1,3 +1,6 @@
+> **Morflight maintained fork:** our tested preview baseline starts at upstream v9.0.0.
+> See [fork development, builds and validation](docs/FORK.md). Upstream documentation follows.
+
 <div align="center">
 
 <a href="https://getkimo.tech"><img src="docs/assets/kimo-logo.png" alt="kimo" width="128"></a>

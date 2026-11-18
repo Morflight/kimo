@@ -7,7 +7,8 @@ description = "kimo desktop app: video editor with the kimo engine, Claude Code 
 
 # Deliberately its own workspace: keeps the Tauri dependency tree out of the
 # root workspace (core gate, integration suites, and the 38-warning baseline
-# are untouched). Cargo.lock is NOT committed until the MPL-2.0 audit decision.
+# are untouched). This fork commits the tested lockfile for repeatable builds.
+# Dependency license auditing remains pending; see docs/FORK.md.
 [workspace]
 
 [lib]

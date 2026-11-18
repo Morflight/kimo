@@ -1,0 +1,10 @@
+{
+  "identifier": "dev.morflight.kimo",
+  "productName": "Kimo Morflight",
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
+  }
+}
