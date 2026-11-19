@@ -4,7 +4,17 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  # Nightly: the complete Rust suite, including heavy tests and #[ignore] proofs.
+  # A passing nightly run on the release commit is required before any release.
+  schedule:
+    - cron: "17 2 * * *"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "Rust nextest profile: ci (per-push) or nightly (complete)"
+        type: choice
+        options: [ci, nightly]
+        default: nightly
 permissions:
   contents: read
 concurrency:
@@ -80,7 +90,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: |
           python3 -m pip install coverage==7.6.12
-          python3 -m coverage run --branch --source=crates/kimo-core/src,tools/quality,tools/ci -m unittest discover -s tools/quality -p 'test_*.py'
+          python3 -m coverage run --branch --source=crates/kimo-core/src,tools/quality -m unittest discover -s tools/quality -p 'test_*.py'
           python3 -m coverage json -o python-coverage.json
           python3 tools/quality/check_python_coverage.py python-coverage.json
           python3 -m coverage report --fail-under=100
@@ -114,6 +124,9 @@ jobs:
     name: rust-coverage (${{ matrix.os }}, ${{ matrix.scope }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
+    env:
+      # .config/nextest.toml: `ci` excludes the measured heavy set, `nightly` runs all.
+      SUITE: ${{ github.event_name == 'schedule' && 'nightly' || inputs.suite || 'ci' }}
     strategy:
       fail-fast: false
       matrix:
@@ -170,8 +183,18 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.100.0 --profile minimal --component llvm-tools-preview
           rustup default 1.100.0
-          cargo install cargo-llvm-cov --version 0.9.1 --locked
           bash fonts/fetch.sh
+      # Prebuilt, version-pinned binaries instead of compiling the tools every run.
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.152
+      # Dependency build cache (workspace crates are always rebuilt and measured).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.scope }}-coverage
+          workspaces: |
+            . -> target
+            crates/kimo-gui -> target
       - name: Native code-clip browser dependencies
         shell: bash
         run: |
@@ -213,9 +236,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Native tests mutate process-wide model/cache/resource environment.
-          # Serialize test cases; all tests (including ignored proofs) still execute.
-          cargo llvm-cov --locked --workspace --all-targets --no-fail-fast --no-report -- --include-ignored --test-threads=1
+          # nextest runs each test in its own process, so tests that mutate
+          # process-wide model/cache/resource environment cannot interfere while
+          # running in parallel. Nightly also runs every #[ignore] proof.
+          ignored=default; [[ "$SUITE" == nightly ]] && ignored=all
+          cargo llvm-cov nextest --locked --workspace --all-targets --no-report --profile "$SUITE" --run-ignored "$ignored"
       - name: Report workspace coverage even when a test fails
         if: always() && matrix.scope == 'workspace'
         shell: bash
@@ -245,7 +270,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo llvm-cov --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --no-fail-fast --no-report -- --include-ignored --test-threads=1
+          ignored=default; [[ "$SUITE" == nightly ]] && ignored=all
+          cargo llvm-cov nextest --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --no-report --profile "$SUITE" --run-ignored "$ignored"
       - name: Report desktop coverage even when a test fails
         if: always() && matrix.scope == 'desktop'
         shell: bash

@@ -19,17 +19,6 @@ class ControlCli(unittest.TestCase):
         self.assertEqual(caught.exception.code, expected, output.getvalue())
         return output.getvalue()
 
-    def test_log_cli_writes_sorted_failures_and_rejects_empty(self):
-        with tempfile.TemporaryDirectory() as temp:
-            log, output = Path(temp) / 'log', Path(temp) / 'failures'
-            for body, status, failures in [('', 1, ''),
-                ('test z ... FAILED\ntest a ... FAILED\ntest result: FAILED. 1 passed; 2 failed; 0 ignored', 1, 'a\nz\n'),
-                ('test result: ok. 2 passed; 0 failed; 0 ignored', 0, '')]:
-                log.write_text(body)
-                text = self.invoke('tools/ci/compare_failures.py', [str(log), 'unused', str(output)], status)
-                self.assertEqual(output.read_text(), failures)
-                self.assertIn('FAIL:' if status else 'Completed tests passed', text)
-
     def test_rust_cli_reports_missing_then_complete_metrics(self):
         name = 'crates/kimo-core/src/example.rs'
         with tempfile.TemporaryDirectory() as temp, patch('subprocess.check_output', return_value=name):

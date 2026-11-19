@@ -12,23 +12,10 @@ def module(name, path):
     spec.loader.exec_module(m)
     return m
 
-logs = module('logs', 'tools/ci/compare_failures.py')
 contracts = module('contracts', 'tools/quality/check_contracts.py')
 rustcov = module('rustcov', 'tools/quality/check_rust_coverage.py')
 
 class Controls(unittest.TestCase):
-    def test_empty_or_truncated_log_fails(self):
-        for text in ['', 'running 4 tests\ntest a ... ok', 'error: network unavailable']:
-            self.assertTrue(logs.validate(text))
-    def test_failures_never_become_baseline(self):
-        self.assertTrue(logs.validate('test x ... FAILED\ntest result: FAILED. 2 passed; 1 failed; 0 ignored'))
-    def test_ignored_and_zero_execution_fail(self):
-        for text in ['test result: ok. 0 passed; 0 failed; 0 ignored', 'test result: ok. 1 passed; 0 failed; 1 ignored']:
-            self.assertTrue(logs.validate(text))
-    def test_real_pass(self):
-        self.assertEqual(logs.validate('test result: ok. 3 passed; 0 failed; 0 ignored'), [])
-    def test_errors_after_pass_fail(self):
-        self.assertTrue(logs.validate('test result: ok. 3 passed; 0 failed; 0 ignored\nerror: process exited abnormally'))
     def test_runtime_inventory(self):
         self.assertTrue(contracts.production('crates/kimo-core/src/codeclip_sidecar.py'))
         self.assertTrue(contracts.production('crates/kimo-gui/ui/playback.js'))

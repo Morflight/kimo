@@ -47,7 +47,7 @@ class PythonCoverage(unittest.TestCase):
         self.assertEqual(self.check(files={self.source.replace('/', '\\'): {'summary': summary}}), [])
 
     def test_scope_keeps_tools_and_nested_runtime(self):
-        for path in [self.source, 'tools/ci/compare_failures.py', 'tools/quality/test_controls.py']:
+        for path in [self.source, 'tools/quality/check_rust_coverage.py', 'tools/quality/test_controls.py']:
             self.assertTrue(pythoncov.in_scope(path))
         for path in ['README.md', 'tests/native_proof.py', 'crates/a/src/vendor/x.py', 'crates/a/tests/x.py']:
             self.assertFalse(pythoncov.in_scope(path))

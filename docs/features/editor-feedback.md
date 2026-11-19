@@ -44,6 +44,8 @@ Wheel input and deferred panel refresh ignore a stale or incomplete mode definit
 
 Complete-source panel tests verify distortion-grid coordinates, signed 3D orbit arcs, deterministic waveforms, camera-solve point counts, scope image labels, dense timeline seams and compact modelling/light layouts. These assertions supplement the real-browser rendering proofs.
 
+The measured light-rig layout (`opts.cx` set) renders before the engine reports any light: absent `lights` and `rows` lists still draw the ring, the subject and the LIGHT/TEMP/INTENSITY/FALLOFF header, with no light rays and no row values. `panels_unit_test.mjs` asserts this empty-rig state alongside the populated measured defaults.
+
 An inspector widget’s `gap` sets its internal label spacing; it does not turn the widget into an empty spacer. A block with only `gap` still produces a spacer. The compressor test supplies `gap: 10` and requires the widget markup and threshold label.
 
 The graphics inspector retains the eight most recent shape-layer names and computes its selection after trimming that list, so the latest layer stays highlighted. Router operation tests assert cached arguments, normalized geometry, style updates, invalid inputs and the selected index after twelve inserted layers.

@@ -116,6 +116,7 @@ assert.equal(render('wheels',wheelData,{conic:true,r:30}),firstRing,'eviction ca
 assert.match(finite(render('wheels',wheelData)),/url\(#ringE\)/);
 const rigDefaultOptions={cx:100,cy:100,R:50,cols:[10,200,350,580],hy:170,ry:200,rh:30,bar:[280,420],thumbs:{x:10,y:260,w:60,h:30,gx:10,gy:5,ly:8}};
 const rigDefaults=finite(render('lightrig',{lights:[{name:'Top',a:90},{name:'Right',a:0,em:true},{name:'Left',a:180}],rows:[['A','5000K','1',0,false,'2'],['B','','',.5,true,'']],thumbs:[{label:'Missing'}]},rigDefaultOptions));assert.match(rigDefaults,/Top/);assert.match(rigDefaults,/font-size:17px/);assert.match(rigDefaults,/border-radius:6px/);
+const emptyRig=finite(render('lightrig',{thumbs:[]},rigDefaultOptions));assert.match(emptyRig,/<circle cx="100" cy="100" r="50"/);assert.match(emptyRig,/LIGHT/);assert.match(emptyRig,/FALLOFF/);assert.doesNotMatch(emptyRig,/<line /,'a rig without reported lights draws no light rays');assert.doesNotMatch(emptyRig,/class="cream"/,'a rig without reported rows renders no row values');
 console.log('PASS conic-ring cache eviction preserves exact markup and measured light-rig defaults remain finite');
 assert.equal(wave(100,40,-49297/9301),wave(100,40,(1-49297)/9301),'zero RNG state uses the deterministic seed-one fallback');
 state.calls=[{name:'progress',status:'running',t:900,progress:{done:1,total:4}}];

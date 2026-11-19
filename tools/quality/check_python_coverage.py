@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def in_scope(path):
     return path.endswith('.py') and (
         (path.startswith('crates/') and '/src/' in path and '/vendor/' not in path)
-        or path.startswith(('tools/quality/', 'tools/ci/')))
+        or path.startswith('tools/quality/'))
 
 
 def check(report):

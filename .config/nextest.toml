@@ -1,0 +1,187 @@
+# cargo-nextest configuration. Every test runs in its own process, so tests that
+# change process-wide environment (model, cache, resource paths) cannot leak into
+# one another; this replaces the former `--test-threads=1` serialization.
+#
+# Two required profiles split ONE suite by cost; no test is removed:
+# - `ci`      every push: all non-ignored tests except the heavy set below.
+# - `nightly` scheduled + required before any release: every test, including
+#             `#[ignore]` proofs (`--run-ignored all`) and the heavy set.
+# The heavy set is every test that took >= 5 s under LLVM coverage instrumentation
+# (nextest, 3 threads, Linux, 2026-11-19 run of 59ee16b). The `ci` profile kills a
+# test after 30 s, so a new slow test fails per-push CI until it is made faster or
+# deliberately added here. See docs/QUALITY.md "Per-push and nightly suites".
+
+[profile.ci]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "15s", terminate-after = 2 }
+default-filter = """
+not (
+  (binary_id(kimo-core) & test(=particle_flow::tests::pv3_frames)) |
+  (binary_id(kimo-core) & test(=threed::csm::tests::dump_csm_frames)) |
+  (binary_id(kimo-core) & test(=threed::lit_raster::tests::render_pbr_contact_sources)) |
+  (binary_id(kimo-core) & test(=vision::tests::download::verified_download_and_resume)) |
+  (binary_id(kimo-core) & test(=vision::tests::online_models_on_test_image)) |
+  (binary_id(kimo-core::apply_review_fixes) & test(=applies_a_concrete_fix_and_the_transition_is_actually_gone)) |
+  (binary_id(kimo-core::audio_transients) & test(=tool_path_mp4_clip_track_mix_fps_repeat_and_errors)) |
+  (binary_id(kimo-core::auto_captions) & test(=hinglish_variants_are_written_one_way_and_english_is_left_alone)) |
+  (binary_id(kimo-core::auto_chapters) & test(=a_single_continuous_shot_reports_it_cannot_chapter)) |
+  (binary_id(kimo-core::auto_chapters) & test(=detects_scene_cuts_then_chapters_when_no_markers_exist)) |
+  (binary_id(kimo-core::auto_chapters) & test(=dry_run_reports_the_plan_without_mutating_or_writing)) |
+  (binary_id(kimo-core::auto_chapters) & test(=uses_existing_markers_without_running_detection)) |
+  (binary_id(kimo-core::auto_edit) & test(=auto_edit_cuts_dead_air_and_hits_the_loudness_target)) |
+  (binary_id(kimo-core::auto_edit) & test(=broll_color_match_runs_by_default_and_can_be_turned_off)) |
+  (binary_id(kimo-core::auto_edit) & test(=end_card_pill_is_scaled_up_and_dot_gap_still_holds)) |
+  (binary_id(kimo-core::auto_edit) & test(=end_screen_background_freezes_early_blurs_gently_and_scales_up)) |
+  (binary_id(kimo-core::auto_edit) & test(=end_screen_background_survives_auto_edits_own_review_pass)) |
+  (binary_id(kimo-core::auto_edit) & test(=end_screen_is_on_by_default_for_platform_none_and_fades_out)) |
+  (binary_id(kimo-core::auto_edit) & test(=end_screen_with_no_music_warns_about_the_silent_tail)) |
+  (binary_id(kimo-core::auto_edit) & test(=exports_a_real_file_at_the_reported_duration)) |
+  (binary_id(kimo-core::auto_edit) & test(=hook_text_adds_a_title_at_the_start)) |
+  (binary_id(kimo-core::auto_edit) & test(=job2_forced_splits_skip_a_long_take_broll_fully_covers)) |
+  (binary_id(kimo-core::auto_edit) & test(=job2_punch_max_static_is_configurable)) |
+  (binary_id(kimo-core::auto_edit) & test(=job2_splits_a_long_uncut_dialogue_take_for_punch_ins)) |
+  (binary_id(kimo-core::auto_edit) & test(=job3_caption_position_defaults_to_auto_and_avoids_a_low_face)) |
+  (binary_id(kimo-core::auto_edit) & test(=job4_broll_gets_a_short_whip_transition_by_default)) |
+  (binary_id(kimo-core::auto_edit) & test(=music_bed_also_gets_a_duck_timeline_envelope_on_top_of_finish_audios_level)) |
+  (binary_id(kimo-core::auto_edit) & test(=music_bed_is_placed_and_ducked_under_speech)) |
+  (binary_id(kimo-core::auto_edit) & test(=music_bed_keeps_playing_under_the_end_screen)) |
+  (binary_id(kimo-core::auto_edit) & test(=music_bed_swells_under_the_end_card_once_dialogue_ends)) |
+  (binary_id(kimo-core::auto_edit) & test(=no_hook_text_skips_the_title_honestly)) |
+  (binary_id(kimo-core::auto_edit) & test(=no_music_means_no_duck_stage)) |
+  (binary_id(kimo-core::auto_edit) & test(=punch_ins_never_land_on_a_clip_broll_fully_covers)) |
+  (binary_id(kimo-core::auto_edit) & test(=punch_ins_still_apply_with_no_broll)) |
+  (binary_id(kimo-core::auto_edit) & test(=push_in_animates_static_broll_by_default)) |
+  (binary_id(kimo-core::auto_edit) & test(=push_in_skips_very_short_broll)) |
+  (binary_id(kimo-core::auto_proxy) & test(=heavy_4k_import_returns_at_once_then_preview_uses_the_proxy_and_export_the_original)) |
+  (binary_id(kimo-core::auto_reframe) & test(=proof_frames_walking_figure)) |
+  (binary_id(kimo-core::camera_tracker) & test(=abc_radial_plate)) |
+  (binary_id(kimo-core::camera_tracker) & test(=abc_tangential_plate)) |
+  (binary_id(kimo-core::camera_tracker) & test(=d_set_ground_plane_levels_the_scene)) |
+  (binary_id(kimo-core::camera_tracker) & test(=e2_placed_solid_shows_at_its_size_on_the_track)) |
+  (binary_id(kimo-core::camera_tracker) & test(=e_place_at_track_renders_on_the_track)) |
+  (binary_id(kimo-core::camera_tracker) & test(=i_defaults_are_unchanged)) |
+  (binary_id(kimo-core::camera_tracker) & test(=refusals_leave_project_and_solve_unchanged)) |
+  (binary_id(kimo-core::color_cache) & test(=nested_export_reduces_cache_batch)) |
+  (binary_id(kimo-core::color_decode_phase) & test(=export_window_and_spot_frame_parity)) |
+  (binary_id(kimo-core::color_ramp_window) & test(=ramp_windows_match_full_source_decode)) |
+  (binary_id(kimo-core::director_prep) & test(=stabilize_takes_a_duration_written_to_six_decimals)) |
+  (binary_id(kimo-core::director_small) & test(=broll_over_silence_does_not_flag_a_clip_placed_after_all_speech_has_ended)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_compress_strength_scales_the_stored_ratio)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_level_dynamics_narrows_loudness_range_within_a_clip)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_levels_speakers_and_hits_the_target)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_match_strength_defaults_to_full_match)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_match_strength_explicit_value_partially_matches)) |
+  (binary_id(kimo-core::director_small) & test(=finish_audio_match_strength_zero_leaves_clip_averages_untouched_relative_to_each_other)) |
+  (binary_id(kimo-core::director_small) & test(=lint_edit_finds_the_problems_and_its_fixes_clear_them)) |
+  (binary_id(kimo-core::director_small) & test(=lint_edit_prepares_each_picture_scan_sample_exactly_once)) |
+  (binary_id(kimo-core::director_small) & test(=lint_edit_scans_a_long_clip_without_rescanning_from_its_start_each_sample)) |
+  (binary_id(kimo-core::director_small) & test(=place_broll_matches_the_clip_to_the_words_being_said)) |
+  (binary_id(kimo-core::director_small) & test(=review_export_shows_the_exported_file)) |
+  (binary_id(kimo-core::director_small) & test(=rough_cut_finds_repeated_shots)) |
+  (binary_id(kimo-core::director_small) & test(=text_over_subject_fix_never_crosses_the_midline_into_the_other_half)) |
+  (binary_id(kimo-core::director_small) & test(=text_over_subject_fixes_each_caption_page_on_its_own)) |
+  (binary_id(kimo-core::director_small) & test(=timeline_summary_is_small_and_has_the_ids)) |
+  (binary_id(kimo-core::export_job) & test(=unchanged_rerun_reuses_everything_and_an_edit_renders_only_its_chunk)) |
+  (binary_id(kimo-core::export_job_errors) & test(=encoder_failure_and_disk_full_are_classified_keep_finished_chunks_and_resume_completes)) |
+  (binary_id(kimo-core::export_job_kill) & test(=sigkill_mid_encode_at_several_chunks_then_a_fresh_process_resumes_to_identical_frames)) |
+  (binary_id(kimo-core::flash_pin) & test(=boundary_pair_just_under_and_just_over_25_pct_of_a_field)) |
+  (binary_id(kimo-core::focus_series) & test(=prereg_s_blur_ramp)) |
+  (binary_id(kimo-core::frame_live_peak) & test(=peak_live_per_frame_is_within_the_planner_budget)) |
+  (binary_id(kimo-core::glow_half_res_v7) & test(=half_res_speedup_benchmark)) |
+  (binary_id(kimo-core::golden_frames) & test(=golden_frames_registry_and_projects)) |
+  (binary_id(kimo-core::golden_frames) & test(=golden_scenes_cold_warm_cleared_equal_uncached)) |
+  (binary_id(kimo-core::kimo_motion_v7) & test(=motion_diff_is_near_zero_for_identical_motion_and_large_for_different_motion)) |
+  (binary_id(kimo-core::kimo_motion_v7) & test(=motion_extract_invert_flips_the_sign_like_a_stabiliser)) |
+  (binary_id(kimo-core::lint_contrast_moving) & test(=no_times_grid_over_the_cap_is_refused_not_thinned_or_cut)) |
+  (binary_id(kimo-core::lint_contrast_moving) & test(=no_times_multi_span_times_are_sorted_and_deduped)) |
+  (binary_id(kimo-core::lint_contrast_moving) & test(=text_contrast_over_a_fading_video_passes_dark_frames_and_flags_light_ones)) |
+  (binary_id(kimo-core::lint_contrast_moving) & test(=text_contrast_reads_the_exact_sampled_frame_of_a_moving_video)) |
+  (binary_id(kimo-core::mask_raster_accuracy) & test(=curved_masks_meet_1e4_in_precision_mode)) |
+  (binary_id(kimo-core::montage_tools) & test(=a_clean_clip_scores_high_and_is_kept)) |
+  (binary_id(kimo-core::montage_tools) & test(=a_mixed_clip_is_split_so_only_its_good_half_survives)) |
+  (binary_id(kimo-core::montage_tools) & test(=beat_sync_montage_cuts_land_exactly_on_real_beats_and_ends_on_a_phrase)) |
+  (binary_id(kimo-core::montage_tools) & test(=best_segments_actually_cuts_the_junk_and_keeps_the_rest)) |
+  (binary_id(kimo-core::montage_tools) & test(=blurry_dark_and_shaky_clips_are_scored_low_and_dropped)) |
+  (binary_id(kimo-core::octree_mesh_bench_cp4) & test(=cp4_leaf_counts_planar_vs_curved)) |
+  (binary_id(kimo-core::pixel_expr) & test(=cost_20ops_1080p_report)) |
+  (binary_id(kimo-core::preview_range) & test(=measure_time_to_first_preview)) |
+  (binary_id(kimo-core::preview_stream) & test(=bench_1080p_three_tracks_plays_at_25_fps_and_scrubs_under_150_ms)) |
+  (binary_id(kimo-core::quality_v8100) & test(=adaptive_denoise_false_adds_no_effect_to_a_genuinely_noisy_clip)) |
+  (binary_id(kimo-core::quality_v8100) & test(=adaptive_denoise_unset_defaults_to_true)) |
+  (binary_id(kimo-core::quality_v8100) & test(=clean_clip_gets_no_filter_noisy_clip_in_the_same_edit_does)) |
+  (binary_id(kimo-core::quality_v8100) & test(=edge_sharpness_does_not_collapse_under_denoise)) |
+  (binary_id(kimo-core::quality_v8100) & test(=noisy_clip_rendered_output_has_lower_noise_variance)) |
+  (binary_id(kimo-core::quality_v8120) & test(=preset_byte_identity_report)) |
+  (binary_id(kimo-core::quality_v870) & test(=auto_edit_turns_on_color_pipeline_as_its_last_step)) |
+  (binary_id(kimo-core::quality_v880) & test(=auto_edit_turns_on_encoder_quality_and_color_tag_sanity_by_default)) |
+  (binary_id(kimo-core::quality_v890) & test(=motion_blur_false_leaves_the_push_in_at_zero)) |
+  (binary_id(kimo-core::quality_v890) & test(=push_in_ramp_gets_motion_blur_proportional_to_its_speed_punch_ins_stay_at_zero)) |
+  (binary_id(kimo-core::quality_v890) & test(=stabilize_handheld_corrects_the_shaky_clip_and_leaves_the_locked_one_alone)) |
+  (binary_id(kimo-core::quality_v890) & test(=stabilize_handheld_defaults_to_false)) |
+  (binary_id(kimo-core::render_bench) & test(=cache_bench)) |
+  (binary_id(kimo-core::render_bench) & test(=render_bench)) |
+  (binary_id(kimo-core::render_purity) & test(=pipeline_flag_is_not_shared_between_concurrent_renders)) |
+  (binary_id(kimo-core::render_state_leak) & test(=no_thread_local_state_leaks_between_renders)) |
+  (binary_id(kimo-core::render_state_leak) & test(=thread_count_does_not_change_pixels)) |
+  (binary_id(kimo-core::sfm_synthetic) & test(=distortion_model_is_harmless_without_distortion)) |
+  (binary_id(kimo-core::sfm_synthetic) & test(=estimates_unknown_focal)) |
+  (binary_id(kimo-core::sfm_synthetic) & test(=solves_known_camera_path)) |
+  (binary_id(kimo-core::sfm_synthetic) & test(=solves_lens_distortion)) |
+  (binary_id(kimo-core::sfm_synthetic) & test(=solves_pure_pan_rotation_only)) |
+  (binary_id(kimo-core::shape_bound_equiv) & test(=bounded_shape_raster_is_bit_identical)) |
+  (binary_id(kimo-core::shape_hint_equiv) & test(=bbox_hint_is_bit_identical)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=blur_similarity_gaussian)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=clean_similarity_gaussian)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=l1_clean)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=locked_clean_drift)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=locked_noise_drift)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=noise_similarity_gaussian)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=outliers_similarity_gaussian)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=perspective_plate_perspective_method)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=position_translation_only)) |
+  (binary_id(kimo-core::stabilize_accuracy) & test(=rolling_shutter_plate)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=classic_args_reach_the_classic_engine_unchanged)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=rolling_shutter_keys_a_mesh_pin_and_drops_the_rigid_keys)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=synthesize_edges_fills_borders_with_the_right_pixels)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=synthesize_edges_fills_borders_with_the_right_pixels_range_05)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=warp_crop_adds_the_stabilize_crop_mask)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=warp_perspective_keys_the_pin_corners)) |
+  (binary_id(kimo-core::stabilize_tool) & test(=warp_similarity_keys_every_frame_and_beats_the_jitter_gate)) |
+  (binary_id(kimo-core::track_mask_accuracy) & test(=gate_affine)) |
+  (binary_id(kimo-core::track_mask_accuracy) & test(=gate_perspective)) |
+  (binary_id(kimo-core::track_mask_accuracy) & test(=gate_similarity)) |
+  (binary_id(kimo-core::track_mask_accuracy) & test(=gate_translation)) |
+  (binary_id(kimo-core::track_mask_accuracy) & test(=noise_strict_iou_gate)) |
+  (binary_id(kimo-core::transform_nodes) & test(=timing_1080p_parented_vs_flat_interleaved)) |
+  (binary_id(kimo-core::transition_raw) & test(=render_1080p_contact_sources)) |
+  (binary_id(kimo-core::transition_raw) & test(=render_1080p_crossfade_slide_sources)) |
+  (binary_id(kimo-core::transition_raw) & test(=render_1080p_slide_policies)) |
+  (binary_id(kimo-core::uv_math) & test(=render_1080p_uv_sources)) |
+  (binary_id(kimo-core::vad) & test(=aggressiveness_monotonic_200_random_fixtures)) |
+  (binary_id(kimo-mcp::frame_skip) & test(=a_burst_coalesces_and_every_queued_frame_is_accounted_for)) |
+  (binary_id(kimo-mcp::frame_skip) & test(=a_spectator_that_stops_reading_drops_frames_off_the_lane_counted_and_reported)) |
+  (binary_id(kimo-mcp::live_preview) & test(=live_frame_after_every_mutating_call_and_none_for_reads)) |
+  (binary_id(kimo-mcp::live_preview) & test(=no_preview_work_when_off_unconnected_or_disabled)) |
+  (binary_id(kimo-mcp::spectator_demo) & test(=a_stalled_spectator_loses_no_demo_frame)) |
+  (binary_id(kimo-mcp::spectator_demo) & test(=demo_mode_from_the_command_line)) |
+  (binary_id(kimo-mcp::spectator_demo) & test(=demo_mode_gives_every_call_its_own_frame)) |
+  (binary_id(kimo-mcp::spectator_demo) & test(=demo_mode_over_the_gui_transport)) |
+  (binary_id(kimo-mcp::telemetry_one_to_one) & test(=every_call_one_start_one_terminal_over_the_gui_transport))
+)
+"""
+
+[profile.ci.junit]
+path = "junit.xml"
+store-failure-output = true
+
+[profile.nightly]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.nightly.junit]
+path = "junit.xml"
+store-failure-output = true
