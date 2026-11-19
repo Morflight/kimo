@@ -122,6 +122,8 @@ assert.equal(wave(100,40,-49297/9301),wave(100,40,(1-49297)/9301),'zero RNG stat
 state.calls=[{name:'progress',status:'running',t:900,progress:{done:1,total:4}}];
 const railDefaults=finite(render('agent',{}, {progress:true,curH:50}));assert.match(railDefaults,/padding-top:9px/);assert.match(railDefaults,/width:25.0%/);assert.doesNotMatch(railDefaults,/data-call=/);state.calls=[];
 assert.match(finite(KINDS.viewer({spec:{},data:{},state:{gizmo:{t:1000,prev:{},next:{},read:[]}},w:600,h:300})),/class="ov gz"/);
+const midWipe=finite(KINDS.viewer({spec:{},data:{src:'fixture://graded',wipe:.4},state:{},w:600,h:300}));assert.match(midWipe,/<img class="before" src="fixture:\/\/graded"[^>]*clip-path:inset\(0 0 0 40%\)/,'a running grade shows the ungraded frame right of the edge');const edge=/<i class="wipe" style="left:([\d.]+)px"/.exec(midWipe);assert.ok(edge,'a running grade draws the wipe edge');const frameW=+/class="frame" style="[^"]*width:([\d.]+)px/.exec(midWipe)[1];assert.ok(Math.abs(+edge[1]-.4*frameW)<.01,'the wipe edge sits at 40% of the frame width');
+for(const wipe of [1,undefined]){const settled=finite(KINDS.viewer({spec:{},data:{src:'fixture://graded',wipe},state:{},w:600,h:300}));assert.doesNotMatch(settled,/class="before"|class="wipe"/,'a finished or absent grade wipe draws only the result');}
 assert.match(finite(render('loudness',{meters:[{l:'L'}]})),/background:#8d887e/);
 for(const opts of [undefined,{colW:[100,100,100,100,100],footLine:200}]){
  const data={head:['name','preset','duration','status','time'],rows:['✕ failed','✓ done','queued','● running'].map(status=>['Name','preset','-',status,'-']),foot:'4 jobs'};
