@@ -191,7 +191,16 @@ fn folds(s:&Stream)->(usize,usize){
  assert_eq!(na120,427,"near-tangent adaptive folds120 changed - re-pin only with a note");
 }
 #[test]fn cp4_peak_memory_box_depth8(){
- let rss=||->u64{let s=std::fs::read_to_string("/proc/self/status").unwrap();let h=s.lines().find(|l|l.starts_with("VmHWM")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap();h};
+ let rss=||->u64{
+  if cfg!(windows) {
+   let output=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",&format!("(Get-Process -Id {}).PeakWorkingSet64",std::process::id())]).output().unwrap();
+   assert!(output.status.success(),"peak working-set query: {}",String::from_utf8_lossy(&output.stderr));
+   String::from_utf8(output.stdout).unwrap().trim().parse::<u64>().unwrap().div_ceil(1024)
+  } else {
+   let s=std::fs::read_to_string("/proc/self/status").unwrap();
+   s.lines().find(|l|l.starts_with("VmHWM")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap()
+  }
+ };
  let bc=OctreeConfig{bounds:[[-1.6;3],[1.6;3]],..cfg(2,8)};
  let m=octree::extract_mesh(&boxg(),&bc).unwrap();
  assert_eq!((m.boundary_edges,m.nonmanifold_edges,m.euler_characteristic),(0,0,2),"box d8 closed manifold");

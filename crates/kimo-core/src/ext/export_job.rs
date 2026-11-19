@@ -269,7 +269,7 @@ fn run_fast(j: Arc<Job>, pl: super::export_fast::Plan, fps: f64, out: String, lo
         #[cfg(windows)]
         { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
         let mut child = c.spawn().map_err(|e| format!("cannot start ffmpeg: {e}"))?;
-        let err_h = { let e = child.stderr.take(); std::thread::spawn(move || { let mut s = String::new(); if let Some(mut e) = e { use std::io::Read; let _ = e.read_to_string(&mut s); } s }) };
+        let err_h = { let e = child.stderr.take(); crate::guard::spawn_with_token(move || { let mut s = String::new(); if let Some(mut e) = e { use std::io::Read; let _ = e.read_to_string(&mut s); } s }) };
         if let Some(o) = child.stdout.take() {
             for line in std::io::BufReader::new(o).lines().map_while(Result::ok) {
                 if j.cancel.load(std::sync::atomic::Ordering::Relaxed) { let _ = child.kill(); let _ = child.wait(); let _ = std::fs::remove_file(&part); return Err("cancelled".into()); }

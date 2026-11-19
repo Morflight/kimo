@@ -507,7 +507,7 @@ pub fn start_mode(p:&Project,dir:&Path,scale:f64,t:f64,rate:f64,playing:bool,war
     *STREAM.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
     if warming {
         let weak=Arc::downgrade(&s);
-        std::thread::spawn(move || {
+        crate::guard::spawn_with_token(move || {
             std::thread::sleep(std::time::Duration::from_secs(WARM_SECONDS));
             if let Some(s)=weak.upgrade() {
                 let mut st=s.st.lock().unwrap_or_else(|e|e.into_inner());

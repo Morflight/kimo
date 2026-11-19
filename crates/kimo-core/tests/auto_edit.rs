@@ -1,5 +1,7 @@
 //! auto_edit (v7.6Q): raw clips -> one call -> a finished edit. Each test here is a real editorial outcome
 //! the chain must get right, not just "it returns ok".
+#[path="support/whisper_fixture.rs"]
+mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::model::Source;
 use serde_json::{json, Value};
@@ -459,6 +461,18 @@ fn proj() -> Session { let mut ss = Session::new(); call(&mut ss, "project_set",
 /// synthetic "selfie" shot: a skin-toned fill in the lower half of the frame should push captions to the
 /// top band by default, and an explicit caption_position still overrides it when asked.
 #[test] fn job3_caption_position_defaults_to_auto_and_avoids_a_low_face() {
+    if std::env::var_os("KIMO_AUTO_EDIT_LAYOUT_FIXTURE").is_none() {
+        let tokens:Vec<Value>=[" one"," two"," three"].iter().enumerate().map(|(i,text)|json!({"text":text,"offsets":{"from":300+i*500,"to":550+i*500},"p":0.99,"t_dtw":55+i*50})).collect();
+        let response=json!({"result":{"language":"en"},"transcription":[{"offsets":{"from":0,"to":2000},"text":" one two three","tokens":tokens}]}).to_string();
+        let binary=whisper_fixture::build(&dir().join("layout-recognizer"),&response,"en",None);
+        let model=dir().join("ggml-small-q5_1.bin");std::fs::write(&model,b"fixture model metadata").unwrap();
+        let result=Command::new(std::env::current_exe().unwrap()).args(["--exact","job3_caption_position_defaults_to_auto_and_avoids_a_low_face","--nocapture"])
+            .env("KIMO_AUTO_EDIT_LAYOUT_FIXTURE","1").env("KIMO_WHISPER_BIN",binary).env("KIMO_WHISPER_MODEL",model).output().unwrap();
+        assert!(result.status.success(),"{}{}",String::from_utf8_lossy(&result.stdout),String::from_utf8_lossy(&result.stderr));
+        assert!(String::from_utf8_lossy(&result.stdout).contains("fixture caption placement passed"));
+        return;
+    }
+
     let p = dir().join("job3_lowface_th.mp4");
     if !p.exists() {
         let a = "aevalsrc='(between(t,0,3))*0.6*(0.25*sin(2*PI*140*t)+0.15*sin(2*PI*280*t+1)+0.1*sin(2*PI*420*t+2))*(0.55+0.45*sin(2*PI*4.3*t))':s=48000:d=3";
@@ -483,6 +497,7 @@ fn proj() -> Session { let mut ss = Session::new(); call(&mut ss, "project_set",
     let r2 = call(&mut ss2, "auto_edit", json!({"talking_head_asset_ids": [a2], "grade": false, "punch_ins": false, "push_in": false, "end_screen": false, "caption_position": "bottom"}));
     assert!(r2["ok"] == json!(true), "{r2}");
     assert_eq!(r2["stages"]["captions"]["position"].as_str().unwrap_or(""), "bottom", "an explicit caption_position should still be honoured over the face check: {r2}");
+    println!("fixture caption placement passed");
 }
 
 

@@ -5,6 +5,8 @@
 //! kimo's own already-Hinglish-tuned recognizer (auto_captions's pipeline: beam search, Hinglish prompt, Hindi pass) hears
 //! on that SAME audio, and flags any cue the recognizer genuinely cannot make out - so lint_edit can hand a small model the
 //! exact clip_id and an edit_caption fix, instead of unverified nonsense reaching the screen unflagged.
+#[path="support/whisper_fixture.rs"]
+mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -21,8 +23,8 @@ fn stub(p: f32, tag: &str) -> PathBuf {
     let tok = |t: &str, ms: u32, dtw: u32| format!("{{\"text\":\"{t}\",\"offsets\":{{\"from\":{ms},\"to\":{}}},\"p\":{p},\"t_dtw\":{dtw}}}", ms + 200);
     let body = format!("[{{\"text\":\"[_BEG_]\",\"offsets\":{{\"from\":0,\"to\":0}},\"p\":0.9,\"t_dtw\":-1}},{},{},{}]",
         tok(" one", 300, 80), tok(" two", 800, 130), tok(" three", 1200, 185));
-    let script = format!("#!/bin/sh\nOF=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) OF=\"$2\"; shift;; esac; shift; done\ncat > \"$OF.json\" <<EOF\n{{\"result\":{{\"language\":\"en\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":2000}},\"text\":\" one two three.\",\"tokens\":{body}}}]}}\nEOF\n");
-    std::fs::write(&bin, script).unwrap(); Command::new("chmod").arg("+x").arg(&bin).status().unwrap(); bin
+    let response=json!({"result":{"language":"en"},"transcription":[{"offsets":{"from":0,"to":2000},"text":" one two three.","tokens":serde_json::from_str::<Value>(&body).unwrap()}]}).to_string();
+    whisper_fixture::build(&bin,&response,"hi",None)
 }
 fn model() -> PathBuf { let p = dir().join("ggml-small-q5_1.bin"); if !p.exists() { std::fs::write(&p, b"stub").unwrap(); } p }
 

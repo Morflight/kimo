@@ -25,3 +25,21 @@ Telemetry byte-comparison/load proofs run with observation off so per-call obser
 Default-port transport equality uses observation off to exclude volatile timings and temporary image paths, and an explicitly located system font for its text fixture; stderr must still be empty. The headless demo cadence case uses numeric observations so a burst is not stretched by synchronous before/after image rendering. Export progress requires FFmpeg and fails if it is absent.
 
 The one-to-one state-lane load tests disable observation image generation explicitly; all 600/8,000 calls, backpressure stalls, request identities, terminal/error events and project-change counts remain required. Observation image behavior is covered separately.
+
+Tool-description regressions enforce the existing first-sentence limit across the entire registry. Longer capability details remain after the summary; caption composition, visual inspection, motion review, reference comparison, review findings and detector fallback documentation are checked explicitly.
+
+On Windows, LLVM export may exceed the operating system's command-line length limit when the full workspace has hundreds of test executables. `tools/quality/rust_coverage_report.py` retries only that never-executed export using a temporary response file. It retains every original object and flag, writes the same JSON artifact and propagates the export exit status. No coverage source, threshold or test is removed.
+
+Golden text manifests check out with LF endings on every platform. This keeps byte-for-byte recipe hash comparisons stable on Windows without regenerating expected hashes or normalizing away differences in the test.
+
+The overlap-pipeline tests encode their own six-second moving-pattern H.264 fixture instead of referencing a developer's private absolute path. They retain the exact exported-frame count, per-frame hash equality and cache-isolation assertions. Peak-memory checks read Linux VmHWM or the Windows parent process's PeakWorkingSet64, retaining the 1,800,000 KiB limit. CI provides output paths for all camera, particle, transition, UV and foundation rendering proofs.
+
+The original WebM regression uses OpenCV Extra's public `faceocc2.webm` from commit `ebf9366b3845efe1e54bf2440cf238fd68905bab` (4,134,756 bytes). CI verifies SHA-256 `5ffedeca4fb3acfd65e6f6aa71f016f748628727be1e24914fde2198b42089c5` before setting `KIMO_FACEOCC2_WEBM`; no synthetic substitute is used for that original-file regression.
+
+Caption fixtures compile a small native recognizer executable rather than invoking Unix shell scripts. The JSON token timings, language selection, confidence values and recorded arguments remain the same, with no real speech model or provider required.
+
+Instrumented CI tests use test-profile optimization level 2, retaining debug assertions, all targets, ignored proofs and the existing performance thresholds. The three-hour job limit is unchanged. This avoids measuring an unoptimized software renderer while preserving the tested behavior and coverage inventory.
+
+Process-lifecycle unit tests use a compiled native child for stdout/stderr, blocked pipes, delayed exit and stdin capture. They keep their existing 100 ms deadlines, two-second cleanup ceilings, exact output and bounded-stderr checks. Reaping is checked through `/proc` on Linux and the Windows process table on Windows, rather than assuming `/proc` exists everywhere.
+
+Export stderr readers, preview warm-up timers and vision fixtures start through the cancellation-token helper. The existing worker-cancellation and raw-thread checks remain unchanged.

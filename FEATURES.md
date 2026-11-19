@@ -2148,3 +2148,5 @@ Studio inspector regression: a focused delete button no longer blocks the projec
 Studio fallback drafts now cross chunk boundaries instead of replaying the same chunk. A two-chunk Chromium regression verifies the next request and final stop. Escape closes overlays first and clears the Edit selection when no overlay or menu is open.
 
 Registered tool descriptions keep their opening sentence under 150 characters. Caption composition, frame inspection, motion review, reference comparison and vision detection retain their full argument and fallback details after that concise summary.
+
+Spectator transport retains exact byte ordering when a connected reader stalls. Nonblocking socket writes advance only by the reported accepted-byte count; the regression compares an eight-MiB payload byte for byte after a deliberate reader pause.

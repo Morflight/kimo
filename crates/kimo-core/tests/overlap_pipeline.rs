@@ -9,14 +9,20 @@ use std::process::Command;
 /// this concurrent pipeline is deterministic and loses no frames across many batches of real decoded
 /// media -- a race in the snapshot/prefetch handoff would show up as non-determinism or a frame count
 /// drift between runs, not as a crash.
-fn media_project(w: u32, h: u32, fps: f64, dur: f64) -> Session {
+struct SourceFixture(std::path::PathBuf);
+impl Drop for SourceFixture { fn drop(&mut self) { let _=std::fs::remove_file(&self.0); } }
+
+fn media_project(w: u32, h: u32, fps: f64, dur: f64) -> (Session, SourceFixture) {
     let mut s = Session::new();
     dispatch(&mut s, "project_set", &json!({"width": w, "height": h, "fps": fps})).unwrap();
-    let source = "/home/user/tab/work/v7q_real/talkinghead_real_final.mp4";
-    let asset = dispatch(&mut s, "import_media", &json!({"path": source})).unwrap();
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let source = SourceFixture(std::env::temp_dir().join(format!("kimo-overlap-source-{}-{}.mp4",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed))));
+    let output=Command::new("ffmpeg").args(["-v","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=24:duration=6","-c:v","libx264","-pix_fmt","yuv420p"]).arg(&source.0).output().unwrap();
+    assert!(output.status.success(),"fixture encoding: {}",String::from_utf8_lossy(&output.stderr));
+    let asset = dispatch(&mut s, "import_media", &json!({"path": source.0})).unwrap();
     let tr = dispatch(&mut s, "add_track", &json!({})).unwrap()["track_id"].clone();
     dispatch(&mut s, "add_clip", &json!({"track_id": tr, "source_type": "media", "asset_id": asset["asset_id"], "start": 0, "duration": dur})).unwrap();
-    s
+    (s, source)
 }
 
 fn framemd5(path: &str) -> Vec<u8> {
@@ -29,7 +35,7 @@ fn framemd5(path: &str) -> Vec<u8> {
 /// prefetch-decode-while-compose handoff runs several times, not just once.
 #[test]
 fn overlap_export_is_deterministic_across_many_batches() {
-    let s = media_project(320, 180, 24.0, 5.0);
+    let (s, _source) = media_project(320, 180, 24.0, 5.0);
     let n = (5.0 * 24.0f64).round() as usize;
     assert_eq!(s.project.tracks[0].clips.len(), 1);
 
@@ -59,7 +65,7 @@ fn overlap_export_is_deterministic_across_many_batches() {
 /// the very first `decode_batch` call) must still work -- the `carried: None` branch of the new loop.
 #[test]
 fn overlap_export_single_batch_still_works() {
-    let s = media_project(160, 90, 24.0, 0.2); // 5 frames: well under any realistic batch size
+    let (s, _source) = media_project(160, 90, 24.0, 0.2); // 5 frames: well under any realistic batch size
     let n = (0.2 * 24.0f64).round() as usize;
     let path = std::env::temp_dir().join(format!("kimo-overlap-single-{}.mp4", std::process::id()));
     render::export(&s.project, path.to_str().unwrap(), 20).unwrap();
@@ -73,7 +79,7 @@ fn overlap_export_single_batch_still_works() {
 /// original cache's own entry for the same clip must be untouched (no aliasing between the two).
 #[test]
 fn cache_snapshot_does_not_alias_the_original() {
-    let s = media_project(160, 90, 24.0, 1.0);
+    let (s, _source) = media_project(160, 90, 24.0, 1.0);
     let mut cache = render::Cache::new_export();
     render::prepare_export_range(&s.project, &mut cache, 0.0, 0.2).unwrap();
     let before = cache.frames_of(&s.project.tracks[0].clips[0].id).map(|f| f.len());

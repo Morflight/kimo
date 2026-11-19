@@ -2,6 +2,8 @@
 //! Behaviour is checked on rendered frames: words pop in as spoken, the spoken word is coloured, a keyword is coloured,
 //! captions sit in the 9:16 safe band, a fix keeps the timing, and the recognizer path (a stub whisper-cli writing whisper.cpp
 //! JSON) maps words onto the timeline with their starts snapped to the audio.
+#[path="support/whisper_fixture.rs"]
+mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::render::{render_frame, Cache};
 use serde_json::{json, Value};
@@ -154,8 +156,8 @@ fn stub_as(lang_auto: &str, tag: &str) -> (PathBuf, PathBuf) {
     // two tokens per word, like real output: the first token's DTW time is the onset + 0.25 s, the last one's is the next onset - 0.04 s
     let body = format!("[{{\"text\":\"[_BEG_]\",\"offsets\":{{\"from\":0,\"to\":0}},\"p\":0.9,\"t_dtw\":-1}},{},{},{},{},{},{},{}]",
         tok(" o", 300, 80), tok("ne", 500, 101), tok(" tw", 800, 130), tok("o", 900, 156), tok(" thr", 1200, 185), tok("ee", 1400, 200), tok(".", 1500, 201));
-    let script = format!("#!/bin/sh\necho \"$@\" >> {log}\nOF=''\nL=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) OF=\"$2\"; shift;; -l) L=\"$2\"; shift;; esac; shift; done\nif [ \"$L\" = auto ]; then LG={lang_auto}; else LG=$L; fi\ncat > \"$OF.json\" <<EOF\n{{\"result\":{{\"language\":\"$LG\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":2000}},\"text\":\" one two three.\",\"tokens\":{body}}}]}}\nEOF\n", log = log.display());
-    std::fs::write(&bin, script).unwrap(); Command::new("chmod").arg("+x").arg(&bin).status().unwrap(); let _ = std::fs::remove_file(&log); (bin, log)
+    let response=json!({"result":{"language":"__LANG__"},"transcription":[{"offsets":{"from":0,"to":2000},"text":" one two three.","tokens":serde_json::from_str::<Value>(&body).unwrap()}]}).to_string();
+    let _=std::fs::remove_file(&log); (whisper_fixture::build(&bin,&response,lang_auto,Some(&log)),log)
 }
 /// 2 s of 360x640 video with three 1 kHz tone bursts (speech stand-ins) starting at 0.55, 1.05 and 1.60 s.
 fn bursts() -> PathBuf {
@@ -213,8 +215,8 @@ fn with_clip(start: f64) -> Session {
 fn stub_said(tag: &str, said: &[&str]) -> PathBuf {
     let d = dir(); let bin = d.join(format!("whisper_said_{tag}.sh"));
     let toks: Vec<String> = said.iter().enumerate().map(|(i, w)| { let ms = 300 + 300 * i as u32; format!("{{\"text\":\" {w}\",\"offsets\":{{\"from\":{ms},\"to\":{}}},\"p\":0.93,\"t_dtw\":{}}}", ms + 250, ms / 10 + 25) }).collect();
-    let script = format!("#!/bin/sh\nOF=''\nL=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) OF=\"$2\"; shift;; -l) L=\"$2\"; shift;; esac; shift; done\nif [ \"$L\" = auto ]; then LG=hi; else LG=$L; fi\ncat > \"$OF.json\" <<EOF\n{{\"result\":{{\"language\":\"$LG\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":2000}},\"text\":\" {}\",\"tokens\":[{}]}}]}}\nEOF\n", said.join(" "), toks.join(","));
-    std::fs::write(&bin, script).unwrap(); Command::new("chmod").arg("+x").arg(&bin).status().unwrap(); bin
+    let response=json!({"result":{"language":"__LANG__"},"transcription":[{"offsets":{"from":0,"to":2000},"text":format!(" {}",said.join(" ")),"tokens":serde_json::from_str::<Value>(&format!("[{}]",toks.join(","))).unwrap()}]}).to_string();
+    whisper_fixture::build(&bin,&response,"hi",None)
 }
 
 #[test] fn hinglish_variants_are_written_one_way_and_english_is_left_alone() { let _env_guard = env_guard();

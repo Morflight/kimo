@@ -246,6 +246,8 @@ target/release/kimo --version                       # the version in Cargo.toml 
 
 `kimo-mcp` is the MCP server (stdio). `kimo` is the command line client for the same tools.
 
+552 registered tools share the same engine registry.
+
 #### 3. Run it headless
 
 `kimo-mcp` takes no required arguments: it reads JSON-RPC on stdin and writes replies on stdout. Your MCP client normally starts it for you.

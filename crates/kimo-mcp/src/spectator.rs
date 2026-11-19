@@ -285,19 +285,27 @@ impl Conn {
         match self {
             Conn::File(f) => f.write_all(l),
             Conn::Tcp(s) => {
-                let mut off = 0;
-                while off < l.len() {
-                    match s.write(&l[off..]) {
-                        Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-                        Ok(n) => off += n,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                            if !peer_open(s) { return Err(e); }
+                // A blocking Winsock send timeout can leave delivery ambiguous. Nonblocking
+                // writes report accepted bytes explicitly, so retry only the remaining suffix.
+                s.set_nonblocking(true)?;
+                let result = (|| {
+                    let mut off = 0;
+                    while off < l.len() {
+                        match s.write(&l[off..]) {
+                            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                            Ok(n) => off += n,
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if !peek_open(s) { return Err(e); }
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(e) => return Err(e),
                         }
-                        Err(e) => return Err(e),
                     }
-                }
-                Ok(())
+                    Ok(())
+                })();
+                let restored = s.set_nonblocking(false);
+                result.and(restored)
             }
         }
     }
@@ -325,13 +333,17 @@ fn greeted(port: u16) -> Option<std::net::TcpStream> {
 /// False once the peer has closed its end: a non-blocking peek reads EOF (or fails).
 fn peer_open(s: &std::net::TcpStream) -> bool {
     if s.set_nonblocking(true).is_err() { return false; }
+    let ok = peek_open(s);
+    s.set_nonblocking(false).is_ok() && ok
+}
+
+fn peek_open(s: &std::net::TcpStream) -> bool {
     let mut b = [0u8; 1];
-    let ok = match s.peek(&mut b) {
+    match s.peek(&mut b) {
         Ok(0) => false,
         Ok(_) => true,
         Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
-    };
-    s.set_nonblocking(false).is_ok() && ok
+    }
 }
 
 fn open(dest: &Dest) -> Option<Conn> {
@@ -774,6 +786,27 @@ pub fn call_abort(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stalled_tcp_line_is_transmitted_once_without_truncation() {
+        use std::io::Read;
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let bytes:Vec<u8>=(0..8*1024*1024).map(|i|(i%251) as u8).collect();
+        let expected=bytes.clone();
+        let reader=kimo_core::guard::spawn_with_token(move || {
+            let (mut socket,_)=listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            let mut received=Vec::new();socket.read_to_end(&mut received).unwrap();
+            assert_eq!(received,expected,"a stalled peer must receive every byte exactly once");
+        });
+        let socket=std::net::TcpStream::connect(address).unwrap();
+        socket.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        let mut connection=Conn::Tcp(socket);
+        assert!(connection.alive());connection.write_line(&bytes).unwrap();drop(connection);
+        reader.join().unwrap();
+    }
+
     use super::*;
     #[test]
     fn nobody_listening_serializes_nothing() {

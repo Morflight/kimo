@@ -19,7 +19,14 @@
         "crates/kimo-core/src/color/mux.rs",
         "crates/kimo-core/src/render.rs",
         "crates/kimo-core/src/color/process.rs",
-        "crates/kimo-core/tests/description_first_sentence.rs"
+        "crates/kimo-core/tests/description_first_sentence.rs",
+        "crates/kimo-core/tests/auto_captions.rs",
+        "crates/kimo-core/tests/caption_confidence.rs",
+        "crates/kimo-core/tests/auto_edit.rs",
+        "crates/kimo-core/tests/overlap_pipeline.rs",
+        "crates/kimo-core/tests/octree_mesh_bench_cp4.rs",
+        "crates/kimo-core/tests/webm_probe.rs",
+        "crates/kimo-core/tests/readme_count.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",
@@ -438,7 +445,11 @@
         "FEATURES.md"
       ],
       "tests": [
-        "tests/mcp_client_proof.py"
+        "tests/mcp_client_proof.py",
+        "crates/kimo-mcp/src/spectator.rs",
+        "crates/kimo-mcp/tests/telemetry_one_to_one.rs",
+        "crates/kimo-mcp/tests/spectator_demo.rs",
+        "crates/kimo-mcp/tests/spectator_default.rs"
       ],
       "sources": [
         "crates/kimo-mcp/src/inline.rs",

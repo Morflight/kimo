@@ -115,3 +115,7 @@ pub mod particle_flow;
 pub mod particles3d;
 pub mod threed;
 pub mod vr;
+
+#[cfg(test)]
+#[path = "../tests/support/process_fixture.rs"]
+mod process_fixture;

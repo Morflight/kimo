@@ -62,7 +62,7 @@ mod download {
     fn serve(body: Vec<u8>, conns: usize, drop_first: bool) -> (String, Arc<Mutex<Vec<String>>>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); let url = format!("http://{}/m.onnx", l.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(vec![])); let s2 = seen.clone();
-        std::thread::spawn(move || { for k in 0..conns { let Ok((mut c, _)) = l.accept() else { return };
+        crate::guard::spawn_with_token(move || { for k in 0..conns { let Ok((mut c, _)) = l.accept() else { return };
             let mut r = BufReader::new(c.try_clone().unwrap()); let mut from = 0usize;
             loop { let mut line = String::new(); if r.read_line(&mut line).unwrap_or(0) == 0 { break; } let t = line.trim(); if t.is_empty() { break; }
                 if let Some(v) = t.to_ascii_lowercase().strip_prefix("range: bytes=") { s2.lock().unwrap().push(v.to_string()); from = v.trim_end_matches('-').parse().unwrap_or(0); } }
@@ -117,7 +117,7 @@ mod download {
 
     #[test] fn http_error_is_reported() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); let url = format!("http://{}/gone", l.local_addr().unwrap());
-        std::thread::spawn(move || { if let Ok((mut c, _)) = l.accept() { let mut buf = [0u8; 1024]; let _ = c.read(&mut buf); let _ = c.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); } });
+        crate::guard::spawn_with_token(move || { if let Ok((mut c, _)) = l.accept() { let mut buf = [0u8; 1024]; let _ = c.read(&mut buf); let _ = c.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); } });
         let b = body(); let d = tmp("http404");
         assert!(matches!(models::ensure_in(&d, &spec(&url, &b), false), Err(models::ModelError::Http(404, _))));
     }
