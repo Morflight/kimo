@@ -20,7 +20,7 @@ impl Mcp {
     fn spawn(spec: &str) -> Mcp {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kimo-mcp"));
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-            .env_remove("KIMO_TOOLS").env_remove("KIMO_SPECTATOR_FRAMES").env_remove("KIMO_SPECTATOR_DEMO").env("KIMO_SPECTATOR", spec);
+            .env("KIMO_OBSERVE", "off").env_remove("KIMO_TOOLS").env_remove("KIMO_SPECTATOR_FRAMES").env_remove("KIMO_SPECTATOR_DEMO").env("KIMO_SPECTATOR", spec);
         let mut ch = cmd.spawn().expect("spawn kimo-mcp");
         let stdin = ch.stdin.take();
         let out = ch.stdout.take().unwrap();

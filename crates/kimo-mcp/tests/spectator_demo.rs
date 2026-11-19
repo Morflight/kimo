@@ -180,7 +180,7 @@ fn demo_mode_from_the_command_line() {
 fn headless_by_default_and_demo_costs_nothing_without_a_spectator() {
     // the same burst headless: no demo frames, the cadence coalescing renders at most a couple of frames
     let p = tmp("headless.jsonl"); let _ = std::fs::remove_file(&p);
-    let mut m = Mcp::spawn(&[("KIMO_SPECTATOR", &format!("file:{}", p.display()))], &[]);
+    let mut m = Mcp::spawn(&[("KIMO_SPECTATOR", &format!("file:{}", p.display())), ("KIMO_OBSERVE", "numbers")], &[]);
     let sent = m.burst(&calls());
     std::thread::sleep(Duration::from_millis(700));
     m.finish();

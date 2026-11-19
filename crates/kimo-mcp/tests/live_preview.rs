@@ -162,10 +162,16 @@ fn burst_renders_once_after_the_burst() {
     let id = last_call_id(&p, "add_clip");
     check_png(&frame_for(&p, &id), 320);
     let before = auto_frames(&events(&p)).len();
+    // Measure live-preview coalescing, with observation numbers as the GUI uses.
+    // Default observation renders before/after images synchronously and destroys the burst cadence.
     // 12 calls written at once (pipelined), answered back to back
     let n = 12;
-    for k in 0..n { m.send("tools/call", json!({"name":"set_property","arguments":{"clip_id":"clip2","property":"x","value":10 * (k + 1)}})); }
-    for _ in 0..n { let r = m.recv(); assert_eq!(r["result"]["isError"], false); }
+    for k in 0..n { m.send("tools/call", json!({"name":"set_property","arguments":{"clip_id":"clip2","property":"x","value":10 * (k + 1),"observe":"numbers"}})); }
+    for _ in 0..n {
+        let r = m.recv(); assert_eq!(r["result"]["isError"], false);
+        let result: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["observe"]["mode"], "numbers");
+    }
     // the sink is written by a background thread, so the last responses can arrive before their events: wait for them
     // (like last_call_id) instead of reading the file once
     let completes = || -> Vec<String> { events(&p).iter().filter(|e| e["tool_name"] == "set_property" && e["phase"] == "complete").filter_map(|e| e["call_id"].as_str().map(String::from)).collect() };
@@ -194,7 +200,13 @@ fn steady_stream_of_calls_still_updates_the_viewer() {
     let before = auto_frames(&events(&p)).len();
     let t0 = Instant::now();
     let mut k = 0;
-    while t0.elapsed() < Duration::from_secs(3) { k += 1; m.call("set_property", json!({"clip_id":"clip2","property":"x","value":k})); std::thread::sleep(Duration::from_millis(50)); }
+    while t0.elapsed() < Duration::from_secs(3) {
+        k += 1;
+        let r = m.call("set_property", json!({"clip_id":"clip2","property":"x","value":k,"observe":"numbers"}));
+        let result: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["observe"]["mode"], "numbers");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let during = auto_frames(&events(&p)).len() - before;
     assert!(during >= 2, "{k} calls over 3 s produced {during} frames during the stream");
     assert!(during < k / 2, "frames coalesce: {during} frames for {k} calls");

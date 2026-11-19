@@ -1,7 +1,7 @@
 //! Telemetry on by default: with KIMO_SPECTATOR unset kimo-mcp scans 127.0.0.1:7421..=7430 and streams only to a peer
 //! that greets it with the versioned spectator hello (crates/kimo-gui/src/main.rs). These tests run with the variable
 //! fully unset (or set to the values under test). They need those loopback ports free (no spectator open on this
-//! machine); a test that finds one taken prints "skipped" and returns without asserting.
+//! machine); an occupied required port fails the test instead of silently skipping it.
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -20,7 +20,7 @@ fn calls() -> Vec<Vec<Value>> {
     vec![
         vec![json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}), json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
              req(3, "project_set", json!({"width":320,"height":180,"fps":24})), req(4, "add_track", json!({}))],
-        vec![req(5, "add_text", json!({"track_id":"track1","text":"kimo","start":0,"duration":1})), req(6, "set_property", json!({"clip_id":"clip2","property":"x","value":40}))],
+        vec![req(5, "add_text", json!({"track_id":"track1","text":"kimo","font":kimo_core::text::system_fallback_font().expect("installed system font for text fixture"),"start":0,"duration":1})), req(6, "set_property", json!({"clip_id":"clip2","property":"x","value":40}))],
         vec![req(7, "set_property", json!({"clip_id":"clip2","property":"y","value":12})), req(8, "get_project", json!({}))],
     ]
 }
@@ -32,6 +32,8 @@ fn session(spec: Option<&str>, phases: Vec<(Step, Duration, Vec<Value>)>) -> (Ve
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kimo-mcp"));
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars() { if k.starts_with("KIMO_") { cmd.env_remove(k); } }
+    // Transport equality excludes volatile observation timings and generated image paths.
+    cmd.env("KIMO_OBSERVE", "off");
     if let Some(s) = spec { cmd.env("KIMO_SPECTATOR", s); }
     let mut ch = cmd.spawn().expect("spawn kimo-mcp");
     let mut stdin = ch.stdin.take().unwrap();
@@ -93,7 +95,7 @@ impl Peer {
 fn bind(port: u16) -> TcpListener { TcpListener::bind(("127.0.0.1", port)).unwrap() }
 fn ports_free() -> bool {
     let ok = (7421..=7430u16).all(|p| TcpListener::bind(("127.0.0.1", p)).is_ok());
-    if !ok { println!("skipped: a port in 127.0.0.1:7421..=7430 is taken (a spectator open on this machine?)"); }
+    if !ok { println!("required port unavailable: a port in 127.0.0.1:7421..=7430 is taken (a spectator open on this machine?)"); }
     ok
 }
 fn rpc_ids(evs: &[Value], phase: &str) -> Vec<u64> { evs.iter().filter(|e| e["phase"] == phase).filter_map(|e| e["rpc_id"].as_u64()).collect() }
@@ -101,7 +103,7 @@ fn rpc_ids(evs: &[Value], phase: &str) -> Vec<u64> { evs.iter().filter(|e| e["ph
 #[test]
 fn default_skips_squatters_silently_and_moves_to_a_real_spectator() {
     let _one = one_at_a_time();
-    if !ports_free() { return; }
+    assert!(ports_free(), "default spectator test requires isolated free loopback ports 7421-7430");
     let silent = Peer::start(bind(7421), None);                                   // accepts, says nothing
     let garbage = Peer::start(bind(7423), Some(b"SSH-2.0-OpenSSH_9.2\r\n"));      // accepts, says something else
     let gui22: Arc<Mutex<Option<Peer>>> = Arc::default();
@@ -142,7 +144,7 @@ fn default_skips_squatters_silently_and_moves_to_a_real_spectator() {
 #[test]
 fn default_with_no_app_and_unusable_values_are_quiet_and_change_nothing() {
     let _one = one_at_a_time();
-    if !ports_free() { return; }
+    assert!(ports_free(), "default spectator test requires isolated free loopback ports 7421-7430");
     let all = calls().concat();
     let (off, _) = session(Some("off"), plain(all.clone()));
     for spec in [None, Some(""), Some("Off"), Some("nonsense"), Some("tcp://0.0.0.0:7421"), Some("tcp://10.1.2.3:7421")] {
@@ -155,12 +157,12 @@ fn default_with_no_app_and_unusable_values_are_quiet_and_change_nothing() {
 #[test]
 fn an_older_or_other_hello_is_a_failed_handshake() {
     let _one = one_at_a_time();
-    if !ports_free() { return; }
+    assert!(ports_free(), "default spectator test requires isolated free loopback ports 7421-7430");
     let old = Peer::start(bind(7421), Some(b"kimo-spectator 0\n"));
     let next = Peer::start(bind(7422), Some(b"KIMO-SPECTATOR/2\n"));
     let (_, err) = session(None, vec![(Box::new(|| {}), Duration::from_millis(300), calls().concat())]);
     std::thread::sleep(Duration::from_millis(200));
-    assert!(err.is_empty());
+    assert!(err.is_empty(), "unexpected stderr: {}", String::from_utf8_lossy(&err));
     assert_eq!((*old.bytes.lock().unwrap(), *next.bytes.lock().unwrap()), (0, 0), "a peer with another hello gets nothing");
     old.stop(); next.stop();
 }

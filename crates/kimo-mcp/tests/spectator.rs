@@ -19,10 +19,12 @@ fn requests() -> Vec<Value> {
     ]
 }
 
+// Byte-for-byte transport proofs use deterministic tool replies. Observation's image paths and
+// elapsed times are deliberately variable and are exercised by the observe/live-preview suites.
 /// Run kimo-mcp over `reqs` with KIMO_SPECTATOR = `spec` (None = `off`: telemetry is on by default). Returns stdout bytes.
 fn run(spec: Option<&str>, reqs: &[Value]) -> Vec<u8> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kimo-mcp"));
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("KIMO_SPECTATOR", spec.unwrap_or("off")).env_remove("KIMO_TOOLS");
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("KIMO_SPECTATOR", spec.unwrap_or("off")).env_remove("KIMO_TOOLS").env("KIMO_OBSERVE", "off");
     let mut ch = cmd.spawn().expect("spawn kimo-mcp");
     // Drain stdout on its own thread while stdin is fed: with thousands of requests the responses overflow the OS pipe
     // buffer, and a harness that writes everything before reading anything deadlocks with the server (both block in
@@ -180,21 +182,19 @@ fn render_frame_reaches_the_viewer() {
     reqs.push(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"render_frame","arguments":{"time":0.5,"path": png.display().to_string(),"inline":"never"}}}));
     run(Some(&format!("file:{}", p.display())), &reqs);
     let evs = events_of(&std::fs::read_to_string(&p).unwrap());
-    let f = evs.iter().find(|e| e["type"] == "frame_rendered").expect("frame_rendered after render_frame");
+    let rf = tool_events(&evs, "render_frame");
+    let f = evs.iter().find(|e| e["type"] == "frame_rendered" && e["call_id"] == rf[0]["call_id"]).expect("frame_rendered for the explicit render_frame call");
     let b = f["png_b64"].as_str().unwrap();
     assert!(b.starts_with("iVBORw0KGgo"), "a PNG, base64");
     assert_eq!(b.len(), std::fs::metadata(&png).unwrap().len().div_ceil(3) as usize * 4);
-    let rf = tool_events(&evs, "render_frame");
     assert_eq!(f["call_id"], rf[0]["call_id"]);
     let _ = std::fs::remove_file(&p); let _ = std::fs::remove_file(&png);
 }
 
 #[test]
 fn export_reports_progress() {
-    if Command::new("ffmpeg").arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("ffmpeg not on PATH; skipping the export progress check");
-        return;
-    }
+    assert!(Command::new("ffmpeg").arg("-version").stdout(Stdio::null()).stderr(Stdio::null())
+        .status().expect("ffmpeg is required for export progress").success());
     let p = tmp("export.jsonl"); let _ = std::fs::remove_file(&p);
     let mp4 = tmp("export.mp4");
     let mut reqs = requests()[..4].to_vec();
@@ -243,7 +243,12 @@ fn export_reports_progress() {
     let done = ex.last().unwrap();
     assert_eq!(done["payload"]["bytes"].as_u64(), Some(size), "{done}");
     assert_eq!(done["payload"]["result"]["bytes"].as_u64(), Some(size));
-    assert!(!out.contains("\"bytes\""), "the tool result itself is unchanged: {out}");
+    let reply: Value = out.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).find(|v| v["id"] == 9).unwrap();
+    assert_eq!(reply["result"]["isError"], false);
+    let result: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["bytes"], size, "the export response and telemetry both report the actual file size");
+    assert_eq!(result["duration"], 1.0);
+    assert_eq!(result["path"], mp4.to_str().unwrap());
     let _ = std::fs::remove_file(&p); let _ = std::fs::remove_file(&mp4);
 }
 
@@ -282,7 +287,7 @@ fn spectator_closing_and_reopening_under_load() {
 
     let mut ch = Command::new(env!("CARGO_BIN_EXE_kimo-mcp"))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-        .env_remove("KIMO_TOOLS").env("KIMO_SPECTATOR", format!("tcp://127.0.0.1:{port}"))
+        .env_remove("KIMO_TOOLS").env("KIMO_OBSERVE", "off").env("KIMO_SPECTATOR", format!("tcp://127.0.0.1:{port}"))
         .spawn().expect("spawn kimo-mcp");
     let mut stdin = ch.stdin.take().unwrap();
     let stdout = ch.stdout.take().unwrap();
