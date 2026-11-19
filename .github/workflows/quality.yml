@@ -124,15 +124,14 @@ jobs:
     name: rust-coverage (${{ matrix.os }}, ${{ matrix.scope }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
-    env:
-      # .config/nextest.toml: `ci` excludes the measured heavy set, `nightly` runs all.
-      SUITE: ${{ github.event_name == 'schedule' && 'nightly' || inputs.suite || 'ci' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
         scope: [workspace, desktop]
     env:
+      # .config/nextest.toml: `ci` excludes the measured heavy set, `nightly` runs all.
+      SUITE: ${{ github.event_name == 'schedule' && 'nightly' || inputs.suite || 'ci' }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
