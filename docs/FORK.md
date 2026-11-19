@@ -95,3 +95,5 @@ Portable native-client tests compile a local fixture and verify JSON argv preser
 Download unit contracts use a loopback HTTP fixture and temporary directories to verify complete partial-file reuse, HTTP 416 restart, oversized partial replacement, OS/pin filtering and filesystem failures that preserve existing data. They do not download release assets or certify the release manifest.
 
 The transfer loop accepts reader/writer streams so unit tests can assert that read failures remain offline errors and write/flush failures remain I/O errors. Production downloads use the same loop with the HTTP response and partial file.
+
+Shared-engine bridge tests exercise malformed JSON, notifications, default protocol fields, invalid UTF-8 termination, stale discovery files, refusal handshakes and descriptor-write failures on loopback fixtures. Child-process checks isolate environment discovery and relay bytes through real stdin/stdout pipes; they do not attach to a running user application.

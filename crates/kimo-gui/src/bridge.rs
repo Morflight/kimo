@@ -24,13 +24,15 @@ pub struct Info { pub port: u16, pub token: String, pub pid: u32, pub version: S
 /// The app's data directory, computed without Tauri so the `mcp` subcommand finds the same `bridge.json`
 /// (Tauri's app_data_dir for identifier `dev.kimo.app`). `KIMO_DATA_DIR` overrides it (tests, portable installs).
 pub fn data_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("KIMO_DATA_DIR") { return Some(PathBuf::from(d)); }
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        crate::agents::home_dir().map(|h| h.join("Library").join("Application Support"))
-    } else {
-        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| crate::agents::home_dir().map(|h| h.join(".local").join("share")))
+    data_dir_for(std::env::consts::OS, &|key| std::env::var_os(key).map(PathBuf::from), crate::agents::home_dir())
+}
+
+fn data_dir_for(os: &str, env: &dyn Fn(&str) -> Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(d) = env("KIMO_DATA_DIR") { return Some(d); }
+    let base = match os {
+        "windows" => env("APPDATA"),
+        "macos" => home.map(|h| h.join("Library").join("Application Support")),
+        _ => env("XDG_DATA_HOME").filter(|p| p.is_absolute()).or_else(|| home.map(|h| h.join(".local").join("share"))),
     };
     base.map(|b| b.join("dev.kimo.app"))
 }
@@ -263,4 +265,147 @@ mod tests {
         assert_eq!(clean_label("../../evil name"), "evilname");
         assert_eq!(clean_label(""), "agent");
     }
+    #[test]
+    fn malformed_frames_notifications_and_default_fields_preserve_the_session() {
+        let d = tmp("frames");
+        let (srv, _) = echo_server(&d);
+        let mut stream = TcpStream::connect(("127.0.0.1", srv.info.port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.write_all(format!("{HELLO} {}\n", srv.info.token).as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut hello = String::new(); reader.read_line(&mut hello).unwrap(); assert_eq!(hello, "OK\n");
+        stream.write_all(b" \nnot json\n").unwrap();
+        let mut line = String::new(); reader.read_line(&mut line).unwrap();
+        let parse: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parse["error"]["code"], -32700); assert!(parse["id"].is_null());
+        stream.write_all(b"{\"id\":null}\n").unwrap();
+        let default = rpc(&mut stream, &mut reader, json!({"id":1}));
+        assert_eq!(default, json!({"jsonrpc":"2.0","id":1,"result":{}}));
+        let call = rpc(&mut stream, &mut reader, json!({"id":2,"method":"tools/call"}));
+        assert_eq!(call["result"]["content"][0]["text"], "agent called ");
+        let init = rpc(&mut stream, &mut reader, json!({"id":3,"method":"initialize"}));
+        assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
+        stream.write_all(b"\xff\n").unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        line.clear(); assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+        drop(srv); std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn invalid_discovery_files_and_refused_handshakes_are_reported() {
+        let d = tmp("discovery-errors"); std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(info_path(&d), "invalid").unwrap();
+        assert!(connect(&d, "test").unwrap_err().starts_with("bad bridge.json:"));
+        let closed = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut info = Info { port: closed.local_addr().unwrap().port(), token: "fixture".into(), pid: 0, version: "test".into() };
+        drop(closed);
+        std::fs::write(info_path(&d), serde_json::to_vec(&info).unwrap()).unwrap();
+        assert!(connect(&d, "test").unwrap_err().contains("stale bridge.json"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap(); info.port = listener.local_addr().unwrap().port();
+        std::fs::write(info_path(&d), serde_json::to_vec(&info).unwrap()).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut line = String::new(); BufReader::new(socket.try_clone().unwrap()).read_line(&mut line).unwrap();
+            assert_eq!(line, "KIMO-BRIDGE/1 fixture test\n");
+            socket.write_all(b"NO\n").unwrap();
+        });
+        assert!(connect(&d, "test").unwrap_err().contains("refused")); worker.join().unwrap();
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn descriptor_write_failures_do_not_overwrite_existing_data() {
+        let d = tmp("descriptor-errors");std::fs::create_dir_all(&d).unwrap();
+        let blocked = d.join("blocked");std::fs::write(&blocked,b"keep").unwrap();
+        let handler: Handler = Arc::new(|_,_,_| Ok(json!({})));
+        let on: OnConn = Arc::new(|_,_| {});
+        assert!(serve(Some(&blocked),handler.clone(),on.clone()).is_err());
+        assert_eq!(std::fs::read(&blocked).unwrap(),b"keep");
+        std::fs::create_dir(info_path(&d).with_extension("json.tmp")).unwrap();
+        assert!(serve(Some(&d),handler.clone(),on.clone()).is_err());
+        std::fs::remove_dir(info_path(&d).with_extension("json.tmp")).unwrap();
+        std::fs::create_dir(info_path(&d)).unwrap();
+        assert!(serve(Some(&d),handler.clone(),on.clone()).is_err());
+        let server = serve(None,handler,on).unwrap();
+        assert!(server.file.is_none()); server.remove_file();
+        let mut socket = TcpStream::connect(("127.0.0.1",server.info.port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        socket.write_all(format!("{HELLO} {} test\n",server.info.token).as_bytes()).unwrap();
+        let mut reader=BufReader::new(socket.try_clone().unwrap());let mut hello=String::new();reader.read_line(&mut hello).unwrap();assert_eq!(hello,"OK\n");
+        assert_eq!(rpc(&mut socket,&mut reader,json!({"id":1}))["result"],json!({}));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn data_directory_child() {
+        let Ok(expected) = std::env::var("KIMO_BRIDGE_EXPECTED_DIR") else { return; };
+        let expected: Option<String> = serde_json::from_str(&expected).unwrap();
+        assert_eq!(data_dir(), expected.map(PathBuf::from));
+    }
+
+    #[test]
+    fn data_directory_precedence_is_isolated_from_user_settings() {
+        let root = tmp("data-dir");
+        #[cfg(windows)] let home = root.join("dev.kimo.app");
+        #[cfg(target_os = "macos")] let home = root.join("Library/Application Support/dev.kimo.app");
+        #[cfg(all(not(windows), not(target_os = "macos")))] let home = root.join(".local/share/dev.kimo.app");
+        for (mode, expected) in [("override", Some(root.clone())), ("base", Some(root.join("dev.kimo.app"))), ("home", Some(home)), ("missing", None)] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "bridge::tests::data_directory_child", "--nocapture"]);
+            for key in ["KIMO_DATA_DIR", "XDG_DATA_HOME", "APPDATA", "HOME", "USERPROFILE"] { child.env_remove(key); }
+            if mode == "override" { child.env("KIMO_DATA_DIR", &root); }
+            if mode == "base" {
+                if cfg!(target_os = "macos") { continue; }
+                child.env(if cfg!(windows) { "APPDATA" } else { "XDG_DATA_HOME" }, &root);
+            }
+            if mode == "home" {
+                child.env("HOME", &root).env("USERPROFILE", &root).env("APPDATA", &root).env("XDG_DATA_HOME", "relative-ignored");
+            }
+            child.env("KIMO_BRIDGE_EXPECTED_DIR", serde_json::to_string(&expected).unwrap());
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{mode}: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
+    }
+
+    #[test]
+    fn relay_child() {
+        let Ok(address) = std::env::var("KIMO_BRIDGE_RELAY_ADDRESS") else { return; };
+        assert_eq!(relay_stdio(TcpStream::connect(address).unwrap()), 0);
+    }
+
+    #[test]
+    fn stdio_relay_preserves_both_directions_and_closes_input() {
+        use std::process::Stdio;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "bridge::tests::relay_child", "--nocapture"])
+            .env("KIMO_BRIDGE_RELAY_ADDRESS", listener.local_addr().unwrap().to_string())
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut input = child.stdin.take().unwrap(); input.write_all(b"{\"id\":7}\n").unwrap(); drop(input);
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut received = Vec::new(); socket.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"{\"id\":7}\n");
+        let reply = b"{\"id\":7,\"result\":\"bridge-fixture\"}\n";
+        socket.write_all(reply).unwrap(); drop(socket);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout.windows(reply.len()).filter(|part| *part == reply).count(), 1);
+    }
+
+    #[test]
+    fn platform_directory_rules_handle_missing_and_relative_bases() {
+        let root = tmp("platform-layout");
+        for os in ["windows", "macos", "linux"] {
+            assert_eq!(data_dir_for(os, &|key| (key == "KIMO_DATA_DIR").then(|| root.clone()), None), Some(root.clone()));
+            assert_eq!(data_dir_for(os, &|_| None, None), None);
+        }
+        assert_eq!(data_dir_for("windows", &|key| (key == "APPDATA").then(|| root.clone()), None), Some(root.join("dev.kimo.app")));
+        assert_eq!(data_dir_for("macos", &|_| None, Some(root.clone())), Some(root.join("Library/Application Support/dev.kimo.app")));
+        for xdg in [None, Some(PathBuf::from("relative"))] {
+            assert_eq!(data_dir_for("linux", &|key| if key == "XDG_DATA_HOME" { xdg.clone() } else { None }, Some(root.clone())), Some(root.join(".local/share/dev.kimo.app")));
+        }
+        assert_eq!(data_dir_for("linux", &|key| (key == "XDG_DATA_HOME").then(|| root.clone()), None), Some(root.join("dev.kimo.app")));
+    }
+
 }

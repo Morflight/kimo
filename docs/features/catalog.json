@@ -469,6 +469,7 @@
       ],
       "tests": [
         "crates/kimo-gui/tests/playback_delivery_test.mjs",
+        "crates/kimo-gui/src/bridge.rs",
         "crates/kimo-gui/src/download.rs",
         "crates/kimo-gui/src/keys.rs",
         "crates/kimo-gui/src/recovery.rs",

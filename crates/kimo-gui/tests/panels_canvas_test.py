@@ -28,6 +28,9 @@ async def main():
               }
               check(new Set(snapshots).size===7,'CIE geometry changes its pixels');
               draw('cie');check(el.querySelector('canvas').width===160,'default CIE canvas width');
+              Object.defineProperty(window,'devicePixelRatio',{configurable:true,value:0});
+              draw('cie');check(el.querySelector('canvas').width===160,'missing device scale falls back to one');
+
               const scope=draw('scopes',{wave:{bins:4,cols:['0z90','900z']}});
               const cv=el.querySelector('canvas');check(cv&&cv.width===1024,'scope raster exists');
               const baseline=cv.toDataURL();POST.scopes(el,scope);check(cv.toDataURL()===baseline,'scope repaint clears previous pixels');

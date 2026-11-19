@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -256,3 +256,28 @@ for(const [tool,result,expected] of [['add_hud_frame',{},'hud'],['add_hud_frame'
  assert.equal(e.payload.clip,expected);assert.equal(e.payload.label,expected);assert.equal(e.payload.e,5);
 }
 console.log('PASS graphics missing dimensions, scalar counter defaults, empty telemetry and fallback insertion identity');
+
+const diffState=fresh('edit'), inspectorDiff=root.namespace.inspectorDiff;
+const diff=(payload,target,tool='synthetic_edit')=>inspectorDiff(diffState,MODES,{tool_name:tool,payload,target},'edit');
+assert.equal(diff(undefined,undefined),false);
+const diffKv=Object.values(diffState.views.edit).find(v=>v.blocks);
+diffKv.blocks=[{k:'Volume',v:'old'},{k:'Other'}];
+assert.equal(diff({value:2},{param:'volume'},'normalize_loudness'),true);
+assert.deepEqual(plain(diffKv.blocks[0]),{k:'Volume',v:'x2',from:'old',_flash:1000});
+assert.equal(diff({value:3,from:1},{param:'volume'},'normalize_loudness'),true);
+assert.equal(diffKv.blocks[0].from,'x1');
+assert.equal(diff({to:'quiet',from:'loud'},{param:'volume'},'normalize_loudness'),true);
+assert.equal(diffKv.blocks[0].from,'loud');assert.equal(diffKv.blocks[0].v,'quiet');
+assert.equal(diff({value:7},{param:'other'}),true);
+assert.equal(diffKv.blocks[1].v,'7');assert.equal(diffKv.blocks[1].from,undefined);
+diffKv.blocks=[];
+assert.equal(diff({param:'volume',value:2,from:1,custom:'detail'},undefined,'normalize_loudness'),true);
+assert.ok(diffKv.blocks.some(b=>b.k==='Volume'&&b.v==='x2'&&b.from==='x1'));
+assert.ok(diffKv.blocks.some(b=>b.k==='Custom'&&b.v==='detail'));
+assert.equal(diff({param:'volume',value:'quiet',from:'loud'},undefined,'normalize_loudness'),true);
+assert.ok(diffKv.blocks.some(b=>b.k==='Volume'&&b.v==='quiet'&&b.from==='loud'));
+assert.equal(diff({param:'shape',value:{x:1},label:'unchanged'},undefined),true);
+assert.ok(!diffKv.blocks.some(b=>b.k==='Param'));
+assert.equal(diff({value:4,label:'result',custom:'shown'},undefined),true);
+assert.ok(diffKv.blocks.some(b=>b.k==='Value'&&b.v==='4'));
+console.log('PASS inspector updates preserve previous values, normalize volume units and omit object-valued changes');
