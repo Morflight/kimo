@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack,insertClip};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -400,3 +400,28 @@ for(const [end,maximum,step] of [[0,10,2],[20,23,5],[50,58,10],[100,115,30]]) {
 const emptyAuto={_auto:true};fitRuler(emptyAuto);assert.equal(emptyAuto.ruler.t1,10);
 const manual={_auto:false,ruler:{t0:10,t1:20,step:1},tracks:[{clips:[{e:200}]}]};fitRuler(manual);assert.deepEqual(manual.ruler,{t0:10,t1:20,step:1});
 console.log('PASS track naming and automatic ruler growth preserve existing tracks and manual ranges');
+
+const {insertClip}=root.namespace;
+const overwrite={clips:[{id:'left',s:0,e:3},{id:'covered',s:3,e:4},{id:'right',s:4,e:8},{id:'same',s:2,e:6}]};
+const originalSame=overwrite.clips[3];insertClip({},overwrite,{id:'same',s:2,e:6,label:'Updated'});
+assert.deepEqual(plain(overwrite.clips.map(c=>[c.id,c.s,c.e])),[['left',0,2],['same',2,6],['right',6,8]]);
+assert.equal(overwrite.clips[1],originalSame);assert.equal(originalSame.label,'Updated');
+const emptyTrack={};insertClip({},emptyTrack,{id:'first',s:0,e:1});assert.equal(emptyTrack.clips[0].id,'first');
+for(const operation of ['set_speed_ramp','set_time_remap']) {
+ const c={id:'sparse',s:2,e:5},tl={tracks:[{id:'v',clips:[c]}]};
+ const call=(args,result)=>editOps2(fresh('edit'),MODES,tl,event(operation,args,'complete',result),{clip_id:'sparse',...args});
+ assert.equal(call({keys:[]}),true);assert.deepEqual(plain(c.fx),[]);assert.deepEqual(plain(c.keys),[]);
+ c.keys=[{t:3,_other:true}];c.fx=['keep'];
+ assert.equal(call({keys:[[0,1],[1,2]]}),true);assert.ok(c.fx.includes(operation==='set_speed_ramp'?'ramp':'remap'));
+ assert.equal(c.keys[0]._other,true);assert.deepEqual(plain(c.keys.slice(1).map(k=>k.t)),[2,3]);
+ c.fx=[operation==='set_speed_ramp'?'ramp · frame mix':'remap · flow'];
+ assert.equal(call({keys:[[2,3]]}),true);assert.equal(c.fx[0],operation==='set_speed_ramp'?'ramp · frame mix':'remap · flow');
+}
+const defaultsTimeline={tracks:[{id:'empty'},{id:'v',clips:[{id:'one',s:2,e:4},{id:'two',s:8,e:9}]}]};
+const defaultsCall=(name,args={},result)=>editOps2(fresh('edit'),MODES,defaultsTimeline,event(name,args,'complete',result),args);
+assert.equal(defaultsCall('distribute_clips',{track_id:'empty'}),false);
+assert.equal(defaultsCall('distribute_clips',{track_id:'v'}),true);
+assert.deepEqual(plain(defaultsTimeline.tracks[1].clips.map(c=>[c.s,c.e])),[[2,4],[4,5]]);
+assert.equal(defaultsCall('loop_clip',{clip_id:'two'}),true);
+assert.deepEqual(plain(defaultsTimeline.tracks[1].clips.map(c=>[c.id,c.s,c.e])),[['one',2,4],['two',4,5],['two_loop1',5,6]]);
+console.log('PASS overwrite trimming, sparse time-key state, interpolation retention and default clip distribution');
