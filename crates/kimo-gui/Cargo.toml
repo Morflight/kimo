@@ -51,6 +51,8 @@ codegen-units = 1
 panic = "abort"
 
 [dev-dependencies]
+# Exercise native command state with Tauri's isolated mock runtime.
+tauri = { version = "2", features = ["test"] }
 # the updater's own signature check (already in the tree through tauri-plugin-updater): proves the public key in
 # tauri.conf.json belongs to the release signing key
 minisign-verify = "0.3"

@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -281,3 +281,43 @@ assert.ok(!diffKv.blocks.some(b=>b.k==='Param'));
 assert.equal(diff({value:4,label:'result',custom:'shown'},undefined),true);
 assert.ok(diffKv.blocks.some(b=>b.k==='Value'&&b.v==='4'));
 console.log('PASS inspector updates preserve previous values, normalize volume units and omit object-valued changes');
+
+// Readouts resolve actual clip names and never expose raw engine IDs as reference labels.
+assert.equal(root.namespace.family(undefined),'other');
+const referenceId='c475_s0';
+for(const [label,id,expected] of [['Reference plate',referenceId,'Reference plate'],[referenceId,referenceId,null],['','named-reference','named-reference'],[undefined,'missing-reference','missing-reference']]) {
+ const st=fresh('color');st.liveTL={tracks:[{id:'track',clips:label===undefined?[]:[{id,label,s:0,e:1}]}]};
+ assert.equal(gradeOps(st,MODES,event('match_grade',{ref_clip_id:id},'complete',{source_lab_mean:[50,0,0],reference_lab_mean:[60,0,0]})),true);
+ const kv=Object.values(st.views.color).find(v=>v.blocks),ref=kv.blocks.find(b=>b.k==='Ref');
+ assert.equal(ref?.v??null,expected);assert.equal(kv.blocks.find(b=>b.k==='Src L').v,'50');
+ gradeOps(st,MODES,event('add_effect',{kind:'keyer',strings:{ref_clip:id}}));
+ assert.match(kv.blocks.find(b=>b.k==='Keyer').v,new RegExp('clean plate '+(label&&label!==referenceId?label:id)));
+}
+// A custom screen without an inspector still receives the sampled overlay and wipe.
+const minimalModes={custom:{panels:{viewer:{kind:'viewer'}}}};
+const custom=fresh('custom');
+assert.equal(gradeOps(custom,minimalModes,event('match_color',{},'complete',{src_mean:[.1,.2,.3]})),true);
+assert.equal(custom.views.custom.viewer.wipe,1);
+assert.equal(gradeOps(custom,minimalModes,event('add_effect',{kind:'keyer'})),false);
+assert.equal(gradeOps(fresh('color'),MODES,{tool_name:'grade',phase:'complete'}),false);
+console.log('PASS grade references resolve clip names, hide engine IDs and tolerate screens without inspectors');
+
+
+const changeRows=(state,payload,target)=>plain(root.namespace.callDiff(state,{payload,target}));
+assert.deepEqual(changeRows({},undefined,undefined),null);
+assert.deepEqual(changeRows({}, {changed:{clip:{start:[1,2],duration:[3,4]}}}),[
+ {k:'Start',from:'1s',v:'2s'},{k:'Duration',from:'3s',v:'4s'}]);
+assert.deepEqual(changeRows({}, {changed:{clip:{start:['bad',2],duration:[3,4]}}}),[
+ {k:'Start',from:'—',v:'2s'},{k:'Duration',from:'3s',v:'4s'}]);
+assert.deepEqual(changeRows({}, {changed:{clip:{keys:[null,[{t:1,v:2}]]}}}),[{k:'Value key',from:'—',v:'1s 2'}]);
+assert.deepEqual(changeRows({}, {changed:{clip:{keys:[[{t:1,v:2}],null]}}}),[{k:'Value key',from:'1s 2',v:'—'}]);
+assert.deepEqual(changeRows({}, {changed:{clip:{points:[[],[{x:1}]],source:[null,3]}}}),[
+ {k:'Points',from:'[0]',v:'[1]'},{k:'Source',from:'—',v:'3'}]);
+const namedTimeline={liveTL:{tracks:[{id:'t1',label:'Video',clips:[{id:'c1',label:'Hero',s:0,e:1}]},{id:'t2',label:'Audio',clips:[]}]}};
+assert.deepEqual(changeRows(namedTimeline,{changed:{clips_added:[{clip_id:'c1'},{clip_id:null}],clips_removed:[{clip_id:'c1'},{clip_id:'c999'}],clips_moved:[{clip_id:'c1',from:'t1',to:'t2'}],tracks_removed:['t2','t999',null]}}),[
+ {k:'Clip',from:'—',v:'Hero'},{k:'Clip',from:'Hero',v:'—'},{k:'Hero track',from:'Video',v:'Audio'},{k:'Track',from:'Audio',v:'—'}]);
+assert.deepEqual(changeRows({}, {clip:'c9',label:'Added title',changed:{clips_added:[{clip_id:'c9'},{clip_id:'c8'}]}}),[{k:'Clip',from:'—',v:'Added title'}]);
+assert.deepEqual(changeRows({}, {label:'Target title',changed:{clips_added:[{clip_id:'c9'}]}},{clip_id:'c9'}),[{k:'Clip',from:'—',v:'Target title'}]);
+assert.deepEqual(changeRows({}, {clip:'c9',label:'c9',changed:{clips_added:[{clip_id:'c9'}],clips_removed:[{clip_id:'c1'}],tracks_removed:['t1']}}),null);
+assert.deepEqual(changeRows({}, {changed:{clips_moved:[{clip_id:'c1',from:'Video',to:'Audio'}]}}),[{k:'Track',from:'Video',v:'Audio'}]);
+console.log('PASS structural change readouts retain timing, key removal and human clip/track identities');

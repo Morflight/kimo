@@ -109,7 +109,7 @@ impl AppState {
     }
 }
 
-fn blocking<T: Send + 'static>(app: tauri::AppHandle, f: impl FnOnce(&AppState) -> Result<T, String> + Send + 'static) -> impl std::future::Future<Output = Result<T, String>> {
+fn blocking<R: tauri::Runtime, T: Send + 'static>(app: tauri::AppHandle<R>, f: impl FnOnce(&AppState) -> Result<T, String> + Send + 'static) -> impl std::future::Future<Output = Result<T, String>> {
     async move { tauri::async_runtime::spawn_blocking(move || f(&app.state::<AppState>())).await.map_err(|e| e.to_string())? }
 }
 
@@ -152,20 +152,20 @@ fn app_state(st: State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
-async fn engine_restart(app: tauri::AppHandle) -> Result<Status, String> {
+async fn engine_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Status, String> {
     blocking(app, |st| { let s = st.sup.start(); st.ledger.reset(); *st.project_path.lock().unwrap() = None; Ok(s) }).await
 }
 
 // ---------- the engine, for the editor ----------
 /// An edit or read the user makes in the editor (Live and Changes show it as "you").
 #[tauri::command]
-async fn engine_call(app: tauri::AppHandle, tool: String, args: Value) -> Result<Value, String> {
+async fn engine_call<R: tauri::Runtime>(app: tauri::AppHandle<R>, tool: String, args: Value) -> Result<Value, String> {
     blocking(app, move |st| st.ledger.call("you", &tool, &args).map(shaped)).await
 }
 
 /// The window's own refresh reads (not listed in Live).
 #[tauri::command]
-async fn engine_read(app: tauri::AppHandle, tool: String, args: Value) -> Result<Value, String> {
+async fn engine_read<R: tauri::Runtime>(app: tauri::AppHandle<R>, tool: String, args: Value) -> Result<Value, String> {
     blocking(app, move |st| {
         let action = args.get("action").and_then(|a| a.as_str()).unwrap_or("");
         if !ledger::is_read_only(&tool, action) { return Err(format!("{tool}.{action} changes the project; use engine_call")); }
@@ -177,13 +177,13 @@ async fn engine_read(app: tauri::AppHandle, tool: String, args: Value) -> Result
 fn changes_list(st: State<'_, AppState>) -> Vec<ledger::Change> { st.ledger.changes() }
 
 #[tauri::command]
-async fn change_undo(app: tauri::AppHandle, id: u64) -> Result<Value, String> {
+async fn change_undo<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: u64) -> Result<Value, String> {
     blocking(app, move |st| st.ledger.undo_change("you", id)).await
 }
 
 // ---------- projects ----------
 #[tauri::command]
-async fn project_open(app: tauri::AppHandle, path: String) -> Result<String, String> {
+async fn project_open<R: tauri::Runtime>(app: tauri::AppHandle<R>, path: String) -> Result<String, String> {
     blocking(app, move |st| {
         let r = st.ledger.call("you", "project", &json!({"action": "load_project", "args": {"path": path}}))?;
         if engine::is_error(&r) { return Err(engine::result_text(&r)); }
@@ -195,7 +195,7 @@ async fn project_open(app: tauri::AppHandle, path: String) -> Result<String, Str
 }
 
 #[tauri::command]
-async fn project_save(app: tauri::AppHandle, path: String) -> Result<String, String> {
+async fn project_save<R: tauri::Runtime>(app: tauri::AppHandle<R>, path: String) -> Result<String, String> {
     blocking(app, move |st| {
         let path = if Path::new(&path).extension().is_none() { format!("{path}.kimo") } else { path };
         let r = st.ledger.call("you", "project", &json!({"action": "save_project", "args": {"path": path}}))?;
@@ -207,7 +207,7 @@ async fn project_save(app: tauri::AppHandle, path: String) -> Result<String, Str
 
 /// A fresh, empty project (the engine restarts; agents attached through the bridge see the new project too).
 #[tauri::command]
-async fn project_new(app: tauri::AppHandle) -> Result<Status, String> {
+async fn project_new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Status, String> {
     let a2 = app.clone();
     let s = blocking(app, |st| { let s = st.sup.start(); st.ledger.reset(); *st.project_path.lock().unwrap() = None; *st.chat.lock().unwrap() = Chat::default(); st.sessions.lock().unwrap().clear(); st.mark_saved(); Ok(s) }).await?;
     let _ = a2.emit("project-changed", json!({"actor": "you", "action": "new_project"}));
@@ -220,7 +220,7 @@ const MEDIA_EXT: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "
 
 /// kind: "media" (several files) | "project" (open) | "save_project" | "export" (save). Returns absolute paths.
 #[tauri::command]
-async fn pick(app: tauri::AppHandle, kind: String, suggest: Option<String>) -> Result<Vec<String>, String> {
+async fn pick<R: tauri::Runtime>(app: tauri::AppHandle<R>, kind: String, suggest: Option<String>) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let d = app.dialog().file();
         let to = |p: tauri_plugin_dialog::FilePath| p.into_path().ok().map(|p| p.display().to_string());
@@ -240,7 +240,7 @@ async fn pick(app: tauri::AppHandle, kind: String, suggest: Option<String>) -> R
 
 /// A small JPEG of a media file (first second) for the media bin, made with ffmpeg into the viewer cache.
 #[tauri::command]
-async fn media_thumb(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
+async fn media_thumb<R: tauri::Runtime>(app: tauri::AppHandle<R>, path: String) -> Result<Option<String>, String> {
     blocking(app, move |st| {
         use sha2::{Digest, Sha512};
         let p = Path::new(&path);
@@ -281,7 +281,7 @@ fn reveal(path: String) -> Result<(), String> { cli_agents::reveal(Path::new(&pa
 
 // ---------- subscription agents ----------
 #[tauri::command]
-async fn cli_status(app: tauri::AppHandle) -> Result<Vec<cli_agents::Status>, String> {
+async fn cli_status<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<cli_agents::Status>, String> {
     blocking(app, |_| {
         let hs: Vec<_> = Kind::all().into_iter().map(|k| std::thread::spawn(move || cli_agents::status(k))).collect();
         Ok(hs.into_iter().filter_map(|h| h.join().ok()).collect())
@@ -314,7 +314,7 @@ fn cli_install(id: String) -> Result<String, String> {
 
 /// Add kimo to the CLI's own MCP list too, so the user's own sessions (terminal/IDE) can use it.
 #[tauri::command]
-async fn cli_register(app: tauri::AppHandle, id: String) -> Result<String, String> {
+async fn cli_register<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: String) -> Result<String, String> {
     blocking(app, move |st| {
         let k = Kind::from_id(&id).ok_or("unknown agent")?;
         let bin = cli_agents::find(k).ok_or_else(|| format!("{} is not installed.", k.name()))?;
@@ -324,7 +324,7 @@ async fn cli_register(app: tauri::AppHandle, id: String) -> Result<String, Strin
 
 /// The models (and effort levels) a subscription agent offers, straight from its CLI.
 #[tauri::command]
-async fn cli_models(app: tauri::AppHandle, id: String) -> Result<cli_agents::Models, String> {
+async fn cli_models<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: String) -> Result<cli_agents::Models, String> {
     blocking(app, move |_| { let k = Kind::from_id(&id).ok_or("unknown agent")?; Ok(cli_agents::models(k)) }).await
 }
 
@@ -340,13 +340,13 @@ fn agent_select(st: State<'_, AppState>, agent: String, model: Option<String>, e
     Ok(())
 }
 
-fn emit_ev(app: &tauri::AppHandle, agent: &str, turn: u64, ev: &Ev) {
+fn emit_ev<R: tauri::Runtime>(app: &tauri::AppHandle<R>, agent: &str, turn: u64, ev: &Ev) {
     let _ = app.emit("agent-event", json!({"agent": agent, "turn": turn, "ev": ev}));
 }
 
 /// One message to the selected agent. Streams `agent-event`s; returns the final reply.
 #[tauri::command]
-async fn agent_send(app: tauri::AppHandle, text: String, turn: u64) -> Result<Value, String> {
+async fn agent_send<R: tauri::Runtime>(app: tauri::AppHandle<R>, text: String, turn: u64) -> Result<Value, String> {
     let a2 = app.clone();
     blocking(app, move |st| {
         if text.trim().is_empty() { return Err("Type what you want to change.".into()); }
@@ -386,7 +386,7 @@ impl Drop for Release<'_> { fn drop(&mut self) { self.0.store(false, Ordering::S
 fn scopeguard(b: &AtomicBool) -> Release<'_> { Release(b) }
 
 /// The API-key agent (kept for people without a subscription CLI), speaking the same agent-event stream.
-fn api_chat(app: &tauri::AppHandle, st: &AppState, text: &str, turn: u64) -> Result<Value, String> {
+fn api_chat<R: tauri::Runtime>(app: &tauri::AppHandle<R>, st: &AppState, text: &str, turn: u64) -> Result<Value, String> {
     let provider = st.settings.lock().unwrap().provider.clone();
     let (p, base, model) = st.provider_cfg(&provider).ok_or("Pick a provider in Connections first.")?;
     let key = st.keys.get(&provider).ok_or_else(|| format!("Add your {} key in Connections, or pick Claude Code, Codex or Antigravity to use your subscription.", p.name))?;
@@ -419,14 +419,14 @@ fn agent_reset(st: State<'_, AppState>) {
 
 // ---------- MCP switch (external engines) ----------
 #[tauri::command]
-async fn mcp_probe(app: tauri::AppHandle) -> Result<engine::ProbeInfo, String> {
+async fn mcp_probe<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<engine::ProbeInfo, String> {
     blocking(app, |st| {
         let l = st.launch().ok_or("The kimo engine (kimo-mcp) was not found next to the app.")?;
         Ok(engine::probe(Path::new(&l.command), &l.args, &l.env))
     }).await
 }
 
-fn start_external(app: &tauri::AppHandle) -> Result<u16, String> {
+fn start_external<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<u16, String> {
     let st = app.state::<AppState>();
     if let Some(e) = st.external.lock().unwrap().as_ref() { return Ok(e.port); }
     let (a1, a2) = (app.clone(), app.clone());
@@ -440,7 +440,7 @@ fn start_external(app: &tauri::AppHandle) -> Result<u16, String> {
 }
 
 #[tauri::command]
-async fn mcp_set(app: tauri::AppHandle, enabled: bool) -> Result<Value, String> {
+async fn mcp_set<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<Value, String> {
     let a2 = app.clone();
     blocking(app, move |st| {
         if !enabled {
@@ -485,7 +485,7 @@ fn key_clear(st: State<'_, AppState>, provider: String) -> keys::KeyStatus {
 }
 
 #[tauri::command]
-async fn key_test(app: tauri::AppHandle, provider: String, key: Option<String>) -> Result<String, String> {
+async fn key_test<R: tauri::Runtime>(app: tauri::AppHandle<R>, provider: String, key: Option<String>) -> Result<String, String> {
     blocking(app, move |st| {
         let (p, base, _) = st.provider_cfg(&provider).ok_or("unknown provider")?;
         let k = key.map(Secret::new).filter(|k| !k.is_empty()).or_else(|| st.keys.get(&provider)).ok_or("Paste a key first.")?;
@@ -512,7 +512,7 @@ fn recovery_status(st: State<'_, AppState>) -> Option<recovery::Offer> { st.offe
 
 /// Open the autosaved work. Save then writes to the user's original file (when there was one).
 #[tauri::command]
-async fn recovery_restore(app: tauri::AppHandle) -> Result<Value, String> {
+async fn recovery_restore<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> {
     let a2 = app.clone();
     let v = blocking(app, |st| {
         let o = st.offer.lock().unwrap().take().ok_or("nothing to restore")?;
@@ -556,12 +556,12 @@ fn crash_answer(st: State<'_, AppState>, file: String, send: bool) -> Result<(),
 
 // ---------- updates (GitHub releases, signed) ----------
 /// The updater's public key from the bundle config (the release workflow sets it; a dev or self-built app has none).
-fn updater_pubkey(app: &tauri::AppHandle) -> Option<String> {
+fn updater_pubkey<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
     app.config().plugins.0.get("updater")?.get("pubkey")?.as_str().map(str::trim).filter(|k| !k.is_empty()).map(String::from)
 }
 
 /// Ask the release feed whether a newer kimo exists. Records the answer and announces `update-available` when there is one.
-async fn check_update(app: &tauri::AppHandle) -> Value {
+async fn check_update<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Value {
     let mut v = if updater_pubkey(app).is_none() {
         json!({"state": "off", "reason": "this build has no update key (only release builds update themselves)"})
     } else {
@@ -581,13 +581,13 @@ async fn check_update(app: &tauri::AppHandle) -> Value {
 }
 
 #[tauri::command]
-async fn update_check(app: tauri::AppHandle) -> Result<Value, String> { Ok(check_update(&app).await) }
+async fn update_check<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> { Ok(check_update(&app).await) }
 
 /// Install the available update, on the person's click: download and verify it (signature), autosave the project with its
 /// history, stop the engine and agents (the installer replaces their files), install, restart. Unsaved work is offered
 /// back after the restart, exactly like after a crash.
 #[tauri::command]
-async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+async fn update_install<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     if updater_pubkey(&app).is_none() { return Err("This build does not update itself. Download the newest kimo from getkimo.tech.".into()); }
     let up = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("kimo is already up to date.")?;
     let (h, mut done) = (app.clone(), 0usize);
@@ -611,25 +611,25 @@ fn onboarded_set(st: State<'_, AppState>) { st.settings.lock().unwrap().onboarde
 
 // ---------- viewer ----------
 #[tauri::command]
-async fn viewer_frame(app: tauri::AppHandle, time: f64) -> Result<viewer::Shown, String> {
+async fn viewer_frame<R: tauri::Runtime>(app: tauri::AppHandle<R>, time: f64) -> Result<viewer::Shown, String> {
     blocking(app, move |st| st.viewer.frame(&st.app_tools(), time)).await
 }
 
 #[tauri::command]
-async fn viewer_draft(app: tauri::AppHandle, start: f64, seconds: f64) -> Result<viewer::Draft, String> {
+async fn viewer_draft<R: tauri::Runtime>(app: tauri::AppHandle<R>, start: f64, seconds: f64) -> Result<viewer::Draft, String> {
     blocking(app, move |st| st.viewer.draft(&st.app_tools(), start, seconds)).await
 }
 
 // ---------- real-time preview (the engine's preview_stream: frames + audio chunks ahead of the playhead) ----------
 /// Start a preview session at `time` (scale 0.5 half / 0.25 quarter of the project size).
 #[tauri::command]
-async fn preview_start(app: tauri::AppHandle, time: f64, scale: Option<f64>, rate: Option<f64>, playing: Option<bool>, warming: Option<bool>) -> Result<Value, String> {
+async fn preview_start<R: tauri::Runtime>(app: tauri::AppHandle<R>, time: f64, scale: Option<f64>, rate: Option<f64>, playing: Option<bool>, warming: Option<bool>) -> Result<Value, String> {
     blocking(app, move |st| st.viewer.stream(&st.app_tools(), "start", json!({"time": time, "scale": scale.unwrap_or(0.5), "rate": rate.unwrap_or(1.0), "playing": playing.unwrap_or(false), "warming": warming.unwrap_or(false)}))).await
 }
 
 /// The poll: the playhead (and play state / speed) in, the frames and audio chunks ready ahead out. `seek` starts a new run.
 #[tauri::command]
-async fn preview_update(app: tauri::AppHandle, time: f64, playing: Option<bool>, rate: Option<f64>, seek: Option<bool>) -> Result<Value, String> {
+async fn preview_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, time: f64, playing: Option<bool>, rate: Option<f64>, seek: Option<bool>) -> Result<Value, String> {
     let mut a = json!({"time": time});
     if let Some(p) = playing { a["playing"] = json!(p); }
     if let Some(r) = rate { a["rate"] = json!(r); }
@@ -638,17 +638,17 @@ async fn preview_update(app: tauri::AppHandle, time: f64, playing: Option<bool>,
 
 /// One draft frame for scrubbing, now.
 #[tauri::command]
-async fn preview_frame(app: tauri::AppHandle, time: f64) -> Result<Value, String> {
+async fn preview_frame<R: tauri::Runtime>(app: tauri::AppHandle<R>, time: f64) -> Result<Value, String> {
     blocking(app, move |st| st.viewer.stream(&st.app_tools(), "frame", json!({"time": time}))).await
 }
 
 #[tauri::command]
-async fn preview_stop(app: tauri::AppHandle) -> Result<Value, String> {
+async fn preview_stop<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> {
     blocking(app, move |st| st.viewer.stream(&st.app_tools(), "stop", json!({}))).await
 }
 
 #[tauri::command]
-fn open_spectator(app: tauri::AppHandle) -> Result<(), String> {
+fn open_spectator<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("spectator") { return w.set_focus().map_err(|e| e.to_string()); }
     tauri::WebviewWindowBuilder::new(&app, "spectator", tauri::WebviewUrl::App("index.html".into()))
         .title("kimo \u{b7} live graph").inner_size(1376.0, 768.0).min_inner_size(1200.0, 700.0)
@@ -667,7 +667,7 @@ fn setup_status(st: State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
-async fn setup_start(app: tauri::AppHandle, skip_optional: bool) -> Result<Value, String> {
+async fn setup_start<R: tauri::Runtime>(app: tauri::AppHandle<R>, skip_optional: bool) -> Result<Value, String> {
     let a2 = app.clone();
     blocking(app, move |st| {
         st.cancel_dl.store(false, Ordering::SeqCst);
@@ -701,7 +701,7 @@ fn setup_skip(st: State<'_, AppState>) { st.settings.lock().unwrap().setup_done 
 // ---------- live feed ----------
 /// Engine telemetry: raw to the live-graph window; activity from OTHER engines (an agent that started its own
 /// kimo-mcp because it was configured before this app existed) is listed in Live as an external engine.
-fn forward(app: &tauri::AppHandle, src: Source, ev: Value) {
+fn forward<R: tauri::Runtime>(app: &tauri::AppHandle<R>, src: Source, ev: Value) {
     if let Source::External { conn } = src { let _ = app.emit("external-event", json!({"conn": conn, "t": ledger::now_ms() as u64, "ev": ev})); }
     let _ = app.emit("engine-event", ev);
 }
@@ -749,7 +749,7 @@ fn run_mcp(args: &[String]) -> ! {
     std::process::exit(st.ok().and_then(|s| s.code()).unwrap_or(1));
 }
 
-fn bridge_handler(app: tauri::AppHandle) -> bridge::Handler {
+fn bridge_handler<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bridge::Handler {
     Arc::new(move |client, method, params| {
         let st = app.state::<AppState>();
         match method {
@@ -923,4 +923,183 @@ fn main() {
                 st.sup.stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(root: &Path) -> AppState {
+        let sup=Arc::new(Supervisor::new(None,vec![],None));
+        let ledger=Arc::new(Ledger::new(sup.clone(),Arc::new(|_,_|{})));
+        AppState {
+            sup,ledger,keys:KeyRing::new(Box::new(keys::MemoryStore::default())),
+            settings:Mutex::new(Settings::default()),settings_path:root.join("settings.json"),
+            chat:Mutex::new(Chat::default()),external:Mutex::new(None),data_dir:root.to_owned(),fonts:None,parts:vec![],
+            cancel_dl:Arc::new(AtomicBool::new(false)),viewer:Arc::new(Viewer::new(root.join("cache"))),bridge:Mutex::new(None),
+            turn:Arc::new(Mutex::new(None)),busy:AtomicBool::new(false),sessions:Mutex::new(HashMap::new()),
+            attached:Mutex::new(HashMap::new()),project_path:Mutex::new(None),rec:Mutex::new(Default::default()),offer:Mutex::new(None),
+            update:Mutex::new(json!({"state":"unchecked"})),updating:AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn command_state_preserves_settings_keys_and_recovery_in_isolation() {
+        let root=std::env::temp_dir().join(format!("kimo-main-state-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        assert!(changes_list(app.state()).is_empty());
+        assert!(!agent_stop(app.state()));
+        assert!(agent_select(app.state(),"unknown".into(),None,None,None).is_err());
+        let original=app.state::<AppState>().settings.lock().unwrap().agent.clone();
+        agent_select(app.state(),"codex".into(),Some(" model ".into()),Some(" high ".into()),Some(false)).unwrap();
+        assert_eq!(app.state::<AppState>().settings.lock().unwrap().agent,original);
+        agent_select(app.state(),"api".into(),None,None,None).unwrap();
+        assert_eq!(app.state::<AppState>().settings.lock().unwrap().agent,"api");
+        assert_eq!(app.state::<AppState>().settings.lock().unwrap().agent_models["codex"],"model");
+        assert!(settings_set(app.state(),"unknown".into(),None,None).is_err());
+        settings_set(app.state(),"openai".into(),Some(" custom ".into()),Some(" http://fixture.invalid ".into())).unwrap();
+        assert_eq!(app.state::<AppState>().provider_cfg("openai").unwrap().1,"http://fixture.invalid");
+        assert_eq!(app.state::<AppState>().provider_cfg("openai").unwrap().2,"custom");
+        assert!(app.state::<AppState>().provider_cfg("unknown").is_none());
+        assert!(key_set(app.state(),"unknown".into(),"fixture-key".into(),false).is_err());
+        assert!(key_set(app.state(),"openai".into(),"  ".into(),false).is_err());
+        key_set(app.state(),"openai".into(),"fixture-secret-key".into(),true).unwrap();
+        let snapshot=app_state(app.state());
+        assert!(!snapshot.to_string().contains("fixture-secret-key"));
+        assert!(snapshot["keys"].as_array().unwrap().iter().any(|k|k["provider"]=="openai"&&k["set"]==true&&k["remembered"]==true));
+        key_set(app.state(),"openai".into(),"replacement-fixture-key".into(),false).unwrap();
+        assert!(app.state::<AppState>().settings.lock().unwrap().remembered.is_empty());
+        key_clear(app.state(),"openai".into());
+        assert!(app.state::<AppState>().keys.get("openai").is_none());
+        onboarded_set(app.state());setup_pause(app.state());setup_skip(app.state());
+        assert!(app.state::<AppState>().cancel_dl.load(Ordering::SeqCst));
+        assert_eq!(setup_status(app.state())["done"],true);
+        assert_eq!(setup_status(app.state())["ready"],true);
+        app.state::<AppState>().sessions.lock().unwrap().insert("codex".into(),"fixture-session".into());
+        agent_reset(app.state());assert!(app.state::<AppState>().sessions.lock().unwrap().is_empty());
+        assert!(recovery_status(app.state()).is_none());recovery_discard(app.state());
+        assert!(!recovery::load(&root).clean);
+        assert!(crash_pending(app.state()).is_empty());
+        assert!(crash_answer(app.state(),"missing.log".into(),true).is_err());
+        let st=app.state::<AppState>();
+        assert!(st.launch().is_none());assert!(!st.autosave_now());
+        assert_eq!(st.workspace(),root.join("agent-workspace"));assert!(st.workspace().is_dir());
+        st.remember_project("fixture.kimo");assert_eq!(st.project_path.lock().unwrap().as_deref(),Some("fixture.kimo"));
+        assert_eq!(recovery::load(&root).project_path.as_deref(),Some("fixture.kimo"));
+        assert!(st.ledger.call("you","timeline",&json!({"action":"add_track","args":{}})).is_err());
+        let _=st.app_tools();
+        drop(st);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn async_commands_reject_invalid_requests_and_release_busy_state() {
+        let root=std::env::temp_dir().join(format!("kimo-main-errors-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        tauri::async_runtime::block_on(async {
+            let h=app.handle();
+            assert_eq!(blocking(h.clone(),|_| Ok(7)).await.unwrap(),7);
+            assert_eq!(blocking::<_,()>(h.clone(),|_| Err("fixture refusal".into())).await.unwrap_err(),"fixture refusal");
+            assert!(blocking::<_,()>(h.clone(),|_| panic!("fixture worker panic")).await.unwrap_err().contains("panic"));
+            assert!(engine_read(h.clone(),"timeline".into(),json!({"action":"add_track"})).await.unwrap_err().contains("use engine_call"));
+            assert!(engine_read(h.clone(),"project".into(),json!({"action":"get_project"})).await.is_err());
+            assert!(engine_call(h.clone(),"timeline".into(),json!({"action":"add_track"})).await.is_err());
+            assert!(project_open(h.clone(),root.join("missing.kimo").display().to_string()).await.is_err());
+            assert!(project_save(h.clone(),root.join("missing").display().to_string()).await.is_err());
+            assert!(recovery_restore(h.clone()).await.unwrap_err().contains("nothing to restore"));
+            assert!(key_test(h.clone(),"unknown".into(),None).await.is_err());
+            assert!(key_test(h.clone(),"openai".into(),Some(" ".into())).await.unwrap_err().contains("Paste a key"));
+            assert!(cli_register(h.clone(),"unknown".into()).await.is_err());
+            assert!(cli_models(h.clone(),"unknown".into()).await.is_err());
+            assert!(cli_install("unknown".into()).is_err());assert!(cli_signin("unknown".into()).is_err());
+            assert!(mcp_probe(h.clone()).await.is_err());
+            assert!(agent_send(h.clone(),"  ".into(),1).await.unwrap_err().contains("Type what"));
+            app.state::<AppState>().busy.store(true,Ordering::SeqCst);
+            assert!(agent_send(h.clone(),"fixture".into(),1).await.unwrap_err().contains("still working"));
+            app.state::<AppState>().busy.store(false,Ordering::SeqCst);
+            app.state::<AppState>().settings.lock().unwrap().agent="unknown".into();
+            assert!(agent_send(h.clone(),"fixture".into(),1).await.unwrap_err().contains("Pick an agent"));
+            assert!(!app.state::<AppState>().busy.load(Ordering::SeqCst));
+            {let st=app.state::<AppState>();let mut settings=st.settings.lock().unwrap();settings.agent="api".into();settings.provider="unknown".into();}
+            assert!(agent_send(h.clone(),"fixture".into(),1).await.unwrap_err().contains("Pick a provider"));
+            app.state::<AppState>().settings.lock().unwrap().provider="openai".into();
+            assert!(agent_send(h.clone(),"fixture".into(),1).await.unwrap_err().contains("key"));
+            assert!(!app.state::<AppState>().busy.load(Ordering::SeqCst));
+            assert!(viewer_frame(h.clone(),0.).await.is_err());assert!(viewer_draft(h.clone(),0.,1.).await.is_err());
+            assert!(preview_start(h.clone(),0.,None,None,None,None).await.is_err());
+            assert!(preview_start(h.clone(),0.,Some(0.25),Some(2.),Some(true),Some(true)).await.is_err());
+            assert!(preview_update(h.clone(),0.,None,None,None).await.is_err());
+            assert!(preview_update(h.clone(),1.,Some(true),Some(2.),Some(true)).await.is_err());
+            assert!(preview_frame(h.clone(),0.).await.is_err());assert!(preview_stop(h.clone()).await.is_err());
+        });
+        drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn real_engine_autosave_tracks_unsaved_edits_and_discard_removes_only_its_snapshot() {
+        let root=std::env::temp_dir().join(format!("kimo-main-autosave-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let bin=PathBuf::from(std::env::var_os("KIMO_MCP_BIN").expect("build kimo-mcp and set KIMO_MCP_BIN for native command tests"));
+        assert!(bin.is_file());
+        let mut st=state(&root);
+        st.sup=Arc::new(Supervisor::new(Some(bin.clone()),vec![("KIMO_SPECTATOR".into(),"off".into())],None));
+        st.ledger=Arc::new(Ledger::new(st.sup.clone(),Arc::new(|name,value| {assert!(!name.is_empty());assert!(value.is_object() || value.is_array());})));
+        assert!(matches!(st.sup.start(),Status::Running{..}));
+        assert_eq!(st.launch().unwrap().command,bin.display().to_string());
+        let app=tauri::test::mock_app();assert!(app.manage(st));
+        let st=app.state::<AppState>();
+        let added=st.ledger.call("you","timeline",&json!({"action":"add_track","args":{}})).unwrap();
+        assert!(!engine::is_error(&added));assert!(!changes_list(app.state()).is_empty());
+        assert!(st.autosave_now());
+        let record=recovery::load(&root);let snapshot=record.autosave.as_ref().unwrap();
+        assert!(Path::new(snapshot).is_file());assert_eq!(record.autosaved_rev,st.ledger.revision());
+        assert!(record.autosaved_at>0);
+        let project=root.join("fixture.kimo");st.remember_project(project.to_str().unwrap());
+        assert_eq!(recovery::load(&root).saved_rev,st.ledger.revision());
+        assert!(st.autosave_now());assert!(Path::new(&format!("{}.autosave",project.display())).is_file());
+        let snapshot_json=app_state(app.state());assert!(snapshot_json["snippets"].is_object());
+        *st.offer.lock().unwrap()=Some(recovery::Offer{autosave:snapshot.clone(),project_path:None,autosaved_at:record.autosaved_at});
+        assert_eq!(recovery_status(app.state()).unwrap().autosave,*snapshot);
+        recovery_discard(app.state());assert!(recovery_status(app.state()).is_none());assert!(!Path::new(snapshot).exists());
+        assert!(Path::new(&format!("{}.autosave",project.display())).exists());
+        tauri::async_runtime::block_on(async {
+            let h=app.handle();
+            let saved=project_save(h.clone(),root.join("native-saved").display().to_string()).await.unwrap();
+            assert!(saved.ends_with("native-saved.kimo"));assert!(Path::new(&saved).is_file());
+            assert!(project_open(h.clone(),root.join("absent.kimo").display().to_string()).await.is_err());
+            project_open(h.clone(),saved.clone()).await.unwrap();
+            assert_eq!(st.project_path.lock().unwrap().as_deref(),Some(saved.as_str()));
+            let before=engine_read(h.clone(),"project".into(),json!({"action":"get_project","args":{}})).await.unwrap();
+            let count=before["data"]["tracks"].as_array().unwrap().len();
+            let added=engine_call(h.clone(),"timeline".into(),json!({"action":"add_track","args":{}})).await.unwrap();
+            assert_eq!(added["ok"],true);
+            let id=changes_list(app.state()).last().unwrap().id;
+            change_undo(h.clone(),id).await.unwrap();
+            let after=engine_read(h.clone(),"project".into(),json!({"action":"get_project","args":{}})).await.unwrap();
+            assert_eq!(after["data"]["tracks"].as_array().unwrap().len(),count);
+            assert!(matches!(project_new(h.clone()).await.unwrap(),Status::Running{..}));
+            assert!(st.project_path.lock().unwrap().is_none());assert!(changes_list(app.state()).is_empty());
+            assert!(viewer_frame(h.clone(),0.).await.unwrap().empty);
+            assert!(matches!(engine_restart(h.clone()).await.unwrap(),Status::Running{..}));
+            assert_eq!(setup_start(h.clone(),false).await.unwrap()["ready"],true);
+        });
+        st.sup.stop();drop(st);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_busy_guard_releases_on_success_and_unwind() {
+        let busy=AtomicBool::new(true);
+        { let _guard=scopeguard(&busy); assert!(busy.load(Ordering::SeqCst)); }
+        assert!(!busy.load(Ordering::SeqCst));
+        busy.store(true,Ordering::SeqCst);
+        let failed=std::panic::catch_unwind(|| { let _guard=scopeguard(&busy); panic!("fixture failure"); });
+        assert!(failed.is_err());assert!(!busy.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn shaped_results_keep_text_and_error_status() {
+        assert_eq!(shaped(json!({"content":[{"type":"text","text":"{\"value\":7}"}]})),json!({"ok":true,"text":"{\"value\":7}","data":{"value":7}}));
+        assert_eq!(shaped(json!({"isError":true,"content":[{"type":"text","text":"refused"}]})),json!({"ok":false,"text":"refused","data":null}));
+    }
 }

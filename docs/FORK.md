@@ -105,3 +105,13 @@ Viewer error/cache contracts use synthetic tool replies to verify transport erro
 CLI stream parser contracts assert sparse Claude Code/Codex messages, explicit/default errors, failed tool calls, command outcomes and Unicode-safe truncation. Inputs are synthetic JSON; no installed provider CLI or authenticated account is invoked.
 
 Antigravity parser fixtures also require RUNNING/PENDING tool starts, both cancellation spellings and failed result envelopes to retain failure status, with explicit fallback names and diagnostics for sparse input.
+
+Native command-state regression tests use Tauri’s mock runtime, an isolated settings/recovery directory and an in-memory credential store. They verify agent preference persistence without selection, provider validation, secret redaction, setup cancellation, recovery absence and busy-guard release on unwind. No real provider, credential store or user project is used. These command tests do not establish full desktop coverage.
+
+Viewer range regressions reject malformed numbers, reversed ranges, zero suffixes and empty-file ranges; oversized suffixes clamp to the file and multiple ranges use the first range. Cache tests assert initial emptiness and bounded occupancy after eviction.
+
+The native state suite also starts the required real `KIMO_MCP_BIN` with a synthetic empty project, adds a track, verifies autosave and saved revisions, and discards only its offered snapshot while preserving the newer snapshot. Missing engine binaries fail this test instead of silently skipping it.
+
+Native command handlers accept Tauri’s runtime parameter so the same production handlers can be exercised with its mock runtime. Shipping invocations still infer the normal desktop runtime; the tests use the same state and sidecar logic without opening a user window.
+
+Mock-runtime commands also drive the real sidecar through save/open (including a missing-file error), add-track/undo, new-project and restart. Assertions compare project tracks after undo, persisted project paths and the empty viewer after reset.

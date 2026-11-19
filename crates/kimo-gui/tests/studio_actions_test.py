@@ -494,6 +494,35 @@ async def main():
             print('PASS forgotten key, API selection, failed agent turn/reset, ask bar and native drag events')
             print('PASS model selection, custom names, incompatible effort reset and Live controls')
             print('PASS native bridge event envelope, update consent/error/progress and clipboard fallback')
+            await native.evaluate("""() => {
+              const invoke=__kimoBridge.invoke;window.stateOverride={engine:{state:'missing'}};window.sparseRequests=[];
+              __kimoBridge.invoke=async(command,args)=>{
+                sparseRequests.push({command,args});
+                if(command==='app_state')return {...await invoke(command,args),...stateOverride};
+                return invoke(command,args);
+              };
+            }""")
+            for engine, expected in [({'state':'missing'},'Not found'),({'state':'stopped'},'Starting'),({},'Starting'),({'state':'crashed','error':'fixture crash'},'Stopped')]:
+                await native.evaluate('(engine)=>{stateOverride.engine=engine}',engine)
+                await native.evaluate('__kimo.refresh()')
+                assert expected in await native.inner_text('#h-engine')
+            assert 'fixture crash' in await native.get_attribute('#pill-engine','title')
+            await native.evaluate('sparseRequests.length=0')
+            await native.evaluate('__kimo.importPaths([])')
+            await native.evaluate('__kimo.importPaths(["/fixture/refused.mp4"])')
+            assert 'not running' in await native.inner_text('#toast')
+            assert not await native.evaluate('sparseRequests.some(r=>r.command==="engine_call")')
+            await native.evaluate("stateOverride.engine={state:'running',version:'fixture',tools:1,actions:2};stateOverride.attached={codex:2,'custom-client':1};stateOverride.project_path='/fixture/example.json';stateOverride.snippets={json:'fixture-config'}")
+            await native.evaluate('__kimo.refresh()')
+            assert await native.inner_text('#tb-proj-t')=='example'
+            assert 'custom-client' in await native.inner_text('#tb-attached')
+            assert '2 sessions' in await native.inner_text('#live-who')
+            assert await native.inner_text('#cfg-json')=='fixture-config'
+            tab=await native.evaluate('__kimo.S.tab')
+            await native.evaluate("__kimo.show('unknown-tab')")
+            assert await native.evaluate('__kimo.S.tab')==tab
+            assert not errors,errors
+            print('PASS engine state presentation, refused imports, custom attached agents and unknown tab stability')
             await browser.close()
     finally:
         server.shutdown()

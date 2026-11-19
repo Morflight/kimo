@@ -358,6 +358,12 @@ mod tests {
         assert_eq!(byte_range(Some("bytes=-10"), 100), Ok(Some((90, 99))));
         assert!(byte_range(Some("bytes=100-"), 100).is_err(), "past the end is 416");
         assert_eq!(byte_range(Some("items=1-2"), 100), Ok(None), "unknown unit: whole file");
+        for spec in ["bytes=", "bytes=abc", "bytes=-x", "bytes=x-3", "bytes=1-x", "bytes=-0", "bytes=9-2"] {
+            assert!(byte_range(Some(spec),100).is_err(), "malformed or reversed range: {spec}");
+        }
+        assert!(byte_range(Some("bytes=0-"),0).is_err());
+        assert_eq!(byte_range(Some("bytes=-500"),100),Ok(Some((0,99))));
+        assert_eq!(byte_range(Some(" bytes=1-2,4-5 "),100),Ok(Some((1,2))));
     }
 
     #[test]
@@ -365,12 +371,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kimo-vw-lru-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = FrameCache::new(2);
+        assert!(c.is_empty());assert_eq!(c.len(),0);
         let mk = |n: i64| { let p = dir.join(format!("{n:02x}.png")); std::fs::write(&p, b"x").unwrap();
             Frame { rev: "r".into(), index: n, time: n as f64, url: String::new(), file: p, sha256: String::new(), width: 1, height: 1, ms: 0, cached: false } };
         let (a, b, d) = (mk(1), mk(2), mk(3));
         c.put(a.clone(), &[]); c.put(b.clone(), &[]);
         assert!(c.get("r", 1).is_some()); // touch 1: 2 is now the oldest
         c.put(d.clone(), &[]);
+        assert!(!c.is_empty());assert_eq!(c.len(),2);
         assert!(c.get("r", 2).is_none() && !b.file.exists(), "oldest evicted and its file removed");
         assert!(c.get("r", 1).is_some() && c.get("r", 3).is_some());
         let e = mk(4);

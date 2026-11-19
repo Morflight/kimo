@@ -479,7 +479,8 @@
         "crates/kimo-gui/src/crash.rs",
         "crates/kimo-gui/src/ledger.rs",
         "crates/kimo-gui/src/system.rs",
-        "crates/kimo-gui/src/telemetry.rs"
+        "crates/kimo-gui/src/telemetry.rs",
+        "crates/kimo-gui/src/main.rs"
       ],
       "sources": [
         "crates/kimo-gui/src/bridge.rs",
