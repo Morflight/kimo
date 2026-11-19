@@ -1175,8 +1175,50 @@ mod tests {
             assert!(viewer_frame(h.clone(),0.).await.unwrap().empty);
             assert!(matches!(engine_restart(h.clone()).await.unwrap(),Status::Running{..}));
             assert_eq!(setup_start(h.clone(),false).await.unwrap()["ready"],true);
+            let offered=format!("{}.autosave",project.display());
+            *st.offer.lock().unwrap()=Some(recovery::Offer{autosave:offered.clone(),project_path:Some(project.display().to_string()),autosaved_at:123});
+            let restored=recovery_restore(h.clone()).await.unwrap();
+            assert_eq!(restored,json!({"project_path":project.display().to_string(),"autosaved_at":123}));
+            assert!(recovery_status(app.state()).is_none());assert!(Path::new(&offered).is_file());
+            assert_eq!(recovery::load(&root).saved_rev,0);
+            let recovered=engine_read(h.clone(),"project".into(),json!({"action":"get_project","args":{}})).await.unwrap();
+            assert_eq!(recovered["data"]["tracks"].as_array().unwrap().len(),count);
+            assert!(mcp_probe(h.clone()).await.unwrap().ok);
+            let connected=mcp_set(h.clone(),true).await.unwrap();assert_eq!(connected["enabled"],true);
+            let port=connected["external_port"].as_u64().unwrap() as u16;
+            assert_eq!(start_external(h).unwrap(),port,"enabling again reuses this listener");
+            assert!(st.settings.lock().unwrap().mcp_enabled);assert!(connected["snippets"].is_object());
+            assert_eq!(mcp_set(h.clone(),false).await.unwrap(),json!({"enabled":false}));
+            assert!(st.external.lock().unwrap().is_none());assert!(!st.settings.lock().unwrap().mcp_enabled);
+
         });
         st.sup.stop();drop(st);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn setup_reports_installed_unavailable_and_failed_parts_without_claiming_ready() {
+        let root=std::env::temp_dir().join(format!("kimo-main-setup-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("installed.bin"),b"fixture").unwrap();
+        let installed=Part{id:"fixture-installed".into(),name:"Installed".into(),urls:vec![],sha512:download::sha512_file(&root.join("installed.bin")).unwrap(),size:7,dest:"installed.bin".into(),executable:false,optional:false,note:"local fixture".into(),os:String::new()};
+        let unavailable=Part{id:"fixture-unavailable".into(),name:"Unavailable".into(),sha512:String::new(),size:0,dest:"missing.bin".into(),..installed.clone()};
+        let optional=Part{id:"fixture-optional".into(),name:"Optional".into(),dest:"optional.bin".into(),optional:true,..installed.clone()};
+        let mut st=state(&root);st.parts=vec![installed,unavailable,optional];
+        let app=tauri::test::mock_app();assert!(app.manage(st));
+        let status=setup_status(app.state());assert_eq!(status["ready"],false);
+        assert_eq!(status["parts"][0]["installed"],true);assert_eq!(status["parts"][0]["satisfied"],"downloaded");
+        assert_eq!(status["parts"][1]["pinned"],false);assert_eq!(status["parts"][1]["satisfied"],Value::Null);
+        tauri::async_runtime::block_on(async {
+            let skipped=setup_start(app.handle().clone(),true).await.unwrap();
+            assert_eq!(skipped["ready"],false);assert_eq!(skipped["results"].as_array().unwrap().len(),2);
+            assert_eq!(skipped["results"][0],json!({"id":"fixture-installed","ok":true,"already":true}));
+            assert_eq!(skipped["results"][1],json!({"id":"fixture-unavailable","ok":false,"system":false,"error":"not published for download yet"}));
+            let attempted=setup_start(app.handle().clone(),false).await.unwrap();
+            assert_eq!(attempted["ready"],false);assert_eq!(attempted["results"].as_array().unwrap().len(),3);
+            assert_eq!(attempted["results"][2]["ok"],false);assert!(attempted["results"][2]["error"].as_str().unwrap().contains("no mirror listed"));
+        });
+        assert!(!app.state::<AppState>().settings.lock().unwrap().setup_done);
+        assert!(!root.join("optional.bin").exists());drop(app);std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

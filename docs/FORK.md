@@ -131,3 +131,5 @@ Discovery/model-cache/sign-in tests run in isolated child processes with fixture
 Agent search layout policy now receives explicit platform, home and application-data inputs. Metadata fixtures cover version/build directories, bundled Claude/Codex/Antigravity locations and native executable-extension searches while runtime discovery continues to use the real platform inputs.
 
 Desktop launcher tests inspect the unchanged Windows/macOS/Linux command policies, quoting and terminal priority without opening user applications. The executor starts and reaps only its compiled fixture. Invalid URL schemes and interior-NUL arguments must fail before a desktop launch. Process tests also enforce timeout cancellation and streamed-reply fallback when providers omit a final message.
+
+Native recovery tests restore an actual sidecar autosave, verify its track count and keep the recovered work marked unsaved. MCP command tests probe that same fixture engine, enable a loopback listener, reuse its port and disable it. Setup command tests distinguish installed, unpublished and optional parts with no mirrors; missing required components never produce a ready state.
