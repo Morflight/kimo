@@ -120,6 +120,54 @@ mod tests {
         assert_eq!(get("KIMO_WHISPER_BIN").unwrap(), d.join("whisper-cli").display().to_string());
         assert!(get("PATH").unwrap().starts_with(&ffdir.display().to_string()), "an FFmpeg outside PATH is put in front of PATH");
     }
+    #[test]
+    fn font_discovery_child() {
+        let Ok(mode) = std::env::var("KIMO_FONT_TEST_MODE") else { return; };
+        let root = std::path::PathBuf::from(std::env::var_os("KIMO_FONT_TEST_ROOT").unwrap());
+        if mode == "override" { assert_eq!(super::find_fonts(None,None,None),Some(root)); return; }
+        assert_eq!(super::find_fonts(None,None,None),None);
+        let exe=root.join("exe");let resource=root.join("resources");let engine=root.join("engine/bin/kimo");
+        for dir in [exe.join("fonts"),resource.join("fonts"),root.join("engine/fonts"),root.join("engine/bin")] { std::fs::create_dir_all(dir).unwrap(); }
+        std::fs::write(exe.join("fonts/README"),b"not a font").unwrap();
+        assert_eq!(super::find_fonts(Some(&exe),Some(&resource),Some(&engine)),None);
+        std::fs::write(root.join("engine/fonts/source.ttf"),b"fixture").unwrap();
+        assert_eq!(super::find_fonts(None,None,Some(&engine)),Some(root.join("engine/bin/../fonts")));
+        std::fs::write(resource.join("fonts/resource.otf"),b"fixture").unwrap();
+        assert_eq!(super::find_fonts(Some(&exe),Some(&resource),Some(&engine)),Some(resource.join("fonts")));
+        std::fs::write(exe.join("fonts/bundled.ttf"),b"fixture").unwrap();
+        assert_eq!(super::find_fonts(Some(&exe),Some(&resource),Some(&engine)),Some(exe.join("fonts")));
+        assert_eq!(super::find_fonts(Some(&exe.join("nested/bin")),None,None),Some(exe.join("fonts")));
+    }
+
+    #[test]
+    fn font_sources_are_discovered_in_isolated_processes() {
+        let root=std::env::temp_dir().join(format!("kimo-font-contract-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        for mode in ["override","sources"] {
+            let mut child=std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact","tests::font_discovery_child","--nocapture"])
+                .env("KIMO_FONT_TEST_MODE",mode).env("KIMO_FONT_TEST_ROOT",&root).env_remove("KIMO_FONTS");
+            if mode=="override" { child.env("KIMO_FONTS",&root); }
+            let output=child.output().unwrap();assert!(output.status.success(),"{} {}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn engine_environment_ignores_missing_fonts_and_avoids_duplicate_path_entries() {
+        let root=std::env::temp_dir().join(format!("kimo-env-contract-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        assert!(super::engine_env_with(Some(&root.join("absent")),&root,&[],&|_|None).is_empty());
+        let env=super::engine_env_with(Some(&root),&root,&[],&|_|None);
+        assert_eq!(env,vec![("KIMO_FONTS".into(),root.display().to_string())]);
+        let first=std::env::split_paths(&std::env::var_os("PATH").unwrap()).next().unwrap();
+        let env=super::engine_env_with(None,&root,&[],&|id| (id=="ffmpeg").then(||first.join("ffmpeg")));
+        assert!(env.iter().all(|(key,_)|key!="PATH"));
+        let env=super::engine_env_with(None,&root,&[],&|id| (id=="ffmpeg").then(std::path::PathBuf::new));
+        assert!(env.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }
 
 /// Against the real engine (KIMO_MCP_BIN): the Live feed and the chat's Undo cards, end to end. Skipped when unset.

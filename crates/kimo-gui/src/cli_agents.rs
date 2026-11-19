@@ -846,4 +846,30 @@ warning: something on stderr"#);
         assert!(explain(Kind::Antigravity, "boom").is_none());
         assert_eq!(short_tool("mcp__kimo__timeline"), "timeline");
     }
+    #[test]
+    fn sparse_streams_and_error_payloads_have_stable_neutral_events() {
+        for (input, expected) in [
+            (json!("plain"),"plain"), (json!([{"text":"one"},"two",{}]),"one\ntwo\n"),
+            (Value::Null,""), (json!({"text":"nested"}),"nested"), (json!({"code":7}),"{\"code\":7}"),
+        ] { assert_eq!(text_of(&input), expected); }
+        assert_eq!(cut("é".repeat(601).as_str(),600),format!("{}…","é".repeat(600)));
+        for prefix in ["mcp__kimo__","kimo__","kimo.",""] { assert_eq!(short_tool(&format!("{prefix}timeline")),"timeline"); }
+        for input in [json!({}),json!({"type":"stream_event"}),json!({"type":"assistant"}),json!({"type":"user"})] {assert!(parse_claude(&input).is_empty());}
+        assert_eq!(parse_claude(&json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"thinking":"Plan"}}})),vec![Ev::Thinking{text:"Plan".into()}]);
+        assert_eq!(parse_claude(&json!({"type":"assistant","message":{"content":[{"type":"text"},{"type":"tool_use"},{}]}})),vec![Ev::Text{text:"".into()},Ev::ToolStart{id:"".into(),tool:"".into(),input:Value::Null}]);
+        assert_eq!(parse_claude(&json!({"type":"user","message":{"content":[{"type":"tool_result","is_error":true},{}]}})),vec![Ev::ToolEnd{id:"".into(),ok:false,output:"".into()}]);
+        assert_eq!(parse_claude(&json!({"type":"result","is_error":true})),vec![Ev::Error{message:"Claude Code stopped: error".into()}]);
+        assert_eq!(parse_claude(&json!({"type":"result","subtype":"error_limit","result":"limit"})),vec![Ev::Error{message:"limit".into()}]);
+        assert_eq!(parse_claude(&json!({"type":"result"})),vec![Ev::Done{text:"".into(),cost_usd:None,turns:None}]);
+        assert!(matches!(&parse_claude(&json!({"type":"system","subtype":"init","mcp_servers":[{"name":"other"},{"name":"kimo"}]}))[0],Ev::Error{message} if message.contains("()")));
+        for input in [json!({}),json!({"type":"thread.started"}),json!({"type":"item.updated","item":{"type":"mcp_tool_call"}}),json!({"type":"item.completed","item":{}})] {assert!(parse_codex(&input).is_empty());}
+        assert_eq!(parse_codex(&json!({"type":"item.started","item":{"type":"command_execution","command":"fixture"}})),vec![Ev::ToolStart{id:"".into(),tool:"shell".into(),input:json!({"command":"fixture"})}]);
+        for (exit,ok) in [(0,true),(1,false)] {assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"command_execution","exit_code":exit,"aggregated_output":"output"}})),vec![Ev::ToolEnd{id:"".into(),ok,output:"output".into()}]);}
+        assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"error"}})),vec![Ev::Error{message:"error".into()}]);
+        assert_eq!(parse_codex(&json!({"type":"turn.failed"})),vec![Ev::Error{message:"Codex stopped with an error".into()}]);
+        assert_eq!(parse_codex(&json!({"type":"error"})),vec![Ev::Error{message:"Codex error".into()}]);
+        assert_eq!(parse_codex(&json!({"type":"error","message":"specific"})),vec![Ev::Error{message:"specific".into()}]);
+        assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"mcp_tool_call","status":"failed"}})),vec![Ev::ToolEnd{id:"".into(),ok:false,output:"".into()}]);
+    }
+
 }

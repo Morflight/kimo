@@ -97,3 +97,9 @@ Download unit contracts use a loopback HTTP fixture and temporary directories to
 The transfer loop accepts reader/writer streams so unit tests can assert that read failures remain offline errors and write/flush failures remain I/O errors. Production downloads use the same loop with the HTTP response and partial file.
 
 Shared-engine bridge tests exercise malformed JSON, notifications, default protocol fields, invalid UTF-8 termination, stale discovery files, refusal handshakes and descriptor-write failures on loopback fixtures. Child-process checks isolate environment discovery and relay bytes through real stdin/stdout pipes; they do not attach to a running user application.
+
+The client-handshake transport seam checks write/read/timeout failures without relying on timing races; actual loopback handshakes remain covered. Font discovery is exercised in child processes across override, executable, resource and engine-relative locations. Engine environment tests require missing fonts to be omitted and an existing PATH entry to remain unduplicated.
+
+Viewer error/cache contracts use synthetic tool replies to verify transport errors, malformed summaries, missing output files, fallback hashes/dimensions and draft eviction. These byte fixtures exercise metadata/cache handling; separate real-engine tests remain responsible for rendering and playback evidence.
+
+CLI stream parser contracts assert sparse Claude Code/Codex messages, explicit/default errors, failed tool calls, command outcomes and Unicode-safe truncation. Inputs are synthetic JSON; no installed provider CLI or authenticated account is invoked.

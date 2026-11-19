@@ -160,13 +160,28 @@ pub fn connect(dir: &Path, label: &str) -> Result<TcpStream, String> {
     let info: Info = serde_json::from_str(&raw).map_err(|e| format!("bad bridge.json: {e}"))?;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], info.port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800)).map_err(|_| "the kimo app is not running (stale bridge.json)".to_string())?;
-    s.write_all(format!("{HELLO} {} {}\n", info.token, clean_label(label)).as_bytes()).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
-    let mut ok = [0u8; 3];
-    s.read_exact(&mut ok).map_err(|_| "the kimo app refused the connection".to_string())?;
-    if &ok != b"OK\n" { return Err("the kimo app refused the connection".into()); }
-    s.set_read_timeout(None).map_err(|e| e.to_string())?;
+    client_handshake(&mut s, &info.token, label)?;
     Ok(s)
+}
+
+trait ClientSocket {
+    fn send_hello(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    fn read_reply(&mut self, bytes: &mut [u8]) -> std::io::Result<()>;
+    fn timeout(&self, duration: Option<Duration>) -> std::io::Result<()>;
+}
+impl ClientSocket for TcpStream {
+    fn send_hello(&mut self, bytes: &[u8]) -> std::io::Result<()> { self.write_all(bytes) }
+    fn read_reply(&mut self, bytes: &mut [u8]) -> std::io::Result<()> { self.read_exact(bytes) }
+    fn timeout(&self, duration: Option<Duration>) -> std::io::Result<()> { self.set_read_timeout(duration) }
+}
+fn client_handshake(s: &mut impl ClientSocket, token: &str, label: &str) -> Result<(), String> {
+    s.send_hello(format!("{HELLO} {token} {}\n", clean_label(label)).as_bytes()).map_err(|e| e.to_string())?;
+    s.timeout(Some(HELLO_TIMEOUT)).map_err(|e| e.to_string())?;
+    let mut ok = [0u8; 3];
+    s.read_reply(&mut ok).map_err(|_| "the kimo app refused the connection".to_string())?;
+    if &ok != b"OK\n" { return Err("the kimo app refused the connection".into()); }
+    s.timeout(None).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Relay stdin → app and app → stdout until either side closes. Used by `kimo-gui mcp` when the app is open.
@@ -406,6 +421,34 @@ mod tests {
             assert_eq!(data_dir_for("linux", &|key| if key == "XDG_DATA_HOME" { xdg.clone() } else { None }, Some(root.clone())), Some(root.join(".local/share/dev.kimo.app")));
         }
         assert_eq!(data_dir_for("linux", &|key| (key == "XDG_DATA_HOME").then(|| root.clone()), None), Some(root.join("dev.kimo.app")));
+    }
+
+    #[test]
+    fn handshake_failures_never_return_an_authenticated_connection() {
+        struct Socket { fail: &'static str, sent: Vec<u8>, timeouts: std::cell::RefCell<Vec<Option<Duration>>> }
+        impl ClientSocket for Socket {
+            fn send_hello(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+                if self.fail == "write" { return Err(std::io::Error::other("write failed")); }
+                self.sent.extend_from_slice(bytes); Ok(())
+            }
+            fn read_reply(&mut self, bytes: &mut [u8]) -> std::io::Result<()> {
+                if self.fail == "read" { return Err(std::io::Error::other("read failed")); }
+                bytes.copy_from_slice(if self.fail == "refused" { b"NO\n" } else { b"OK\n" }); Ok(())
+            }
+            fn timeout(&self, duration: Option<Duration>) -> std::io::Result<()> {
+                self.timeouts.borrow_mut().push(duration);
+                if (self.fail == "timeout" && duration.is_some()) || (self.fail == "reset" && duration.is_none()) {
+                    return Err(std::io::Error::other("timeout failed"));
+                }
+                Ok(())
+            }
+        }
+        for (fail, expected) in [("write",Some("write failed")),("read",Some("the kimo app refused the connection")),("refused",Some("the kimo app refused the connection")),("timeout",Some("timeout failed")),("reset",Some("timeout failed")),("",None)] {
+            let mut socket = Socket { fail, sent: Vec::new(), timeouts: Default::default() };
+            assert_eq!(client_handshake(&mut socket,"fixture","Claude Code!").err().as_deref(),expected);
+            if fail != "write" { assert_eq!(socket.sent,b"KIMO-BRIDGE/1 fixture claudecode\n"); }
+            if fail.is_empty() { assert_eq!(*socket.timeouts.borrow(),vec![Some(HELLO_TIMEOUT),None]); }
+        }
     }
 
 }

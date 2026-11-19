@@ -554,4 +554,74 @@ mod tests {
         eprintln!("viewer: 2 s half-res draft in {} ms (first frame {} ms), split into frames in {} ms", d.ms, d.first_frame_ms, d.extract_ms);
         sup.stop(); let _ = std::fs::remove_dir_all(&dir);
     }
+    struct FixtureTools { failure: Option<&'static str>, malformed: Option<&'static str>, write: bool, sha: bool }
+    impl Tools for FixtureTools {
+        fn list(&self) -> Vec<Value> { vec![] }
+        fn call(&self, _: &str, args: &Value) -> Result<Value,String> {
+            if self.failure==Some("transport") { return Err("synthetic transport error".into()); }
+            if self.failure==Some("engine") { return Ok(json!({"isError":true,"content":[{"type":"text","text":"synthetic engine error"}]})); }
+            let action=args["action"].as_str().unwrap();
+            if self.malformed==Some(action) { return Ok(json!({"content":[{"type":"text","text":"not json"}]})); }
+            let data=match action {
+                "get_project"=>json!({"fixture":true}),
+                "timeline_summary"=>json!({"duration":2,"fps":25,"width":640,"height":360,"tracks_bottom_to_top":[{"clips":[{}]}]}),
+                "render_frame"|"preview_range"=>{
+                    if self.write { std::fs::write(args["args"]["path"].as_str().unwrap(),b"fixture bytes").unwrap(); }
+                    if action=="render_frame" { return Ok(if self.sha { json!({"structuredContent":{"sha256":"fixture-hash"}}) } else { json!({}) }); }
+                    json!({})
+                }
+                "preview_stream"=>{assert!(args["args"]["dir"].is_string());json!({"frames":[{"name":"a.bmp"}]})}
+                _=>panic!("unexpected fixture action {action}"),
+            };
+            Ok(json!({"content":[{"type":"text","text":data.to_string()}]}))
+        }
+    }
+
+    #[test]
+    fn malformed_engine_answers_and_missing_files_do_not_forge_previews() {
+        let dir=tmpdir("invalid-answers");let viewer=Viewer::new(dir.clone());
+        for failure in ["transport","engine"] {
+            let tools=FixtureTools {failure:Some(failure),malformed:None,write:false,sha:false};
+            assert!(tools.list().is_empty());
+            assert!(viewer.frame(&tools,0.).unwrap_err().contains(failure));
+        }
+        for action in ["timeline_summary","preview_stream","preview_range"] {
+            let tools=FixtureTools {failure:None,malformed:Some(action),write:false,sha:false};
+            let error=if action=="preview_stream" {viewer.stream(&tools,"start",Value::Null).unwrap_err()}
+                else if action=="preview_range" {viewer.draft(&tools,0.,1.).unwrap_err()}
+                else {viewer.frame(&tools,0.).unwrap_err()};
+            assert!(error.starts_with(&format!("{action}:")),"{error}");
+        }
+        for sha in [false,true] {
+            let tools=FixtureTools {failure:None,malformed:None,write:false,sha};
+            let error=viewer.frame(&tools,0.).unwrap_err();
+            assert!(error.contains(if sha {"wrote no file"} else {"frame not written"}),"{error}");
+            assert!(viewer.draft(&tools,0.,1.).unwrap_err().contains("wrote no file"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fallback_frame_metadata_and_draft_eviction_preserve_live_cache_files() {
+        let dir=tmpdir("fallback-metadata");std::fs::create_dir_all(&dir).unwrap();
+        for name in ["old.bmp","old.wav","old.part","keep.png"] {std::fs::write(dir.join(name),b"fixture").unwrap();}
+        let viewer=Viewer::new(dir.clone());assert_eq!(viewer.dir(),dir);
+        for name in ["old.bmp","old.wav","old.part"] {assert!(!dir.join(name).exists());}
+        assert!(dir.join("keep.png").is_file());
+        let tools=FixtureTools {failure:None,malformed:None,write:true,sha:false};
+        let shown=viewer.frame(&tools,0.).unwrap();let frame=shown.frame.unwrap();
+        assert_eq!((frame.width,frame.height),(640,360));
+        assert_eq!(frame.sha256,format!("{:x}",Sha256::digest(b"fixture bytes")));
+        let stream=viewer.stream(&tools,"start",Value::Null).unwrap();assert_eq!(stream["frames"][0]["url"],cache_url("a.bmp"));
+        let mut drafts=Vec::new();
+        for i in 0..=DRAFT_CAP {let d=viewer.draft(&tools,i as f64/10.,0.2).unwrap();assert!(d.frame_files.is_empty());assert_eq!(d.frames,0);drafts.push(d);}
+        assert!(!drafts[0].file.exists());assert!(drafts[1..].iter().all(|d|d.file.is_file()));
+        assert!(frame.file.is_file());assert!(dir.join("keep.png").is_file());
+        assert!(split_frames(&dir.join("absent-ffmpeg"),&drafts[1].file,&dir,"fixture").is_empty());
+        let tools_dir=dir.join("tools");std::fs::create_dir(&tools_dir).unwrap();
+        let ffmpeg=tools_dir.join(if cfg!(windows) {"ffmpeg.exe"} else {"ffmpeg"});std::fs::write(&ffmpeg,b"fixture").unwrap();
+        assert_eq!(find_ffmpeg(&dir),Some(ffmpeg));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
 }
