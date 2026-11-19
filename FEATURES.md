@@ -2144,3 +2144,5 @@ CLI parser tests cover JSON aliases, first-flag precedence, required values and 
 CLI exit-policy helpers are tested independently of tool availability: unavailable reserved commands still fail before loading a project. Unit tests verify result preservation and preflight/delivery exit codes using explicit outcomes. A child test process receives a synthetic `Hung` guard outcome and must terminate with code 124 and the exact structured timeout diagnostic; this tests the CLI boundary, not the engine watchdog timing.
 
 Studio inspector regression: a focused delete button no longer blocks the project-properties refresh when the selection becomes empty. Browser contracts also exercise clip context actions, export file extension normalization and setup pause/skip/welcome flows with isolated synthetic commands.
+
+Studio fallback drafts now cross chunk boundaries instead of replaying the same chunk. A two-chunk Chromium regression verifies the next request and final stop. Escape closes overlays first and clears the Edit selection when no overlay or menu is open.

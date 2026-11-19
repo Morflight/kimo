@@ -9,10 +9,10 @@ async def main():
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
             page = await browser.new_page()
-            await page.route('**/canvas.html', lambda route: route.fulfill(content_type='text/html', body='<main id="panel"></main>'))
+            await page.route('**/canvas.html', lambda route: route.fulfill(content_type='text/html', body='<link rel="stylesheet" href="/ui/app.css"><main id="panel"></main>'))
             await page.goto(f'http://127.0.0.1:{server.server_address[1]}/canvas.html')
             result = await page.evaluate('''async () => {
-              const {KINDS,POST}=await import('/ui/panels.js');
+              const {KINDS,POST,PRE}=await import('/ui/panels.js');
               const el=document.querySelector('#panel');
               const check=(ok,message)=>{if(!ok)throw Error(message)};
               const pixel=(cv,x,y)=>[...cv.getContext('2d').getImageData(x,y,1,1).data];
@@ -46,6 +46,18 @@ async def main():
                 check(pixel(target,8,8)[3]===255,'false-colour output remains opaque');outputs.push(first);
               }
               check(new Set(outputs).size>8,'different exposures remain distinguishable');
+              for(const width of [20,45,120,260,600]) {
+                el.style.cssText=`position:relative;width:${width}px;height:300px`;
+                const missing={name:'missing id',args:'one two three',status:'ok'};
+                const call={id:'sparse',name:'set_property',args:'hero, scale: 100% → 120%, extra long argument',status:'ok'};
+                const args={spec:{title:'Fixture'},state:{mode:'edit',session:{still:true},calls:[missing,call]},data:{},w:width,h:300};
+                PRE.agent(el,args);
+                check(!missing._fit,'a row without an identifier cannot acquire another call fit');
+                check(call._fit&&call._fit.k,'identified row receives a measured fit even without duration');
+                const fit=call._fit;PRE.agent(el,args);check(call._fit===fit,'unchanged geometry reuses its measured fit');
+                el.innerHTML=KINDS.agent(args);
+                check(el.querySelector('[data-call="sparse"] .sig').title==='set_property(hero, scale: 100% → 120%, extra long argument)','full call remains available in title');
+              }
               return {cie:snapshots.length,exposures:outputs.length};
             }''')
             assert result == {'cie': 7, 'exposures': 11}, result

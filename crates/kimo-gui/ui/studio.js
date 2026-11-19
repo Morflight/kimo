@@ -773,7 +773,7 @@ function playSeq() {
   const tick = now => {
     const t = from + (now - t0) / 1000;
     if (t >= d.end - 1 / V.fps || !V.draft) {
-      V.t = Math.min(V.dur, d.end - 1 / V.fps); scrub.value = String(V.t); vTime(); stopPlay();
+      V.t = Math.min(V.dur, d.end); scrub.value = String(V.t); vTime(); stopPlay();
       if (V.t < V.dur - 2 / V.fps && playing) play(); // keep going: next draft chunk
       return;
     }
@@ -1370,7 +1370,13 @@ addEventListener('mousedown', e => { if (!e.target.closest('#ctx')) $('#ctx').hi
 addEventListener('keydown', e => {
   const typing = e.target.closest('input,textarea,select,[contenteditable]');
   const mod = e.ctrlKey || e.metaKey;
-  if (e.key === 'Escape') { $$('.overlay.on').forEach(o => { if (!['setup'].includes(o.id)) o.classList.remove('on'); }); $('#ctx').hidden = true; return; }
+  if (e.key === 'Escape') {
+    const closingLayer = $$('.overlay.on').length > 0 || !$('#ctx').hidden;
+    $$('.overlay.on').forEach(o => { if (!['setup'].includes(o.id)) o.classList.remove('on'); });
+    $('#ctx').hidden = true;
+    if (!closingLayer && !typing && S.tab === 'edit') select(null);
+    return;
+  }
   if (mod && /^[1-5]$/.test(e.key)) { e.preventDefault(); show(['home', 'edit', 'agent', 'live', 'connections'][+e.key - 1]); return; }
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveProject(e.shiftKey); return; }
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openProject(); return; }
@@ -1401,7 +1407,6 @@ addEventListener('keydown', e => {
   else if (k === 'End') seekTo(P.dur);
   else if (k === '+' || k === '=') setZoom(T.z * 1.4);
   else if (k === '-' || k === '_') setZoom(T.z / 1.4);
-  else if (k === 'Escape') select(null);
 });
 
 let kHeld = false;

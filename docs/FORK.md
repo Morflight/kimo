@@ -103,3 +103,5 @@ The client-handshake transport seam checks write/read/timeout failures without r
 Viewer error/cache contracts use synthetic tool replies to verify transport errors, malformed summaries, missing output files, fallback hashes/dimensions and draft eviction. These byte fixtures exercise metadata/cache handling; separate real-engine tests remain responsible for rendering and playback evidence.
 
 CLI stream parser contracts assert sparse Claude Code/Codex messages, explicit/default errors, failed tool calls, command outcomes and Unicode-safe truncation. Inputs are synthetic JSON; no installed provider CLI or authenticated account is invoked.
+
+Antigravity parser fixtures also require RUNNING/PENDING tool starts, both cancellation spellings and failed result envelopes to retain failure status, with explicit fallback names and diagnostics for sparse input.

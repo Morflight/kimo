@@ -40,6 +40,8 @@ async def main():
               __kimoBridge.invoke=async (command,args={})=>{
                 fixture.requests.push({command,args:structuredClone(args)});
                 if(fixture.fail===command)throw Error('fixture failure '+command);
+                if(command==='engine_call'&&fixture.fixRefused)return {ok:false,text:'synthetic fix refusal'};
+                if(command==='preview_start'&&fixture.deferPreview)return await new Promise(resolve=>fixture.finishPreview=resolve);
                 if(command==='agent_send')return await new Promise(resolve=>fixture.finishAgent=resolve);
                 if(command==='agent_stop'){fixture.finishAgent({reply:'Stopped fixture turn'});return null;}
                 if(command==='pick')return fixture.pick;
@@ -50,7 +52,7 @@ async def main():
                   if(action==='get_project')return {ok:true,data:structuredClone(fixture.project)};
                   if(action==='import_media')return {ok:true,data:{asset_id:'a'}};
                   if(action==='duplicate_clip')return {ok:true,data:{clip_id:'duplicate'}};
-                  if(action==='add_track')return {ok:true,data:{track_id:'t'}};
+                  if(action==='add_track')return {ok:true,data:{track_id:fixture.newTrack||'t'}};
                   if(action==='add_text')return {ok:true,data:{clip_id:'c'}};
                   if(action==='export_job_start')return {ok:true,data:{job_id:'job'}};
                   if(action==='job_status')return {ok:true,data:{state:fixture.jobState,frames_done:20,frames_total:20,chunks:{done:1,total:1},eta:{seconds:0},result:{path:'/fixture/out.mp4'},error:fixture.jobState==='failed'?'synthetic encoder failure':null}};
@@ -174,6 +176,15 @@ async def main():
             await page.locator('.asset .add').click()
             await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="add_clip")')
             assert await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="add_clip").args.args.args') == {'track_id':'t','source_type':'media','asset_id':'a','start':9,'duration':8}
+            await page.evaluate('fixture.requests=[];fixture.newTrack="new-track";__kimo.V.t=1;__kimo.S.sel=null')
+            await page.locator('.asset .add').click()
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="add_clip")')
+            assert await page.evaluate('fixture.requests.some(r=>r.args.args?.action==="add_track")')
+            assert await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="add_clip").args.args.args.track_id') == 'new-track'
+            await page.evaluate('fixture.newTrack=null;fixture.requests=[];__kimo.V.t=20;__kimo.S.sel=null')
+            await page.click('#ed-split')
+            assert 'Put the playhead over a clip' in await page.inner_text('#toast')
+            assert not await page.evaluate('fixture.requests.some(r=>r.args.args?.action==="split_clip")')
             print('PASS real pointer move/trim, snapping, locked track, rename/mute, playhead split and media insertion')
             await page.locator('#tl-zoom').evaluate("el=>{el.value='60';el.dispatchEvent(new Event('input',{bubbles:true}))}")
             assert await page.evaluate('__kimo.T.z') == 60
@@ -334,6 +345,32 @@ async def main():
             await page.click('#home-open')
             await page.wait_for_function('fixture.requests.some(r=>r.command==="project_open"&&r.args.path==="/fixture/home.kimo")')
             await page.wait_for_function('__kimo.S.tab==="edit"')
+            await page.evaluate("async()=>{await __kimo.PB.stop();fixture.requests=[];fixture.deferPreview=true;__kimo.PB.o.onError('Synthetic preview error')}")
+            assert await page.inner_text('#vw-msg') == 'Synthetic preview error'
+            await page.evaluate("__kimo.PB.o.onWarm('cancelled')")
+            await page.click('#vw-prepare-action')
+            await page.wait_for_function('fixture.requests.some(r=>r.command==="preview_start"&&r.args.warming===true)')
+            await page.wait_for_function('typeof fixture.finishPreview==="function"')
+            await page.click('#vw-prepare-action')
+            await page.evaluate('fixture.finishPreview({gen:1,frames:[],audio:[]})')
+            await page.wait_for_function('__kimo.PB.warm===null&&document.querySelector("#vw-prepare-status").textContent.includes("Preparation stopped")')
+            assert await page.evaluate('fixture.requests.some(r=>r.command==="preview_stop")')
+            assert 'Preparation stopped' in await page.inner_text('#vw-prepare-status')
+            print('PASS preview error display, scheduled preparation and explicit cancellation')
+            await page.evaluate("__kimo.show('agent');fixture.requests=[];__mock.emit('changes',[{id:99,actor:'claude-code',action:'Fixture edit',summary:'Synthetic finding',t:0,steps:1,findings:[{severity:'warning',message:'Fixture warning',code:'test_finding',fix:{tool:'timeline',args:{action:'set_track',args:{track_id:'t',muted:false}}}}]}])")
+            await page.click('[data-fix="99:0"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent==="Fixed: test finding"')
+            assert await page.evaluate('fixture.requests.some(r=>r.args.args?.action==="set_track")')
+            await page.evaluate("fixture.fixRefused=true;__mock.emit('changes',__kimo.S.changes)")
+            await page.click('[data-fix="99:0"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent==="synthetic fix refusal"')
+            assert await page.is_enabled('[data-fix="99:0"]')
+            await page.evaluate("fixture.fixRefused=false;fixture.fail='engine_call'")
+            await page.click('[data-fix="99:0"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent.includes("fixture failure engine_call")')
+            assert await page.is_enabled('[data-fix="99:0"]')
+            await page.evaluate('fixture.fail=null')
+            print('PASS finding fix success/refusal/transport error with retry controls restored')
             assert not errors, errors
             print('PASS inspector values, text/audio/effects, project format and new-project consent')
             print('PASS timeline commands, imports, save/open confirmation, export validation/status and menus')
@@ -371,6 +408,20 @@ async def main():
             await native.click('#cfg-copy')
             assert await native.evaluate('copyFallback') == 'copy'
             assert not errors, errors
+            await native.evaluate("__kimo.show('agent')")
+            await native.click('.apick[data-agent="codex"]')
+            await native.fill('#chat-in','Fixture request before installation')
+            await native.click('#chat-send')
+            await native.wait_for_function('__kimo.S.tab==="connections"')
+            assert 'not installed yet' in await native.inner_text('#toast')
+            assert await native.evaluate('__kimo.S.busy') is False
+            await native.click('#cli-cards [data-cli="install"][data-id="codex"]')
+            await native.wait_for_function('document.querySelector("#cli-msg").textContent.includes("Synthetic installation complete")')
+            await native.wait_for_function('__kimo.S.cli.find(a=>a.id==="codex").installed===true')
+            await native.click('#cli-cards [data-cli="signin"][data-id="codex"]')
+            await native.wait_for_function('document.querySelector("#cli-msg").textContent.includes("Signed in (mock)")')
+            await native.wait_for_function('__kimo.S.cli.find(a=>a.id==="codex").signed_in===true')
+            print('PASS unavailable agent routes to Connections and synthetic install/sign-in are polled')
             await native.evaluate("""() => {
               const invoke=__kimoBridge.invoke;window.modelRequests=[];
               __kimoBridge.invoke=async(command,args)=>{modelRequests.push({command,args});return invoke(command,args)};

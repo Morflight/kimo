@@ -872,4 +872,29 @@ warning: something on stderr"#);
         assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"mcp_tool_call","status":"failed"}})),vec![Ev::ToolEnd{id:"".into(),ok:false,output:"".into()}]);
     }
 
+    #[test]
+    fn antigravity_sparse_states_and_cancellations_are_not_successes() {
+        for input in [json!({}),json!({"event":"init"}),json!({"event":"step_update"}),json!({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":""}})] {assert!(parse_agy(&input).is_empty());}
+        for kind in ["thinking","planner_thinking"] {
+            assert_eq!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":kind,"text_delta":"plan"}})),vec![Ev::Thinking{text:"plan".into()}]);
+            assert!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":kind}})).is_empty());
+        }
+        for state in ["RUNNING","PENDING"] {
+            assert_eq!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":"tool","state":state,"tool_name":"legacy"}})),vec![Ev::ToolStart{id:"s0".into(),tool:"legacy".into(),input:Value::Null}]);
+        }
+        assert_eq!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE"}})),vec![Ev::ToolStart{id:"s0".into(),tool:"tool".into(),input:Value::Null}]);
+        assert!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":"tool"}})).is_empty());
+        for (server,tool) in [("","mcp"),("other","other.mcp")] {
+            assert_eq!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_info":{"name":"call_mcp_tool","parameters":{"ServerName":server}}}})),vec![Ev::ToolStart{id:"s0".into(),tool:tool.into(),input:Value::Null}]);
+        }
+        for state in ["FAILED","CANCELED","CANCELLED"] {
+            let events=parse_agy(&json!({"event":"step_update","step_update":{"step_type":"tool","state":state,"tool_info":{"error":"cancelled"}}}));
+            assert_eq!(events,vec![Ev::ToolStart{id:"s0".into(),tool:"tool".into(),input:Value::Null},Ev::ToolEnd{id:"s0".into(),ok:false,output:"cancelled".into()}]);
+        }
+        for (result,message) in [(json!({}),"Antigravity stopped: error"),(json!({"status":"FAILED"}),"Antigravity stopped: FAILED"),(json!({"status":"FAILED","response":"specific \n"}),"specific")] {
+            assert_eq!(parse_agy(&json!({"event":"result","result":result})),vec![Ev::Error{message:message.into()}]);
+        }
+        for (input,message) in [(json!({"event":"error"}),"Antigravity error"),(json!({"event":"error","message":"outer"}),"outer"),(json!({"event":"error","error":{"message":"inner"},"message":"outer"}),"inner")] {assert_eq!(parse_agy(&input),vec![Ev::Error{message:message.into()}]);}
+    }
+
 }
