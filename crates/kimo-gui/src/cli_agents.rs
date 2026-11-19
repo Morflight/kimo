@@ -689,8 +689,16 @@ pub fn models(k: Kind) -> Models {
 
 /// Stop the running turn (if any).
 pub fn stop(slot: &Slot) -> bool {
-    if let Some(ch) = slot.lock().unwrap().as_mut() { let _ = ch.kill(); return true; }
-    false
+    let mut child = {
+        let mut running = slot.lock().unwrap();
+        let Some(child) = running.as_mut() else { return false };
+        if child.kill().is_err() { return false; }
+        // Removing the killed child lets run distinguish an explicit Stop from a provider failure.
+        // Reap it here: run no longer owns a handle to wait on.
+        running.take().unwrap()
+    };
+    let _ = child.wait();
+    true
 }
 
 #[cfg(test)]
@@ -895,6 +903,81 @@ warning: something on stderr"#);
             assert_eq!(parse_agy(&json!({"event":"result","result":result})),vec![Ev::Error{message:message.into()}]);
         }
         for (input,message) in [(json!({"event":"error"}),"Antigravity error"),(json!({"event":"error","message":"outer"}),"outer"),(json!({"event":"error","error":{"message":"inner"},"message":"outer"}),"inner")] {assert_eq!(parse_agy(&input),vec![Ev::Error{message:message.into()}]);}
+    }
+
+    #[test]
+    fn real_child_streams_preserve_prompts_results_errors_and_stop() {
+        let dir=std::env::temp_dir().join(format!("kimo-cli-process-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
+        let source=dir.join("fixture.rs");let bin=dir.join(if cfg!(windows){"fixture.exe"}else{"fixture"});
+        std::fs::write(&source,r#"
+use std::io::{Read,Write};
+fn main() {
+    let root=std::env::current_exe().unwrap().parent().unwrap().to_owned();
+    let args:Vec<_>=std::env::args().skip(1).collect();
+    std::fs::write(root.join("argv"),args.join("\0")).unwrap();
+    let mut input=String::new();std::io::stdin().read_to_string(&mut input).unwrap();
+    std::fs::write(root.join("stdin"),input).unwrap();
+    std::io::stdout().write_all(&std::fs::read(root.join("stdout")).unwrap()).unwrap();std::io::stdout().flush().unwrap();
+    std::io::stderr().write_all(&std::fs::read(root.join("stderr")).unwrap()).unwrap();
+    if root.join("wait").exists(){std::thread::sleep(std::time::Duration::from_secs(30));}
+    std::process::exit(std::fs::read_to_string(root.join("exit")).unwrap().trim().parse().unwrap());
+}
+"#).unwrap();
+        let built=Command::new("rustc").args(["--edition=2021","--crate-name","fixture"]).arg(&source).arg("-o").arg(&bin).output().unwrap();
+        assert!(built.status.success(),"{}",String::from_utf8_lossy(&built.stderr));
+        let launch=KimoLaunch{command:"fixture-kimo".into(),env:vec![("FIXTURE".into(),"one two".into())]};
+        let slot:Slot=Arc::new(Mutex::new(None));
+        let cases=[
+            (Kind::ClaudeCode,vec![json!({"type":"system","subtype":"init","session_id":"session"}),json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"draft"}}}),json!({"type":"assistant","message":{"content":[{"type":"text","text":"final"}]}}),json!({"type":"result","subtype":"success","result":"final"})]),
+            (Kind::Codex,vec![json!({"type":"thread.started","thread_id":"session"}),json!({"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}),json!({"type":"item.completed","item":{"type":"agent_message","text":"final"}}),json!({"type":"turn.completed"})]),
+            (Kind::Antigravity,vec![json!({"event":"init","conversation_id":"session"}),json!({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"draft"}}),json!({"event":"result","result":{"status":"SUCCESS","response":"final"}})])
+        ];
+        for (kind,events) in cases {
+            std::fs::write(dir.join("stdout"),format!("not json\n{}\n",events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"))).unwrap();
+            std::fs::write(dir.join("stderr"),"fixture diagnostic\n").unwrap();std::fs::write(dir.join("exit"),"0").unwrap();
+            let turn=Turn{kind,bin:&bin,prompt:"Éditer sans shell",session:None,model:Some("fixture-model"),effort:Some("high"),launch:&launch,workdir:&dir};
+            let expected=command(&turn).unwrap();let mut got=vec![];
+            let result=run(&turn,&slot,&mut |e|got.push(e));
+            assert_eq!(result.session.as_deref(),Some("session"));assert_eq!(result.reply,"final");assert_eq!(result.error,None);
+            assert!(got.iter().any(|e|matches!(e,Ev::Session{id} if id=="session")));
+            assert_eq!(std::fs::read_to_string(dir.join("stdin")).unwrap(),expected.1.unwrap_or_default());
+            assert_eq!(std::fs::read_to_string(dir.join("argv")).unwrap().split('\0').collect::<Vec<_>>(),expected.0);
+            assert!(slot.lock().unwrap().is_none());assert!(!stop(&slot));
+        }
+        let turn=Turn{kind:Kind::Codex,bin:&bin,prompt:"fixture",session:Some("previous"),model:None,effort:None,launch:&launch,workdir:&dir};
+        for (stderr,expected) in [("Please login","not signed in"),("quota exceeded","usage limit"),("fixture failure","fixture failure")] {
+            std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),stderr).unwrap();std::fs::write(dir.join("exit"),"7").unwrap();
+            let mut got=vec![];let result=run(&turn,&slot,&mut |e|got.push(e));
+            assert!(result.error.unwrap().contains(expected));assert_eq!(result.session.as_deref(),Some("previous"));assert!(result.reply.is_empty());assert!(got.is_empty());
+        }
+        std::fs::write(dir.join("stdout"),json!({"type":"error","message":"provider refused"}).to_string()+"\n").unwrap();
+        std::fs::write(dir.join("stderr"),"login").unwrap();
+        let mut got=vec![];let result=run(&turn,&slot,&mut |e|got.push(e));assert_eq!(result.error.as_deref(),Some("provider refused"));assert_eq!(got,vec![Ev::Error{message:"provider refused".into()}]);
+        std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),"").unwrap();std::fs::write(dir.join("exit"),"0").unwrap();
+        for kind in Kind::all() {
+            assert_eq!(register(kind,&bin,&launch).unwrap(),"Added kimo.");
+            let argv=std::fs::read_to_string(dir.join("argv")).unwrap();
+            assert!(argv.contains("kimo"));assert!(argv.contains("fixture-kimo"));
+            if kind==Kind::ClaudeCode {
+                let config:Value=serde_json::from_str(argv.split('\0').last().unwrap()).unwrap();
+                assert_eq!(config["command"],"fixture-kimo");assert_eq!(config["env"]["FIXTURE"],"one two");
+            } else {assert!(argv.contains("FIXTURE=one two"));assert!(argv.contains("--client"));}
+        }
+        std::fs::write(dir.join("stdout"),"registered ").unwrap();std::fs::write(dir.join("stderr"),"fixture").unwrap();
+        assert_eq!(run_register(&bin,&[]).unwrap(),"registered fixture");
+        std::fs::write(dir.join("exit"),"4").unwrap();assert_eq!(run_register(&bin,&[]).unwrap_err(),"registered fixture");
+        std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),"").unwrap();
+        assert!(run_register(&bin,&[]).unwrap_err().contains("exited with"));assert!(run_register(&dir.join("absent"),&[]).is_err());
+        let missing=dir.join("absent");let invalid=Turn{bin:&missing,..turn};
+        let mut got=vec![];assert!(run(&invalid,&slot,&mut |e|got.push(e)).error.unwrap().contains("Could not start Codex"));assert!(got.is_empty());
+        let unwritable=Turn{kind:Kind::ClaudeCode,workdir:&missing,..turn};
+        assert!(run(&unwritable,&slot,&mut |e|got.push(e)).error.unwrap().contains("could not write"));assert!(got.is_empty());
+        std::fs::write(dir.join("stdout"),json!({"type":"thread.started","thread_id":"stopping"}).to_string()+"\n").unwrap();
+        std::fs::write(dir.join("stderr"),"").unwrap();std::fs::write(dir.join("wait"),"").unwrap();
+        let result=run(&turn,&slot,&mut |e|{assert!(matches!(e,Ev::Session{..}));assert!(stop(&slot));});
+        assert_eq!(result.error.as_deref(),Some("Stopped."));assert!(slot.lock().unwrap().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
 }

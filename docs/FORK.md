@@ -119,3 +119,7 @@ Mock-runtime commands also drive the real sidecar through save/open (including a
 Native bridge tests assert JSON-RPC initialization, empty resources, malformed/missing tools and unknown-method errors. Live-event tests distinguish GUI and external sources and preserve agent/turn metadata. A build without an updater key remains off and refuses installation without contacting an update feed.
 
 The shipping IPC registry is shared with mock-webview tests. Required arguments are validated through actual Tauri dispatch before state mutation; successful agent/key settings are then read back with secret redaction. Unknown commands and disabled updates retain their error responses.
+
+CLI process-contract tests compile a small local fixture executable with the test toolchain. They verify prompt delivery, exact argv, streamed session/final replies, authentication/quota errors, registration output and cancellation, without running an installed agent or changing its configuration.
+
+Stopping an active agent kills and reaps only that turn’s child, removes its running slot and reports `Stopped.` rather than a provider exit failure. A failed kill retains the child for normal completion and reports that no stop occurred. The process fixture reproduces the former signal-9 error and asserts the corrected cancellation result.
