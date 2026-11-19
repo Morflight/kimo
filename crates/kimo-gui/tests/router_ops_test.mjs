@@ -437,3 +437,83 @@ assert.deepEqual(changeRows({}, {s:4,e:8,changed:{clip:{duration:[2,4]}}}),[{k:'
 assert.deepEqual(changeRows({}, {changed:'invalid',param:'opacity',from:.2,to:.5}),[{k:'Opacity',from:'20%',v:'50%'}]);
 assert.equal(changeRows({}, {param:'opacity',from:.2}),null);
 console.log('PASS incomplete diffs hide unresolved IDs, preserve unchanged keys and format source timing');
+
+// Partial events arrive before argument/result hydration; unrelated tools never gain a visual effect.
+for(const [handler,mode] of [[graphicsOps,'graphics'],[maskOps,'roto'],[sceneOps,'tracking'],[gradeOps,'grading']]) {
+ for(const phase of ['start','progress','complete']) {
+  const state=fresh(mode);
+  assert.equal(handler(state,MODES,{tool_name:'unrelated_tool',phase,call_id:'incomplete'}),false,`${mode} ${phase}`);
+  assert.equal(state.views[mode]?.viewer?.overlay,undefined);
+ }
+}
+assert.equal(editOps2(fresh('edit'),MODES,{tracks:[]},{tool_name:'delete_track',phase:'complete'},{track_id:'absent'}),false);
+assert.equal(editOps2(fresh('edit'),MODES,{}, {tool_name:'delete_track',phase:'complete'},{}),false);
+console.log('PASS unhydrated events do not invent visual operations or missing tracks');
+
+// Legacy spectator payloads use target IDs and in/out aliases as well as modern args.
+const legacySparse={};
+assert.equal(timelineOps1(legacySparse,{tool_name:'add_track'},'edit'),true);
+assert.equal(legacySparse.tracks[0].id,'track1');
+for(const added of [[{track_id:'t2'},{id:'t3'}],['t4']]) {
+ assert.equal(timelineOps1(legacySparse,{tool_name:'add_track',payload:{changed:{tracks_added:added}}},'edit'),true);
+}
+assert.deepEqual(plain(legacySparse.tracks.map(t=>t.id)),['track1','t2','t3','t4']);
+assert.equal(timelineOps1(legacySparse,{tool_name:'add_clip',target:{track_id:'t2'},payload:{clip:'hero',s:2}},'graphics'),true);
+const legacyHero=legacySparse.tracks[1].clips[0];assert.deepEqual([legacyHero.s,legacyHero.e],[2,6]);
+legacySparse.tracks[1].clips.push({id:'later',s:8,e:10});
+assert.equal(timelineOps1(legacySparse,{tool_name:'split_clip',target:{clip_id:'hero'},payload:{at:4,ripple:2}},'edit'),true);
+assert.deepEqual(plain(legacySparse.tracks[1].clips.map(c=>[c.s,c.e])),[[2,4],[4,6],[10,12]]);
+for(const [payload,expected] of [[{result:{kind:'J',seconds:1}},{kind:'J',seconds:1}],[{kind:'L',seconds:2},{kind:'L',seconds:2}],[{args:{kind:'J',seconds:3}},{kind:'J',seconds:3}]]) {
+ assert.equal(timelineOps1(legacySparse,{tool_name:'set_split_edit',target:{clip_id:'hero'},payload},'edit'),true);
+ assert.deepEqual(plain(legacyHero.jl),expected);assert.deepEqual([legacyHero.s,legacyHero.e],[2,4]);
+}
+assert.equal(timelineOps1(legacySparse,{tool_name:'trim_clip',target:{clip_id:'hero'},payload:{in:1,out:3}},'edit'),true);
+assert.deepEqual([legacyHero.s,legacyHero.e],[1,3]);
+for(const payload of [{name:'glow'},{type:'blur'},{}])assert.equal(timelineOps1(legacySparse,{tool_name:'apply_effect_tint',target:{clip_id:'hero'},payload},'effects'),true);
+assert.deepEqual(plain(legacyHero.fx),['glow','blur','tint']);
+for(const [payload,expected] of [[{},true],[{},false],[{value:true},true],[{on:false,value:true},false]]) {
+ assert.equal(timelineOps1(legacySparse,{tool_name:'solo_track',target:{track_id:'t2'},payload},'audio'),true);
+ assert.equal(legacySparse.tracks[1].solo,expected);
+}
+assert.equal(timelineOps1(legacySparse,{tool_name:'mute_track',target:{track_id:'absent'}},'audio'),false);
+for(const [payload,target,id] of [[{s:0,track:'Video'},{},'Video'],[{s:0},{},'V1']]) {
+ const tl={};assert.equal(timelineOps1(tl,{tool_name:'import_media',payload,target},'ingest'),true);
+ assert.equal(tl.tracks[0].id,id);assert.equal(tl.tracks[0].clips[0].e,4);
+}
+const sparseCaptions={tracks:[{id:'CAP'}]};
+assert.equal(timelineOps1(sparseCaptions,{tool_name:'caption',payload:{text:'Hello',s:1}},'text'),true);
+assert.deepEqual(plain(sparseCaptions.tracks[0].clips.map(c=>[c.label,c.s,c.e])),[['Hello',1,3]]);
+console.log('PASS legacy timeline insertion, ripple splits, J/L edits, trim aliases and track solo toggles');
+
+// Export cards reflect the specific job and reported size; incomplete progress stays indeterminate.
+assert.equal(exportOps(fresh('export'),{},{}),false);
+for(const [tool,args,preset,label] of [
+ ['join_export',{parts:['a','b']},'join 2 parts','join_export'],['join_export',{},'join','join_export'],
+ ['preview_range',{scale:.5},'preview 0.5x','preview_range'],['preview_range',{scale:1},'preview','preview_range'],
+ ['collect_project',{dest_dir:'/fixtures/collected/'},'collect','collected'],['collect_project',{dest_dir:'/'},'collect','collect_project'],
+ ['contact_sheet',{},'contact sheet','contact_sheet']
+]) {
+ const state=fresh('export');assert.equal(exportOps(state,MODES,{tool_name:tool,phase:'start',payload:{args}}),true);
+ const rows=Object.values(state.views.export).find(v=>v.rows).rows;
+ assert.equal(rows[0][0],label);assert.equal(rows[0][1],preset);
+ assert.equal(rows[0][3],tool==='collect_project'?'● collecting':'● rendering');
+}
+for(const [bytes,size] of [[12,'12 B'],[1200,'1 KB'],[2e9,'2.00 GB']]) {
+ const state=fresh('export');const start={tool_name:'export',call_id:'size',phase:'start',payload:{args:{path:'out.mp4',crf:20,width:1920,height:1080}}};
+ exportOps(state,MODES,start);
+ const view=state.views.export,rows=Object.values(view).find(v=>v.rows).rows,vw=view.viewer;
+ assert.equal(exportOps(state,MODES,{...start,phase:'progress',payload:{}}),false);assert.equal(vw.progress.pct,null);
+ exportOps(state,MODES,{...start,phase:'complete',payload:{result:{bytes,job_id:'job'}}});
+ assert.equal(rows[0][3],`✓ done · ${size}`);assert.equal(rows[0]._jobId,'job');assert.equal(vw.progress.right,'');
+ exportOps(state,MODES,{...start,phase:'start',payload:{args:{width:1280,height:720,crf:18}}});
+ const blocks=Object.values(view).find(v=>v.blocks).blocks;
+ assert.deepEqual(plain(blocks.find(b=>b.k==='Resolution')).from,'1920x1080');assert.equal(blocks.find(b=>b.k==='Resolution').v,'1280x720');
+ assert.equal(blocks.find(b=>b.k==='Quality').from,'CRF 20');
+ exportOps(state,MODES,{...start,phase:'progress',payload:{current_frame:3,total_frames:12}});assert.equal(vw.progress.pct,25);
+ exportOps(state,MODES,{...start,phase:'error',payload:{}});assert.equal(rows[0][3],'✕ failed');assert.equal(vw.progress.halt,true);
+}
+const cancelled=fresh('export');exportOps(cancelled,MODES,{tool_name:'export',call_id:'cancelled',phase:'start'});
+exportOps(cancelled,MODES,{tool_name:'cancel_job',phase:'complete'});
+assert.equal(Object.values(cancelled.views.export).find(v=>v.rows).rows[0][3],'✕ cancelled');assert.equal(cancelled.views.export.viewer.progress.right,'cancelled');
+assert.equal(exportOps(cancelled,MODES,{tool_name:'resume_job',phase:'start',call_id:'resumed',payload:{args:{job_id:'missing'}}}),false);
+console.log('PASS export job presets, size units, resolution changes, frame progress and failed/cancelled status');

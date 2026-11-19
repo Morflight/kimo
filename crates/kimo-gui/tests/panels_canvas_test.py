@@ -58,6 +58,17 @@ async def main():
                 el.innerHTML=KINDS.agent(args);
                 check(el.querySelector('[data-call="sparse"] .sig').title==='set_property(hero, scale: 100% → 120%, extra long argument)','full call remains available in title');
               }
+              // Sweep real layout boundaries where measured text first fits: preserve the
+              // complete accessible call while changing only its visible compact rendering.
+              for(const name of ['x','look','preview_material']) for(let width=24;width<=240;width++) {
+                el.style.cssText=`position:relative;width:${width}px;height:300px`;
+                const call={id:'boundary',name,args:'subject with several words, threshold: 0.5',status:'ok',duration:300};
+                const args={spec:{title:'Fixture'},state:{mode:'edit',session:{still:true},calls:[call]},data:{},w:width,h:300};
+                PRE.agent(el,args);el.innerHTML=KINDS.agent(args);
+                const sig=el.querySelector('[data-call="boundary"] .sig');
+                check(sig.title===`${name}(subject with several words, threshold: 0.5)`,'compact layout retains the full accessible call');
+                check(call._fit&&typeof call._fit.tight==='boolean','layout boundary has a measured fit');
+              }
               return {cie:snapshots.length,exposures:outputs.length};
             }''')
             assert result == {'cie': 7, 'exposures': 11}, result
