@@ -87,3 +87,7 @@ Crash-log persistence has a private writer boundary for deterministic storage-fa
 Ledger regression tests cover actor adapters, reset with late findings, bounded Unicode summaries, compact observations, poisoned write-lock recovery and transport/engine/history failures. A late result cannot recreate a reset card; failed undo leaves the revision unchanged, and saving/exporting does not mark the project dirty.
 
 System-tool discovery tests use isolated child processes with synthetic PATH executables and model files. They verify explicit Whisper paths, `whisper-cli` before `whisper-cpp`, the models-bin fallback, documented FFprobe locations outside PATH, and best-model ordering. Platform-path policy is tested for both Windows portable/WinGet/Chocolatey/Scoop locations and Unix locations on either host; these tests do not launch or install the synthetic executables.
+
+Telemetry socket tests verify blank-line handling, invalid JSON status reporting, termination on invalid UTF-8 and a visible error when all public spectator ports are occupied. They use isolated loopback sockets and retain distinct GUI/external source identities.
+
+Portable native-client tests compile a local fixture and verify JSON argv preservation, output trimming and nonzero exit diagnostics. The real-engine supervisor test terminates only its own child, requires a crashed status, then verifies that the next call restarts a new connection and increments the restart count once.

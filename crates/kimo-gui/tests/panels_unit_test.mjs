@@ -64,3 +64,48 @@ for(const b of [{sec:'Section',h:10},{gap:12},{list:['1 numbered','plain'],sel:0
 console.log('PASS empty panels, key lanes, curves, transcripts, history, batch status and inspector widget variants');
 
 assert.match(block({widget:'comp',gap:10},240),/Threshold/);assert.equal(block({gap:10},240),'<div style="height:10px"></div>');
+
+for(const [mark,pattern] of [
+ [{quad:[[0,0],[1,0],[1,1],[0,1]],roi:true},/stroke-dasharray="6 4"/],
+ [{rect:[.1,.2,.3,.4],em:true,label:'Target'},/Target/],
+ [{brackets:true,label:'HUD'},/HUD/],[{brackets:true},/<path/],
+ [{to:[.1,.2,.3,.4]},/stroke-dasharray="4 4"/],
+ [{text:'Counter',at:[.5,.5],box:true},/Counter/],[{text:0,at:[.5,.5]},/>0<\/text>/],
+ [{shape:'ellipse',rect:[.1,.2,.3,.4]},/<ellipse cx="100" cy="80"/],
+ [{shape:'rect',rect:[.1,.2,.3,.4]},/<rect/],
+ [{path:[[0,0],[1,1]],closed:true},/<polygon/],[{path:[[0,0],[1,1]]},/<polyline/],
+ [{squares:3},/opacity=".85"/],[{squares:3,seed:42},/opacity=".85"/],
+ [{crop:.5},/<rect x="100" y="50" width="200" height="100"/],
+ [{vline:.25},/x1="100" x2="100"/],
+ [{pts:[{p:[.5,.5],v:[.1,.1]},{p:[0,0]}]},/x2="160" y2="80"/],
+ [{rings:[{p:[.5,.5],r:12}]},/r="12"/],
+ [{boxes:[[0,0,.2,.2],[.1,.1,.3,.3]]},/stroke-opacity="0.35"/],[{boxes:[]},/^$/],
+ [{pt:[.5,.5]},/r="24"/],[{pt:[.5,.5],r:.1},/r="20"/],
+ [{poly:[[0,0],[1,0],[1,1]]},/<polygon points="0,0 400,0 400,200"/],
+ [{light:[.5,.5],kind:'subject'},/stroke-dasharray="3 3"/],
+ [{light:[.5,.5],kind:'spot',label:'Key'},/Key/],
+ [{cam:{}},/<path/],[{cam:{cam_fov:45,cam_pan:20,cam_tilt:10},keys:[0,20]},/tilt 10°/],
+ [{body:[.5,.5],label:'Body'},/Body/],[{body:[.5,.5],r:.05},/r="20"/]
+])assert.match(finite(overlay([mark],400,200)),pattern);
+const transforms=finite(gizmo({prev:{},next:{x:10,y:20},null:true,parent:{x:40,y:10},read:['position']},400,200,{width:400,height:200},0));assert.match(transforms,/stroke-dasharray="3 3"/);assert.match(transforms,/position/);
+assert.match(finite(render('tree',{items:[{name:'Selected',sel:true,icon:'cam'},{name:'Nested',d:1,icon:'unknown'}]},{guide:15})),/Nested/);
+assert.match(finite(render('list',{rows:[{icon:'bulb',k:'Key',v:'2'},{icon:'custom',k:'Other',v:'1'}]},{chips:true,lines:true})),/custom/);
+assert.match(finite(render('profile',{pts:[[0,0],[1,1]],thumbs:[{label:'Missing',sel:true}]},{ax:10,x1:100,base:200,top:40,tx:120,tw:60,gap:10,ty:40,th:50,labY:110,smooth:false,hollow:false})),/ptile sel/);
+console.log('PASS overlay geometry for graphics, tracking, camera and physics, plus default tree/list/profile styling');
+for(const data of [
+ {src:'fixture://frame',falsecolor:{},progress:{halt:true,left:'stopped'},thumbs:[{dim:true},{src:'fixture://thumb',check:true}]},
+ {stale:3,refused:'budget',refusedSrc:'inferred'}, {stale:4,refused:'engine stopped'},
+ {sub:'<b>trusted</b>',subHtml:true}
+]) {const html=finite(render('viewer',data));if(data.falsecolor)assert.match(html,/clip-path:inset\(0 0 0 50%\)/);if(data.refused)assert.match(html,/render refused/);if(data.sub)assert.match(html,/<b>trusted<\/b>/);}
+for(const status of ['error','lost','ok']) {
+ const rows=pickedRows({status,error:status==='error'?'failure':null,diff:[{k:'Position',from:1,v:2}],args:{empty:null,array:[1,2],object:{a:1,b:2,c:3,d:4}},result:{items:[1,2],value:3,empty:null}});
+ assert.equal(rows.find(r=>r.k==='Status').v,status==='lost'?'no result (feed dropped)':status);assert.ok(rows.some(r=>r.sec==='Diff'));assert.ok(rows.some(r=>r.sec==='Result'));
+}
+assert.match(finite(render('keys',{strip:[{pts:[[0,0],[1,1]]}],lanes:[]},{stripBg:'#123',headLine:30})),/#123/);
+assert.match(finite(render('curves',{curves:[{pts:[[0,0],[1,1]]}]},{band:[10,20]})),/fill="#171715"/);
+assert.match(finite(render('diffbatch',{diff:[['?','unknown']]})),/unknown/);
+assert.match(finite(gizmo({prev:{},next:{},path:[[100,100],[100,100]],read:[]},400,200,{},0)),/M140 40 C140 40 140 40 140 40/);
+const trackDefaults=finite(render('timeline',{tracks:[{label:'Music',chip:true,mute:true,solo:true,wave:{},beats:{list:[1,2]},env:[[0,.2],[2,.8]],clips:[{s:0,e:1,label:'Cover',cover:'fixture://cover'}]}],playhead:2},{lane:true}));assert.match(trackDefaults,/labchip/);assert.match(trackDefaults,/class="s">S/);assert.match(trackDefaults,/fixture:\/\/cover/);
+console.log('PASS missing viewer defaults, refusal states, selected-call diagnostics and timeline metadata');
+
+assert.match(finite(render('diffbatch',{diff:[['+','partial']]},{col:{},txt:{}})),/color:var\(--text\)/);

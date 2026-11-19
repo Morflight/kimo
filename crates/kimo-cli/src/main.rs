@@ -192,4 +192,59 @@ mod tests {
         strip_images(&mut v); let s = v.to_string(); assert!(!s.contains("AAAA") && !s.contains("BBBB") && !s.contains("CCCC"), "{s}");
         assert_eq!(v["shot"]["path"], "/tmp/a.png"); assert_eq!(v["content"].as_array().unwrap().len(), 1);
     }
+    #[test]
+    fn argument_parser_preserves_values_aliases_and_first_flag_precedence() {
+        let input = ["--json", "call", "kimo_info", "--args={}", "--limit", "2", "--limit=9", "-q", "--no-save", "-V"];
+        let parsed = parse(&input.map(String::from)).ok().unwrap();
+        assert_eq!(parsed.pos, ["call", "kimo_info", "--version"]);
+        assert!(parsed.has("--json") && parsed.has("--quiet") && parsed.has("--no-save"));
+        assert_eq!(parsed.val("--limit").as_deref(), Some("2"));
+        assert_eq!(parsed.args_json().ok().unwrap(), json!({}));
+        assert_eq!(parsed.val("--absent"), None);
+        for value in ["{}", "[]", "-"] {
+            let parsed = parse(&["--json".into(), value.into()]).ok().unwrap();
+            assert!(!parsed.has("--json"));
+            assert_eq!(parsed.val("--args").as_deref(), Some(value));
+        }
+        assert!(parse(&["--json".into()]).ok().unwrap().has("--json"));
+        for flag in VALUE_FLAGS {
+            let failure = parse(&[(*flag).into()]).err().unwrap();
+            assert_eq!(failure.code, EXIT_USAGE);
+            assert_eq!(failure.body["message"], format!("{flag} needs a value"));
+        }
+    }
+
+    #[test]
+    fn argument_json_requires_an_object_and_reports_malformed_input() {
+        assert_eq!(parse(&[]).ok().unwrap().args_json().ok().unwrap(), json!({}));
+        for text in ["null", "42", "true", "[]"] {
+            let failure = parse(&["--args".into(), text.into()]).ok().unwrap().args_json().err().unwrap();
+            assert_eq!(failure.code, EXIT_USAGE);
+            assert_eq!(failure.body["message"], "--args must be a JSON object");
+        }
+        let failure = parse(&["--args={".into()]).ok().unwrap().args_json().err().unwrap();
+        assert!(failure.body["message"].as_str().unwrap().starts_with("--args is not valid JSON:"));
+    }
+
+    #[test]
+    fn image_redaction_preserves_file_metadata_and_non_image_data() {
+        let mut value = json!({"content":[{"type":"image","path":"shot.png","data":"secret","base64":"secret2"},{"type":"text","data":"visible"}],"nested":[{"image_base64":"secret3","mimeType":"image/png"},null,3],"plain":{"data":"keep","base64":"also keep"}});
+        strip_images(&mut value);
+        assert_eq!(value["content"][0], json!({"type":"image","path":"shot.png","data_omitted":true}));
+        assert_eq!(value["content"][1]["data"], "visible");
+        assert_eq!(value["nested"][0], json!({"mimeType":"image/png","data_omitted":true}));
+        assert_eq!(value["plain"], json!({"data":"keep","base64":"also keep"}));
+        let once = value.clone(); strip_images(&mut value); assert_eq!(value, once);
+    }
+
+    #[test]
+    fn mutation_policy_resolves_groups_and_rejects_unknown_tools() {
+        assert!(mutates("add_track", &json!({})));
+        assert!(mutates("timeline", &json!({"action":"add_track","args":{}})));
+        assert!(!mutates("project", &json!({"action":"kimo_info"})));
+        assert!(!mutates("project", &json!({"action":"unknown-action"})));
+        assert!(!mutates("unknown-tool", &json!({})));
+        assert!(!mutates("kimo_info", &json!({})));
+    }
+
 }

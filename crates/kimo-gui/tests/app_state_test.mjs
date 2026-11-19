@@ -8,10 +8,10 @@ const mainEvents=new Map();const element={addEventListener:(name,fn)=>mainEvents
 const document={visibilityState:'hidden',getElementById:()=>element,createElement:()=>({}),addEventListener(){},fonts:{ready:new Promise(()=>{})}};
 const window={addEventListener(){}};
 const context=vm.createContext({document,window,performance:{now:()=>1000},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},Image:class {constructor(){images.push(this);}}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'app.js')?'\nexport {enqueue,queue,setHidden,handover,statsLine,fitPicked,syncAttrs,adoptImgs,keepFrame,onWheel,renderPanel,pans,buildLayout,nodes,render,stepSprings,springs};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'app.js')?'\nexport {enqueue,queue,setHidden,handover,statsLine,fitPicked,syncAttrs,adoptImgs,keepFrame,onWheel,renderPanel,pans,buildLayout,nodes,render,stepSprings,springs,paint};':''),{identifier:filename,context}));return modules.get(filename);}
 const router=get(resolve(directory,'router.js'));await router.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await router.evaluate();
 const app=get(resolve(directory,'app.js'));await app.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await app.evaluate();
-const {state,apply,enqueue,queue,setHidden,metrics,QMAX,handover,statsLine,fitPicked,syncAttrs,adoptImgs,keepFrame,onWheel,renderPanel,pans,buildLayout,nodes,render,stepSprings,springs}=app.namespace;
+const {state,apply,enqueue,queue,setHidden,metrics,QMAX,handover,statsLine,fitPicked,syncAttrs,adoptImgs,keepFrame,onWheel,renderPanel,pans,buildLayout,nodes,render,stepSprings,springs,paint}=app.namespace;
 const plain=x=>JSON.parse(JSON.stringify(x));
 for(const invalid of [null,undefined,1,'bad'])apply(invalid);
 apply({type:'unknown'});apply({type:'view'});
@@ -117,3 +117,24 @@ springs.push({el:{style:{},dataset:{}},D:10,W:10,H:10,d:[0,0,1,1]});assert.equal
 mainEvents.get('click')({target:{}});mainEvents.get('click')({target:{closest:()=>({dataset:{call:'absent'}})}});assert.equal(state.pick,null);
 state.calls=[{id:3}];mainEvents.get('click')({target:{closest:()=>({dataset:{call:'3'}})}});assert.equal(state.pick,3);mainEvents.get('click')({target:{closest:()=>({dataset:{call:'3'}})}});assert.equal(state.pick,null);
 console.log('PASS sparse layouts, missing renderer, running-call pick, scope refresh and call deselection');
+apply({type:'session',width:640,height:360,still:true,elapsed_s:12,read_only:true});assert.equal(state.session.width,640);assert.equal(state.session.height,360);assert.equal(state.session.still,true);
+apply({type:'session',width:100,height:0});assert.equal(state.session.width,640);
+apply({type:'mode',activity:null});assert.equal(state.explicitActivity,true);assert.equal(state.activity,null);
+apply({type:'tool_start',id:'progress-case',name:'fixture',count:55});apply({type:'tool_progress',id:'progress-case',progress:.75});assert.equal(state.callCount,55);assert.equal(state.calls.at(-1).progress,.75);apply({type:'tool_progress',id:'absent',progress:1});assert.equal(state.calls.at(-1).progress,.75);
+apply({type:'frame_rendered',jpg_b64:'jpeg'});assert.equal(state.views.edit.viewer.src,'data:image/jpeg;base64,jpeg');
+queue.length=0;setHidden(false);enqueue({phase:'progress',call_id:'same',value:1});enqueue({phase:'progress',call_id:'same',value:2});assert.equal(queue.length,1);assert.equal(queue[0].value,2);setHidden(true);
+const expired=new Node();statsLine(expired,{text:'fresh',_flash:1000});const expiredNode=expired._st;statsLine(expired,{text:'old',_flash:0});assert.equal(expired._st,expiredNode);assert.equal(expiredNode.classList.contains('flash'),false);
+adoptImgs({getElementsByTagName:()=>[]},[oldImage]);
+const duplicate=new Node();duplicate.attrs={src:'same',title:'duplicate'};parent.appendChild(duplicate);adoptImgs({getElementsByTagName:()=>parent.children},[oldImage,oldImage]);assert.equal(parent.children[0],oldImage);assert.equal(parent.children.length,2);
+const pmod=get(resolve(directory,'panels.js')).namespace;
+const markup=pmod.KINDS.timeline({spec:{},data:{tracks:[{clips:[{s:0,e:1,label:'clip'}]}]},w:600,h:200});
+const noTimeline=new Node();noTimeline._p=pmod.TL_PARTS;const writes=metrics.panelWrites;assert.equal(paint(noTimeline,markup),true);assert.equal(metrics.panelWrites,writes+1);assert.equal(noTimeline.html,markup);
+console.log('PASS explicit session/progress fields, JPEG frames, progress coalescing and expired scope flashes');
+MODES.fixture.panels={rail:{kind:'agent'}};nodes.rail=new Node();nodes.rail.clientWidth=400;nodes.rail.clientHeight=300;state.calls=[];state.views.fixture={};renderPanel('rail');assert.match(nodes.rail.html,/class="calls /);
+MODES.fixture.foot=20;state.stats.ffmpeg='encoding';render();assert.equal(document.getElementById('clock').textContent,'00:00:12');assert.match(document.getElementById('footer').html,/ffmpeg encoding/);
+state.views.export={renders:{rows:[{_live:true},{_live:false}]}};apply({type:'frame_rendered',src:'fixture://export'});assert.equal(state.views.export.renders.rows[0]._thumb,'fixture://export');assert.equal(state.views.export.renders.rows[1]._thumb,undefined);
+const incomplete=animated([{complete:true,naturalWidth:0,decode:()=>Promise.resolve()}]);handover([incomplete],[]);await new Promise(setImmediate);assert.equal(incomplete.animations.length,1);
+const frameParent=new Node(),oldFrame=new Node(),freshFrame=new Node(),keptImage=new Node(),replacementImage=new Node();
+keptImage.attrs={src:'before'};replacementImage.attrs={src:'after'};freshFrame.attrs={class:'frame'};freshFrame.appendChild(replacementImage);frameParent.appendChild(freshFrame);
+freshFrame.querySelector=()=>replacementImage;Object.defineProperty(freshFrame,'childNodes',{get(){return this.children;}});oldFrame.replaceChildren=(...children)=>{oldFrame.children=children;};
+keepFrame({querySelector:()=>freshFrame},oldFrame,keptImage);assert.equal(frameParent.children[0],oldFrame);assert.equal(oldFrame.children[0],keptImage);assert.equal(keptImage.attrs.src,'after');assert.equal(oldFrame.attrs.class,'frame');

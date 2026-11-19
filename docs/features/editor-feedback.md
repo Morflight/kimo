@@ -47,3 +47,7 @@ Complete-source panel tests verify distortion-grid coordinates, signed 3D orbit 
 An inspector widget’s `gap` sets its internal label spacing; it does not turn the widget into an empty spacer. A block with only `gap` still produces a spacer. The compressor test supplies `gap: 10` and requires the widget markup and threshold label.
 
 The graphics inspector retains the eight most recent shape-layer names and computes its selection after trimming that list, so the latest layer stays highlighted. Router operation tests assert cached arguments, normalized geometry, style updates, invalid inputs and the selected index after twelve inserted layers.
+
+Diff rows retain readable default text when their marker has no configured colour. Both the marker and its label use explicit theme fallbacks; the renderer never emits `color:undefined`. Unit coverage includes an unrecognised marker and partial style maps.
+
+`panels_canvas_test.py` checks real Chromium pixels for CIE opacity and geometry, identical cached repaints, waveform/vector changes and distinct false-colour exposures across cache eviction. It uses in-memory canvases and synthetic images only.

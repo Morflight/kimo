@@ -29,7 +29,7 @@ def coverage_cases(output):
     # Additional instrumented functional run. The separate acceptance job still
     # runs EVERY case, including timing proofs, without profiler overhead.
     functional = {'app_interaction_test', 'cov_a_test', 'cov_b_test', 'cov_c_test', 'router_test',
-                  'studio_ui_test', 'studio_ui_dark', 'playback_ui_test',
+                  'panels_canvas_test', 'studio_actions_test', 'studio_ui_test', 'studio_ui_dark', 'playback_ui_test',
                   'preview_rev_test', 'proxy_badge_test', 'feed_gap_test',
                   'keyframe_test', 'ruler_test', 'transition_test', 'flash_edit_scope_test', 'frame_step_precision_test'}
     wrapper = ROOT / 'tools/quality/browser_coverage.py'

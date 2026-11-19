@@ -454,7 +454,8 @@
         "FEATURES.md"
       ],
       "tests": [
-        "tests/cli_proof.py"
+        "tests/cli_proof.py",
+        "crates/kimo-cli/tests/commands.rs"
       ],
       "sources": [
         "crates/kimo-cli/src/main.rs"
@@ -472,7 +473,8 @@
         "crates/kimo-gui/src/recovery.rs",
         "crates/kimo-gui/src/crash.rs",
         "crates/kimo-gui/src/ledger.rs",
-        "crates/kimo-gui/src/system.rs"
+        "crates/kimo-gui/src/system.rs",
+        "crates/kimo-gui/src/telemetry.rs"
       ],
       "sources": [
         "crates/kimo-gui/src/bridge.rs",
@@ -518,7 +520,8 @@
         "crates/kimo-gui/tests/app_interaction_test.py",
         "crates/kimo-gui/tests/app_state_test.mjs",
         "crates/kimo-gui/tests/panels_unit_test.mjs",
-        "crates/kimo-gui/tests/router_ops_test.mjs"
+        "crates/kimo-gui/tests/router_ops_test.mjs",
+        "crates/kimo-gui/tests/panels_canvas_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",
@@ -596,6 +599,7 @@
       "tests": [
         "crates/kimo-gui/tests/mock_bridge_test.mjs",
         "crates/kimo-gui/tests/studio_ui_test.py",
+        "crates/kimo-gui/tests/studio_actions_test.py",
         "crates/kimo-gui/tests/frame_step_precision_test.py"
       ],
       "sources": [

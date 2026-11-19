@@ -5,9 +5,9 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
-const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2}=root.namespace;
+const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
 const plain=x=>JSON.parse(JSON.stringify(x));let serial=0;
 const fresh=mode=>({mode,explicitMode:true,views:{},session:{width:1000,height:500}});
@@ -74,3 +74,158 @@ grading('match_grade',{source_region:[0,0,.2,.2],ref_region:[.5,.5,.1,.1],ref_cl
 grading('match_color',{source_region:[1],ref_region:'invalid'});assert.equal(grade.views.grading.viewer.wipe,1);
 grading('add_effect',{kind:'keyer',params:{matte_model:2,despill_mode:3,view:4},strings:{aux_path:'/tmp/plate.png',garbage_mask:'m1',core_mask:'m2'}});assert.match(kv.blocks.find(b=>b.k==='Keyer').v,/clean plate plate.png.*garbage\/core.*despill min.*raw screen view/);
 console.log('PASS grade masters/channels, graph lifecycle, CDL, curves, wheels, scopes and sampled regions');
+const masks=fresh('roto');masks.session.fps=25;
+function mask(tool,args={},result={}) {const e=event(tool,args,'complete',result);assert.equal(maskOps(masks,MODES,e),true,tool);assert.equal(e._kvDone,true);return masks.views.roto;}
+let mv=mask('add_mask',{name:'subject',points:[[100,50],{x:200,y:100,fi:2},null],feather:2,expand:-3,params:{precision:1,falloff:1,hue_soft:4,sat_soft:.1}});
+assert.deepEqual(plain(mv.viewer.overlay[0].path),[[.1,.1],[.2,.2]]);
+let mk=Object.values(mv).find(v=>v.blocks);assert.equal(mk.blocks.find(b=>b.k==='Feather').v,'2 px');assert.equal(mk.blocks.find(b=>b.k==='Choke').v,'3');assert.equal(mk.blocks.find(b=>b.k==='Inner/outer feather').v,'1 pts');
+mask('update_mask',{mask_id:'subject',kind:'ellipse',params:{cx:.5,cy:.5,w:.2,h:.4,precision:0,falloff:0},feather:4});assert.deepEqual(plain(mv.viewer.overlay[0].rect),[.4,.3,.2,.4]);assert.equal(mk.blocks.find(b=>b.k==='Feather').from,'2 px');assert.equal(mk.blocks.find(b=>b.k==='Precision').v,'standard');
+mask('set_mask',{cx:.5,cy:.5,w:1,h:1});assert.equal(mv.viewer.overlay.at(-1).shape,'rect');
+const cachedMask=event('set_mask_path_key',{mask_id:'subject',time:1,points:[[0,0],[1,1]]},'start');assert.equal(maskOps(masks,MODES,cachedMask),false);assert.equal(maskOps(masks,MODES,{...cachedMask,phase:'complete',payload:{}}),true);assert.equal(masks._maskArgs[cachedMask.call_id],undefined);
+mask('set_mask_path_key',{mask_id:'subject',time:3,points:[[0,0],[1,1]]});mask('set_mask_path_key',{mask_id:'subject',time:1});
+let kk=Object.values(mv).find(v=>v.lanes);assert.deepEqual(plain(kk.lanes[0].keys),[25,75]);assert.equal(kk.playhead,25);assert.equal(kk.ruler.step,10);
+mask('track_mask',{mask_id:'subject',motion:'affine'},{frames:[25,75]});assert.deepEqual(plain(kk.lanes[0].bar[0].slice(0,2)),[25,75]);assert.match(mk.sub,/affine/);
+mask('roto_propagate',{mask_id:'subject'});assert.deepEqual(plain(kk.lanes[0].bar[0].slice(0,2)),[25,75]);
+mask('set_mask_prop_key',{mask_id:'subject',property:'feather',value:5,time:10});assert.equal(mk.blocks.find(b=>b.k==='Feather').v,'5 px');assert.equal(kk.ruler.step,50);
+mask('set_mask_keyframe',{mask_id:'subject',property:'expand',value:2,time:.1});assert.equal(mk.blocks.find(b=>b.k==='Choke').v,'-2');
+mask('set_mask_keyframe',{mask_id:'other',time:0});mask('set_mask_keyframe',{mask_id:'third',time:2});assert.equal(kk.lanes.length,4);
+mask('reorder_mask',{mask_id:'third',index:0});assert.ok(kk.lanes[0].label.startsWith('third '));
+mask('refine_matte',{auto_bg:true},{matte_mae:.125});assert.equal(mk.blocks.find(b=>b.k==='Bg model').v,'auto');assert.equal(mk.blocks.find(b=>b.k==='Matte MAE').v,'0.13');
+mask('refine_matte',{auto_bg:false},{mae:.2});assert.equal(mk.blocks.find(b=>b.k==='Bg model').v,'manual');
+masks.liveTL={tracks:[{id:'t',clips:[{id:'clip42',s:2,e:5}]}]};mask('set_track_matte',{clip_id:'clip42',mode:'luma',luma_space:'linear'});let matte=kk.lanes.find(l=>l.label.startsWith('track matte'));assert.deepEqual(plain(matte.area),[[50,1],[125,1]]);
+mask('remove_track_matte');assert.ok(kk.lanes.every(l=>!l.label.startsWith('track matte')));assert.equal(maskOps(masks,MODES,event('remove_track_matte')),false);
+mask('remove_mask_layer',{mask_id:'third'});assert.ok(kk.lanes.every(l=>!l.label.startsWith('third ')));
+mask('remove_mask');assert.equal(kk.lanes.length,0);assert.equal(mv.viewer.overlay.length,0);assert.equal(mk.sub,'');
+const emptyMask=fresh('roto');assert.equal(maskOps(emptyMask,MODES,event('set_track_matte')),true);const emptyKeys=Object.values(emptyMask.views.roto).find(v=>v.lanes);assert.equal(emptyKeys.lanes[0].label,'track matte');assert.equal(emptyKeys.ruler,undefined);
+console.log('PASS mask geometry, cached path keys, frame conversion, matte spans, lane limits and removal');
+
+const edit=fresh('edit'), timeline={tracks:[{id:'v1',label:'Video',clips:[{id:'a',label:'A',s:1,e:3},{id:'b',label:'B',s:5,e:8}]},{id:'v2',clips:[]}]};
+const editCall=(tool,args={},result={},target={})=>editOps2(edit,MODES,timeline,{...event(tool,args,'complete',result),target},args);
+const clip=id=>timeline.tracks.flatMap(t=>t.clips||[]).find(c=>c.id===id);
+assert.equal(editCall('project_set',{width:1920,height:1080,fps:25}),true);assert.equal(edit.views.edit.viewer.res,'1920 x 1080 25p');
+assert.equal(editCall('set_track',{track_id:'v1',name:'  Renamed video track  ',locked:true}),true);assert.equal(timeline.tracks[0].label,'Renamed video tr');assert.equal(timeline.tracks[0].lock,true);
+editCall('set_track',{track_id:'v1',name:' ',lock:false});assert.equal(timeline.tracks[0].lock,false);
+assert.equal(editCall('set_track',{track_id:'missing'}),false);assert.equal(editCall('delete_track',{track_id:'missing'}),false);
+assert.equal(editCall('swap_clips',{clip_a:'b',clip_b:'a'}),true);assert.deepEqual(plain(timeline.tracks[0].clips.map(c=>[c.id,c.s,c.e])),[['b',1,4],['a',6,8]]);
+assert.equal(editCall('duplicate_clip',{clip_id:'a',start:10,track_id:'v2'},{clip_id:'copy'}),true);assert.deepEqual([clip('copy').s,clip('copy').e],[10,12]);
+assert.equal(editCall('swap_clips',{clip_a:'a',clip_b:'copy'}),false);
+assert.equal(editCall('duplicate_clip',{clip_id:'a'}),false);assert.equal(editCall('duplicate_clip',{clip_id:'a',start:14}),true);assert.equal(clip('a_dup').e,16);
+assert.equal(editCall('loop_clip',{clip_id:'copy',times:2,gap:1},{clip_ids:['loop1']}),true);assert.deepEqual([clip('loop1').s,clip('copy_loop2').s],[13,16]);
+assert.equal(editCall('distribute_clips',{track_id:'v2',gap:2,start:0}),true);assert.deepEqual(plain(timeline.tracks[1].clips.map(c=>[c.s,c.e])),[[0,2],[4,6],[8,10]]);
+assert.equal(editCall('distribute_clips',{track_id:'missing'}),false);
+assert.equal(editCall('group_clips',{clip_ids:['a','copy','missing'],track_id:'v3'},{id:'group1'}),true);assert.deepEqual([clip('group1').s,clip('group1').e,clip('group1')._kids.length],[0,8,2]);assert.equal(clip('a'),undefined);
+assert.equal(editCall('ungroup_clip',{clip_id:'group1'}),true);assert.equal(clip('group1'),undefined);assert.equal(clip('a').s,6);assert.equal(editCall('ungroup_clip',{clip_id:'a'}),false);
+assert.equal(editCall('group_clips',{clip_ids:['missing']}),false);
+assert.equal(editCall('add_camera_shake',{start:4,track_id:'v3',hits:[[.5],{time:5},6,null,'bad']}),true);assert.deepEqual(plain(clip('shake').keys),[{t:4.5},{t:5},{t:6}]);assert.equal(clip('shake').e,6);
+assert.equal(editCall('add_camera_shake',{start:4}),false);
+for(const [tool,args,expected] of [
+ ['freeze_frame',{},'freeze'],['freeze_frame',{at:2},'freeze 2s'],['set_speed',{speed:2},'2×'],
+ ['set_speed_ramp',{keys:[[0,1],{t:1},null],frame_blend:'optical_flow'},'ramp · flow'],
+ ['set_speed_ramp',{keys:[[2,1]]},'ramp · flow'],['set_speed_ramp',{keys:[[2,1]],frame_blend:'frame_mix'},'ramp · frame mix'],
+ ['set_speed_ramp',{keys:[[2,1]],frame_blend:'none'},'ramp'],
+ ['set_time_remap',{keys:[[0,2],[1,3],null],frame_blend:'frame_mix'},'remap · frame mix'],
+ ['set_time_remap',{},'remap · frame mix'],['set_time_remap',{frame_blend:'optical_flow'},'remap · flow'],['set_time_remap',{frame_blend:'none'},'remap'],
+ ['set_blend',{mode:'screen'},'screen'],['set_blend',{mode:'multiply'},'multiply'],
+ ['set_echo',{count:3.4},'echo ×3'],['set_echo',{},'echo'],
+ ['set_flow_blur',{},'flow blur'],['set_flow_blur',{amount:.5,mode:'vector',shutter_phase:45,curve_points:[[0,0],[1,1]]},'flow blur 0.5 · vector · phase 45° · curve custom (2 pts)'],
+ ['set_flow_blur',{mode:'vector',shutter_curve:'box'},'flow blur vector']
+]){assert.equal(editCall(tool,{clip_id:'a',...args}),true);assert.ok(clip('a').fx.includes(expected),`${tool}: ${clip('a').fx}`);}
+assert.equal(clip('a').fx.includes('screen'),false);
+editCall('set_speed_ramp',{clip_id:'a',keys:[]});editCall('set_time_remap',{clip_id:'a',keys:[]});assert.ok(clip('a').keys.every(k=>!k._ramp&&!k._remap));assert.ok(clip('a').fx.every(f=>!/^ramp|^remap/.test(f)));
+assert.equal(editCall('rate_stretch',{clip_id:'a',duration:5}),true);assert.equal(clip('a').e,11);
+assert.equal(editCall('remove_audio_effect',{clip_id:'a',name:'echo'}),true);assert.ok(!clip('a').fx.includes('echo'));
+for(const tool of ['set_speed','rate_stretch','set_blend','remove_audio_effect','unknown'])assert.equal(editCall(tool,{clip_id:'a'}),false);
+assert.equal(editCall('unknown',{clip_id:'missing'}),false);
+assert.equal(editCall('delete_track',{track_id:'v3'}),true);assert.ok(timeline.tracks.every(t=>t.id!=='v3'));
+console.log('PASS timeline structural edits, duplicate/group restoration, interpolation badges, key removal and track metadata');
+
+const tracking=fresh('tracking');
+const sc=(state,tool,args={},result={},phase='complete')=>{const ev=event(tool,args,phase,result);const hit=sceneOps(state,MODES,ev);return {hit,ev,view:state.views[state.mode].viewer};};
+let sr=sc(tracking,'track_matte',{seeds:[{points:[[0,0],[1,0],[1,1],null,['bad',0]]}]});assert.deepEqual(plain(sr.view.overlay.at(-1).poly),[[0,0],[1,0],[1,1]]);
+const quad=[0,0,1,0,1,1,0,1];
+for(const tool of ['fit_track_homography','ecc_refine_track','decompose_track_homography','corner_disagreement','lk_residual_audit','validate_planar_track']){
+ sr=sc(tracking,tool,{native_quads:[quad]},{p95_px:.2,max_px:.4,ok:true});assert.equal(sr.hit,true);assert.deepEqual(plain(sr.view.overlay.at(-1).quad),[[0,0],[1,0],[1,1],[0,1]]);assert.match(sr.view.left,/0.2 px p95 · 0.4 px max · ok$/);
+ sr=sc(tracking,tool,{}, {roi:quad,ok:false});assert.match(sr.view.left,/failed$/);
+}
+sr=sc(tracking,'undistort_clip',{k1:.2,k2:-.1,cx:200,cy:.4});assert.deepEqual(plain(sr.view.overlay.at(-1).c),[null,.4]);assert.equal(sr.view.left,'undistort · k1 0.2 · k2 -0.1');
+sr=sc(tracking,'stabilize',{smooth:4,lock:true,rotation:false},{zoom:1.25});assert.equal(sr.view.overlay.at(-1).crop,.8);assert.equal(sr.view.left,'stabilize · smooth 4 · locked · no rotation · zoom 1.25×');
+sr=sc(tracking,'stabilize',{method:'position_scale_rotation',smoothness:30,smoothing:'l1',framing:'synthesize_edges',rolling_shutter:2},{scale:1.1});assert.equal(sr.view.left,'warp stabilize · similarity · smooth 30% · L1 path · synth edges · RS 2 · zoom 1.1×');
+sr=sc(tracking,'stabilize',{}, {engine:'warp',mode:'no_motion',method:'perspective',framing:'crop_only'});assert.equal(sr.view.left,'warp stabilize · perspective · locked · crop only');
+sr=sc(tracking,'apply_camera_solve',{solve_id:'solve1',fov:false},{keyframes:4});assert.equal(sr.view.left,'camera solve → keys · solve1 · 4 keys · no fov');
+sr=sc(tracking,'set_ground_plane',{solve_id:'solve1',track_ids:[1,2,3]},{scale:2,residual_rms:.2,reapplied:true});assert.equal(sr.view.left,'ground plane · solve1 · 3 points · fit 0.2 rms · scale 2 · keys re-applied');
+sr=sc(tracking,'place_at_track',{kind:'plane',track_id:4,solve_id:'s'},{clip_id:'plane1'});assert.equal(sr.view.left,'plane at track · #4 · s · plane1');
+sr=sc(tracking,'export_st_map',{direction:'distort'},{width:1000,height:500,clamped_pixels:3});assert.equal(sr.view.left,'ST map · distort · 1000×500 · 3 clamped');
+sr=sc(tracking,'pin_layer',{keys:[{quad:[0,0,1000,0,1000,500,0,500]}]});assert.deepEqual(plain(sr.view.overlay.at(-1).quad),[[0,0],[1,0],[1,1],[0,1]]);
+sr=sc(tracking,'set_corner_pin',{corners:[[10,20],[0,0],[0,0],[0,0]]});assert.deepEqual(plain(sr.view.overlay.at(-1).quad[0]),[.01,.04]);
+const particles=fresh('particles');particles.session.fps=25;
+sr=sc(particles,'add_particles3d',{clip_id:'spark',start:2,duration:3,emitter:{kind:'box',rate:100,seed:9,size:20},physics:{gravity:[0,-10,0],bounce:.4,drag:.1,turbulence:2,wind:[0,3,0]},sprite:{size:4,lifetime:2,count:200}});assert.equal(sr.hit,true);assert.equal(sr.ev._ptKv,true);
+const part=particles.views.particles, pk=Object.values(part).find(v=>v.blocks), pl=Object.values(part).find(v=>v.rows), lanes=Object.values(part).find(v=>v.lanes);
+assert.equal(pk.blocks.find(b=>b.k==='Size').v,'4');assert.equal(pk.blocks.find(b=>b.k==='Gravity').v,'-10');assert.equal(pk.blocks.find(b=>b.k==='Lifetime').v,'2 s');assert.equal(pl.rows[0].v,'100/s');assert.deepEqual(plain(lanes.lanes[0].dots),[50,125]);
+sc(particles,'set_particles3d',{clip_id:'spark',start:2,duration:0,emitter:{rate_per_s:200},physics:null,sprite:[]});assert.equal(pl.rows.length,1);assert.equal(pl.rows[0].v,'200/s');assert.deepEqual(plain(lanes.lanes[0].dots),[50]);
+for(let i=0;i<6;i++)sc(particles,'add_emitter',{name:'e'+i,start:i,duration:12,config:{count:50,life:2,size0:3}});
+assert.equal(pl.rows.length,4);assert.equal(lanes.lanes.length,3);assert.equal(lanes.ruler.step,120);assert.equal(pl.rows.filter(r=>r.em).length,1);
+sc(particles,'add_shard_burst',{start:0,duration:1,shards:99,seed:4});assert.equal(pk.sub,'shard_burst');assert.equal(pk.blocks.find(b=>b.k==='Shards').v,'99');
+const light=fresh('lighting');sc(light,'set_light',{id:'key',kind:'spot',pos:[.7,.2],color:[1,.5,0],temperature:5600,intensity:2,falloff:1.5});
+let lv=light.views.lighting, rig=Object.values(lv).find(v=>v.lights), lights=Object.values(lv).find(v=>v.rows&&v!==rig);assert.equal(rig.rows[0][1],'5600K');assert.equal(rig.rows[0][3],1);assert.equal(lights.rows[0].k,'key');
+sc(light,'light_rig',{preset:'portrait',prefix:'studio',subject:[.5,.5]},{lights:['fill',{id:'rim'},null]});assert.ok(lights.rows.some(r=>r.k==='rim'));assert.equal(lv.viewer.overlay.at(-1).kind,'subject');
+sc(light,'set_material',{name:'gold',albedo:[1,.7,'bad'],roughness:.2,metal:.8,ior:1.4,clearcoat:.3});const material=Object.values(lv).find(v=>v.blocks);assert.equal(material.sub,'gold');assert.equal(material.blocks.find(b=>b.k==='Albedo').v,'1.00  0.70  0.00');assert.equal(material.blocks.find(b=>b.k==='Metallic').v,'0.80');
+sc(light,'preview_material',{material:'gold'},{path:'preview.png',mean:.25});assert.equal(lv.viewer.left,'preview · gold · mean 0.25');
+sc(light,'set_relight',{clip_id:'hero'});assert.equal(lv.viewer.tag,'relight hero');sc(light,'remove_material',{name:'gold'});assert.equal(material.sub,'');
+sc(light,'remove_light',{id:'key'});assert.ok(lights.rows.every(r=>r.k!=='key'));assert.ok(rig.rows.every(r=>r[0]!=='key'));assert.ok(lv.viewer.overlay.every(o=>o._kind!=='light:key'));
+const scene=fresh('scene3d');sc(scene,'add_scene3d',{config:{objects:[{name:'Floor',kind:'plane'},{id:'child',parent:'Floor'},{}],lights:[{name:'fill'},{kind:'spot'}]}});const tree=Object.values(scene.views.scene3d).find(v=>v.items);assert.deepEqual(plain(tree.items.map(i=>i.name)),['Floor','child','object 3','fill','spot 2']);assert.equal(tree.items[1].d,1);assert.equal(tree.items[2].sel,true);
+for(let i=0;i<15;i++)sc(scene,'add_scene3d',{config:{objects:[{name:'object'+i}]}});assert.equal(tree.items.length,14);assert.equal(tree.items.at(-1).name,'object14');
+sr=sc(scene,'simulate_physics',{bodies:[{x:100,y:-50,radius_px:10,clip_id:'body'},null,{x:'bad',y:0}]});assert.deepEqual(plain(sr.view.overlay.at(-1).body),[.6,.4]);assert.equal(sr.view.overlay.at(-1).r,.01);
+console.log('PASS tracking measurements, stabilization, particle sections, material/light lifecycle and scene body geometry');
+
+const structural=fresh('edit');structural.liveTL={tracks:[{id:'v',label:'Video',clips:[{id:'a',label:'Alpha',s:0,e:4},{id:'b',label:'Beta',s:5,e:8},{id:'c',label:'Gamma',s:9,e:11}]}]};
+const structuralCall=(tool,args,result={})=>{const ev=event(tool,args,'complete',result);assert.equal(timelineOps(structural,MODES,ev,'edit'),true,tool);assert.equal(ev._kvDone,true);return Object.values(structural.views.edit).find(v=>v.blocks);};
+for(const [tool,args,key,value] of [
+ ['set_speed',{clip_id:'a',speed:2},'Speed','2×'],['rate_stretch',{clip_id:'a',duration:3},'Duration','3 s'],
+ ['loop_clip',{clip_id:'a',times:2,gap:1},'Copies','2'],['duplicate_clip',{clip_id:'a',start:20,track_id:'v'},'Start','20 s'],
+ ['set_speed_ramp',{clip_id:'a',keys:[[0,1],[1,2]]},'Ramp keys','2 keys'],['set_blend',{clip_id:'a',mode:'screen'},'Mode','screen'],
+ ['set_echo',{clip_id:'a',count:4},'Count','4'],['freeze_frame',{clip_id:'a',at:1},'At','1 s'],['set_flow_blur',{clip_id:'a',amount:.25},'Amount','0.25'],
+ ['set_track',{track_id:'v',name:'New video'},'Name','New video'],['project_set',{width:640,height:360,fps:30},'Size','640 x 360'],
+ ['add_camera_shake',{track_id:'v',start:0,duration:2,amplitude:5},'Amplitude','5']
+])assert.equal(structuralCall(tool,args).blocks.find(b=>b.k===key).v,value);
+structural.liveTL.tracks[0].clips=[{id:'b',label:'Beta',s:5,e:8},{id:'c',label:'Gamma',s:9,e:11}];
+assert.equal(structuralCall('swap_clips',{clip_a:'b',clip_b:'c'}).blocks.find(b=>b.k==='Clips').v,'Beta, Gamma');
+assert.equal(structuralCall('group_clips',{clip_ids:['b','c','absent']},{clip_id:'g'}).blocks.find(b=>b.k==='Grouped').v,'3 clips');
+const noDimensions=fresh('edit');noDimensions.session={};assert.equal(editOps2(noDimensions,MODES,{tracks:[]},event('project_set'),{}),false);
+const legacy={tracks:[{id:'v',clips:[{id:'c',s:0,e:5},{id:'d',s:7,e:9}]},{id:'CAP',clips:[]}]};
+const legacyCall=(tool,fam,payload={},target={})=>timelineOps1(legacy,{tool_name:tool,phase:'complete',payload,target},fam);
+assert.equal(legacyCall('import_media','ingest',{s:1,e:3,thumb:'image'},{track_id:'new',clip_id:'import'}),true);assert.equal(legacy.tracks.find(t=>t.id==='new').clips[0].id,'import');
+assert.equal(legacyCall('trim_clip','edit',{s:2,e:4},{clip_id:'joined',track_id:'v'}),true);assert.equal(legacy.tracks[0].clips.find(c=>c.id==='joined').s,2);
+legacy.tracks[0].clips=[{id:'c',s:0,e:5},{id:'d',s:7,e:9}];
+assert.equal(legacyCall('delete_clip','edit',{}, {clip_id:'c'}),true);assert.equal(legacy.tracks[0].clips.find(c=>c.id==='d').s,2);
+assert.equal(legacyCall('caption','text',{text:'Subtitle',s:1}),true);assert.equal(legacy.tracks[1].clips[0].e,3);
+assert.equal(legacyCall('caption','text',{text:'No track',s:1},{track_id:'missing'}),false);
+const ex=fresh('export'), renName=Object.keys(MODES.export.panels).find(k=>MODES.export.panels[k].kind==='renders');
+const expCall=(tool,args={},phase='complete',result={})=>exportOps(ex,MODES,event(tool,args,phase,result));
+assert.equal(expCall('cancel_job',{job_id:'none'}),false);
+const row=['Export','fast','1s','● running','now'];row._jobId='job';row._live=true;ex.views.export[renName].rows.push(row);
+assert.equal(expCall('cancel_job',{job_id:'job'},'complete',{completed_ranges:[[0,1],[2,3]]}),true);assert.equal(row[3],'✕ cancelled · 2 chunks kept');assert.equal(row._live,false);
+assert.equal(expCall('resume_job',{job_id:'job'},'start'),true);assert.equal(row[3],'● resuming');assert.equal(row._live,true);
+expCall('resume_job',{job_id:'job'},'complete',{path:'export.mp4'});assert.equal(row._live,false);
+const inspected=fresh('edit');assert.deepEqual(plain(inspectOps(inspected,MODES,{tool_name:'get_project',phase:'progress',payload:{pct:42}},'read1')),[{type:'tool_progress',id:'read1',progress:{pct:42}}]);
+grade.liveTL={tracks:[{id:'v',clips:[{id:'plate',label:'Clean plate',s:0,e:1}]}]};grading('add_effect',{kind:'keyer',strings:{ref_clip:'plate'}});assert.match(kv.blocks.find(b=>b.k==='Keyer').v,/Clean plate/);
+console.log('PASS structural inspector rows, legacy event edits, cancellation/resume and read progress');
+assert.equal(legacyCall('auto_duck','audio',{args:{track:'v',detect:'speech',amount_db:-8,hold:.3}}),true);assert.deepEqual(plain(legacy.tracks[0].duck),{detect:'speech',amount_db:-8,hold:.3});
+assert.equal(legacyCall('auto_duck','audio',{result:{track:'v',mode:'rms',hold:.5}}),true);assert.deepEqual(plain(legacy.tracks[0].duck),{detect:'rms',amount_db:-12,hold:.5});
+assert.equal(legacyCall('auto_duck','audio',{}, {track_id:'v'}),true);assert.deepEqual(plain(legacy.tracks[0].duck),{detect:'rms',amount_db:-12,hold:0});assert.equal(legacyCall('auto_duck','audio',{}, {track_id:'missing'}),false);
+console.log('PASS audio duck detection, defaults, result fields and missing-track refusal');
+for(const [tool,args,key,value] of [
+ ['add_effect',{kind:'glow',params:{mode:1,falloff:2,iterations:3,linear:1}},'glow falloff','2'],
+ ['apply_effect',{kind:'lens_flare',params:{ghosts:4,halo:.8}},'lens_flare ghosts','4'],
+ ['set_effect_param',{param:'falloff',value:3},'falloff','3'],
+ ['set_color_curve',{points:[[0,0],[1,1]]},'Curve m','2 pts'],
+ ['render_display_scope',{targets_75:true},'Scope','75% targets'],
+ ['render_scope',{data:true},'Scope','data'],
+ ['add_effect',{kind:'keyer',params:{despill_mode:8,view:8}},'Keyer','keyer · model 0 · despill 8 · 8 view'],
+]){const actual=grading(tool,args).blocks.find(b=>b.k===key);assert.equal(actual.v,value);}
+const savedGain=plain(wheels._g.gain);assert.equal(gradeOps(grade,MODES,event('add_effect',{kind:'audio',params:{gain:7}})),false);assert.deepEqual(plain(wheels._g.gain),savedGain);
+grading('grade',{kind:'custom',gain:.8});assert.equal(wheels._g.gain.r,.8);assert.ok(wheels.wheels.every(w=>w.dot.every(Number.isFinite)));
+grading('add_effect',{kind:'grade',params:{lift:-.2}});assert.deepEqual(plain(wheels._g.lift),{r:-.2,g:-.2,b:-.2});
+grading('add_acescct_primaries');assert.ok(kv.blocks.some(b=>b.k==='Offset'));
+const cacheGrade=event('grade',{},'complete');grade._gradeArgs={[cacheGrade.call_id]:{gamma:1.1}};delete cacheGrade.payload;assert.equal(gradeOps(grade,MODES,cacheGrade),true);assert.equal(wheels._g.gamma.r,1.1);
+for(const plate of ['missing','clip_1234567890abcdef']){grading('add_effect',{kind:'keyer',strings:{ref_clip:plate}});assert.match(kv.blocks.find(b=>b.k==='Keyer').v,new RegExp(plate));}
+console.log('PASS additional grading effect rows, default scope/curve options, cached args and unsupported gain isolation');

@@ -490,6 +490,27 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn real_engine_crash_is_reported_and_next_call_restarts_it() {
+        let bin = std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).expect("real engine required");
+        let supervisor = Supervisor::new(Some(bin), vec![("KIMO_SPECTATOR".into(), "off".into()), ("KIMO_OBSERVE".into(), "off".into())], None);
+        assert!(matches!(supervisor.start(), Status::Running { .. }));
+        let old = supervisor.rpc.lock().unwrap().as_ref().unwrap().clone();
+        old.kill();
+        assert!(!old.alive());
+        let crashed = serde_json::to_value(supervisor.status()).unwrap();
+        assert_eq!(crashed["state"], "crashed");
+        assert_eq!(crashed["error"], "the engine exited");
+        assert_eq!(crashed["restarts"], 0);
+        let result = supervisor.call("project", &json!({"action":"kimo_info"})).unwrap();
+        assert!(!is_error(&result), "{result}");
+        assert!(matches!(supervisor.status(), Status::Running { .. }));
+        assert_eq!(supervisor.restarts.load(Ordering::SeqCst), 1);
+        assert!(!Arc::ptr_eq(&old, supervisor.rpc.lock().unwrap().as_ref().unwrap()));
+        supervisor.stop();
+        assert!(matches!(supervisor.status(), Status::Stopped));
+    }
+
+    #[test]
     fn real_engine_startup_failure_is_a_crashed_supervisor() {
         let bin=std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).expect("real engine required");
         let log=std::env::temp_dir().join(format!("kimo-engine-startup-failure-{}.log",std::process::id()));

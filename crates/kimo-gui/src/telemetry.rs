@@ -125,4 +125,45 @@ mod tests {
         assert!(TcpListener::bind(("127.0.0.1", ext.port)).is_err());
         ext.stop();
     }
+    #[test]
+    fn malformed_and_blank_lines_do_not_replace_valid_events() {
+        for report_errors in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let errors = Arc::new(Mutex::new(Vec::new()));
+            let received = events.clone();
+            let reported = errors.clone();
+            let sink: Sink = Arc::new(move |source, value| received.lock().unwrap().push((source, value)));
+            let status: StatusSink = Arc::new(move |message| reported.lock().unwrap().push(message));
+            let worker = std::thread::spawn(move || pump(server, Source::External { conn: 7 }, sink, report_errors.then_some(status)));
+            client.write_all(b"  \nnot json\n{\"rev\":4}\n\xff\n{\"rev\":5}\n").unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            worker.join().unwrap();
+            assert_eq!(*events.lock().unwrap(), vec![(Source::External { conn: 7 }, serde_json::json!({"rev": 4}))]);
+            let errors = errors.lock().unwrap();
+            assert_eq!(errors.len(), usize::from(report_errors));
+            if report_errors { assert!(errors[0].starts_with("bad json:")); }
+        }
+    }
+
+    #[test]
+    fn all_public_ports_occupied_is_an_error_without_starting_a_listener() {
+        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let held: Vec<_> = GUI_PORTS.clone().map(|port| loop {
+            match TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => break listener,
+                Err(error) => {
+                    assert!(std::time::Instant::now() < deadline, "test requires free port {port}: {error}");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }).collect();
+        let result = listen_external(Arc::new(|_, _| panic!("no listener should deliver events")), Arc::new(|_| panic!("no listener should report live status")));
+        assert_eq!(result.err().as_deref(), Some("127.0.0.1:7421-7430 are all in use"));
+        drop(held);
+    }
+
 }

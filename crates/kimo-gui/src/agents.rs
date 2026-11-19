@@ -229,6 +229,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
     #[test]
+    fn native_cli_preserves_json_arguments_and_reports_exit_diagnostics() {
+        let d = tmp("native claude fixture");
+        let source = d.join("client.rs");
+        let cli = d.join(format!("client{}", std::env::consts::EXE_SUFFIX));
+        let log = d.join("argv.txt");
+        std::fs::write(&source, format!(r#"
+fn main() {{
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    std::fs::write({:?}, args.join("\n")).unwrap();
+    let json = &args[5];
+    if json.contains("silent-failure") {{ std::process::exit(8); }}
+    if json.contains("loud-failure") {{ print!("out"); eprint!("err"); std::process::exit(7); }}
+    println!(" Added stdio MCP server kimo ");
+}}
+"#, log)).unwrap();
+        let compiled = std::process::Command::new("rustc").arg(&source).arg("-o").arg(&cli).output().unwrap();
+        assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
+        let mut launch = Launch { command: "/a b/kimo-mcp".into(), args: vec!["quoted \"argument\"".into()], env: vec![("K".into(), "v w".into())] };
+        assert_eq!(add_claude(&cli, &launch).unwrap(), "Added stdio MCP server kimo");
+        let argv = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(&lines[..5], &["mcp", "add-json", "--scope", "user", "kimo"]);
+        let payload: Value = serde_json::from_str(lines[5]).unwrap();
+        assert_eq!(payload["command"], launch.command);
+        assert_eq!(payload["args"][0], launch.args[0]);
+        assert_eq!(payload["env"]["K"], "v w");
+        launch.command = "loud-failure".into();
+        assert_eq!(add_claude(&cli, &launch).unwrap_err(), "outerr");
+        launch.command = "silent-failure".into();
+        assert!(add_claude(&cli, &launch).unwrap_err().starts_with("claude exited with "));
+        assert_eq!(which_in(cli.file_name().unwrap().to_str().unwrap(), d.to_str().unwrap(), None), Some(cli));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn configuration_detection_handles_missing_commands_and_literal_strings() {
         for text in [r#"{"mcpServers":{"kimo":{}}}"#, r#"{"mcpServers":{"kimo":{"command":42}}}"#] {
             assert_eq!(claude_entry(text), Some(String::new()));
