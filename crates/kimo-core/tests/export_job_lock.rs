@@ -2,6 +2,8 @@
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::ext::export_job::{host_name, start_ticks};
 use serde_json::{json, Value};
+#[path = "support/process_fixture.rs"]
+mod process_fixture;
 fn c(ss: &mut Session, n: &str, v: Value) -> Value { dispatch(ss, n, &v).unwrap_or_else(|e| panic!("{n}: {e}")) }
 fn tmp(tag: &str) -> std::path::PathBuf { let d = std::env::temp_dir().join(format!("kimo_rv20a_{tag}_{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }
 fn scene() -> Session {
@@ -12,6 +14,18 @@ fn args(d: &std::path::Path) -> Value { json!({"path": d.join("out.mp4").to_str(
 fn lockp(d: &std::path::Path) -> std::path::PathBuf { d.join("out.mp4.chunks/job.lock") }
 fn put_lock(d: &std::path::Path, pid: u32, host: &str, ticks: Option<u64>) { std::fs::create_dir_all(d.join("out.mp4.chunks")).unwrap(); std::fs::write(lockp(d), json!({"pid": pid, "host": host, "started_at": 1, "start_ticks": ticks}).to_string()).unwrap(); }
 fn err(ss: &mut Session, n: &str, a: Value) -> String { dispatch(ss, n, &a).err().unwrap_or_else(|| panic!("{n} should fail")) }
+
+#[test] fn native_owner_identity_is_stable_and_disappears_after_exit() {
+    let host = host_name(); assert!(!host.is_empty()); assert_ne!(host, "unknown");
+    let me = start_ticks(std::process::id()).expect("the running process must have a native creation time");
+    assert_eq!(start_ticks(std::process::id()), Some(me));
+    let mut child = process_fixture::command(&["sleep", "30000"]).spawn().unwrap();
+    let pid = child.id(); let identity = start_ticks(pid);
+    child.kill().unwrap(); child.wait().unwrap();
+    assert!(identity.is_some(), "the owned live child must be identifiable");
+    assert_eq!(start_ticks(pid), None, "a reaped child cannot own a live lock");
+    process_fixture::assert_dead(pid);
+}
 
 #[test] fn a_live_lock_refuses_start_and_resume_and_leaves_the_directory_alone() {
     let d = tmp("live"); let mut ss = scene(); let me = std::process::id(); put_lock(&d, me, &host_name(), start_ticks(me));

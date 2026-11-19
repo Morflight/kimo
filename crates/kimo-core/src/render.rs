@@ -1489,6 +1489,7 @@ pub(crate) fn export_range_cmd(p: &Project, path: &str, f0: usize, f1: usize, mu
     });
 
     crate::telemetry::progress_frames(0, n, "frames");
+    let mut encoder_closed = false;
     let loop_result: Result<(), String> = (|| {
         let mut i = 0usize;
         let mut end = decode_batch(p, &mut cache, f0, i, n, batch)?;
@@ -1507,7 +1508,7 @@ pub(crate) fn export_range_cmd(p: &Project, path: &str, f0: usize, f1: usize, mu
                 std::thread::scope(|sc| { for _ in 0..nt.min(end - i) { let (cache, next, slots) = (&cache, &next, &slots); crate::guard::scope_spawn(sc, move || loop { let k = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst); if k >= end { break; }
                     let tf0 = std::time::Instant::now(); let res = render_frame_opts(p, (f0 + k) as f64 / p.fps, cache, transparent).and_then(|mut f| {if transparent { unpremultiply(&mut f); } prof("frame_total", tf0); let tq = std::time::Instant::now(); crate::color::pipeline::output(p,&mut f)?; prof("pipe_out", tq); let tq = std::time::Instant::now(); let r = if p.linear_blend { to_rgba8_tpdf(&f) } else { to_rgba8(&f) }; prof("to_rgba8", tq); Ok(r)}); *slots[k - i].lock().unwrap() = Some(res); }); } });
                 let frames: Vec<Result<Vec<u8>, String>> = slots.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect();
-                for f in frames { if frame_tx.send(f?).is_err() { return Err("encoder closed early".into()); } }
+                for f in frames { if frame_tx.send(f?).is_err() { encoder_closed = true; return Err("encoder closed early".into()); } }
                 if let Some(handle) = prefetch {
                     let joined: Result<(Cache, usize), String> = handle.join().map_err(|_| "prefetch decode thread panicked".to_string())?;
                     let (new_cache, new_end) = joined?;
@@ -1522,8 +1523,13 @@ pub(crate) fn export_range_cmd(p: &Project, path: &str, f0: usize, f1: usize, mu
     })();
     drop(frame_tx);
     let writer_result: Result<(), String> = writer.join().map_err(|_| "encoder writer thread panicked".to_string())?;
-    loop_result?;
-    writer_result?;
+    match (loop_result, writer_result) {
+        // A disconnected frame channel is a symptom: preserve the encoder's stderr
+        // so callers can distinguish disk exhaustion from other encoder failures.
+        (Err(_), Err(error)) if encoder_closed => return Err(error),
+        (Err(error), _) | (_, Err(error)) => return Err(error),
+        (Ok(()), Ok(())) => {}
+    }
     // mux mixed audio
     let pcm_full = crate::audio::mix(p); let (s0, s1) = ((f0 as f64 / p.fps * crate::audio::SR as f64) as usize * 2, (f1 as f64 / p.fps * crate::audio::SR as f64) as usize * 2); let pcm: Vec<f32> = { let a = s0.min(pcm_full.len()); let b = s1.min(pcm_full.len()); let mut v = pcm_full[a..b].to_vec(); v.resize(s1 - s0, 0.0); v };
     if audio && pcm.iter().any(|v|v.abs()>1e-6){crate::color::mux::legacy_audio(path,&pcm,n)?}
@@ -1812,7 +1818,7 @@ mod transfer_tag_tests {
         std::fs::remove_file(path).ok();
     }
 }
-#[test]fn parallel_out_of_order_arrival_preserves_writer_order(){let path=std::env::temp_dir().join(format!("kimo-ordered-{}.bin",std::process::id()));let mut cmd=crate::process_fixture::command(&["copy",path.to_str().unwrap()]);let mut encoder=crate::color::process::EncodeStream::new(&mut cmd,4,std::time::Duration::from_secs(2)).unwrap();let slots:Vec<_>=(0..4).map(|_|std::sync::Mutex::new(None)).collect();std::thread::scope(|sc|{for k in 0..4{let slots=&slots;sc.spawn(move||{std::thread::sleep(std::time::Duration::from_millis((3-k)*10));*slots[k as usize].lock().unwrap()=Some(vec![k as u8;4]);});}});for slot in slots{encoder.write(slot.into_inner().unwrap().unwrap()).unwrap();}encoder.finish().unwrap();assert_eq!(std::fs::read(&path).unwrap(),vec![0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3]);std::fs::remove_file(path).unwrap();}
+#[test]fn parallel_out_of_order_arrival_preserves_writer_order(){let path=std::env::temp_dir().join(format!("kimo-ordered-{}.bin",std::process::id()));let mut cmd=crate::process_fixture::command(&["copy",path.to_str().unwrap()]);let mut encoder=crate::color::process::EncodeStream::new(&mut cmd,4,std::time::Duration::from_secs(2)).unwrap();let slots:Vec<_>=(0..4).map(|_|std::sync::Mutex::new(None)).collect();std::thread::scope(|sc|{for k in 0..4{let slots=&slots;crate::guard::scope_spawn(sc,move||{std::thread::sleep(std::time::Duration::from_millis((3-k)*10));*slots[k as usize].lock().unwrap()=Some(vec![k as u8;4]);});}});for slot in slots{encoder.write(slot.into_inner().unwrap().unwrap()).unwrap();}encoder.finish().unwrap();assert_eq!(std::fs::read(&path).unwrap(),vec![0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3]);std::fs::remove_file(path).unwrap();}
 }
 #[cfg(test)]mod legacy_unwind_test{use super::*;
 #[test]fn render_worker_panic_reaps_encoder(){let pidpath=std::env::temp_dir().join(format!("kimo-legacy-unwind-pid-{}",std::process::id()));let mut command=crate::process_fixture::command(&["pid",pidpath.to_str().unwrap(),"sleep","30000"]);let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{let _encoder=crate::color::process::EncodeStream::new(&mut command,4,std::time::Duration::from_secs(2)).unwrap();std::thread::sleep(std::time::Duration::from_millis(30));std::thread::scope(|sc|{sc.spawn(||panic!("injected render worker failure"));});}));assert!(result.is_err());let id=std::fs::read_to_string(&pidpath).unwrap();crate::process_fixture::assert_dead(id.trim().parse().unwrap());std::fs::remove_file(pidpath).unwrap();}
@@ -1952,5 +1958,19 @@ mod render_state_contract_tests {
             }
         }
         POOL.with(|p| p.borrow_mut().clear());
+    }
+}
+
+#[cfg(test)]
+mod encoder_diagnostic_contract_tests {
+    use super::*;
+    #[test]
+    fn early_encoder_exit_retains_its_diagnostic_instead_of_channel_failure() {
+        let mut p = crate::commands::Session::new().project;
+        p.width = 8; p.height = 8; p.fps = 24.0;
+        let command = crate::process_fixture::command(&["stderr", "Conversion failed: fixture encoder refused", "exit", "9"]);
+        let error = export_range_cmd(&p, "unused-output.mp4", 0, 100, command, false, false).unwrap_err();
+        assert!(error.contains("fixture encoder refused"), "{error}");
+        assert_ne!(error, "encoder closed early");
     }
 }

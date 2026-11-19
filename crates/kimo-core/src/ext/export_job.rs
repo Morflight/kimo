@@ -39,24 +39,76 @@ fn sync_dir(d: &std::path::Path) { if let Ok(f) = std::fs::File::open(d) { let _
 fn sync_file(p: &std::path::Path) -> Result<(), String> { std::fs::OpenOptions::new().write(true).open(p).and_then(|f| f.sync_all()).map_err(|e| format!("cannot fsync {}: {e}", p.display())) }
 
 /// RV-20 job lock: `<dir>/job.lock` created O_EXCL with {pid, host, started_at, start_ticks}. A lock is live only when its host is this host, the pid
-/// exists AND the pid's /proc start time equals start_ticks (so a reused pid is not mistaken for the owner). Same-host only: a lock written by another
+/// exists AND the pid's native creation time equals start_ticks (so a reused pid is not mistaken for the owner). Same-host only: a lock written by another
 /// host cannot be verified and is refused. The guard releases the lock on drop (normal end, error, cancel or panic); SIGKILL leaves a stale lock that
 /// the next start reclaims.
+#[cfg(not(windows))]
 pub fn host_name() -> String { std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "unknown".into()) }
-pub fn start_ticks(pid: u32) -> Option<u64> { let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?; let rest = s.rsplit_once(')')?.1; rest.split_whitespace().nth(19)?.parse().ok() }
+#[cfg(windows)]
+pub fn host_name() -> String { native_lock::host_name() }
+pub fn start_ticks(pid: u32) -> Option<u64> { process_identity(pid).ok().flatten() }
+#[cfg(not(windows))]
+fn process_identity(pid: u32) -> Result<Option<u64>, String> {
+    let s = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(s) => s, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    s.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(19)).and_then(|s| s.parse().ok()).map(Some).ok_or_else(|| "invalid process start time".into())
+}
+#[cfg(windows)]
+fn process_identity(pid: u32) -> Result<Option<u64>, String> { native_lock::process_identity(pid) }
+#[cfg(windows)]
+mod native_lock {
+    use std::{ffi::c_void, os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle}};
+    #[derive(Default)]
+    #[repr(C)]
+    struct FileTime { low: u32, high: u32 }
+    #[link(name="kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetProcessTimes(handle: *mut c_void, creation: *mut FileTime, exit: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
+        fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+        fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32;
+    }
+    pub(super) fn host_name() -> String {
+        let mut buffer = [0u16; 256]; let mut size = buffer.len() as u32;
+        // The buffer exceeds MAX_COMPUTERNAME_LENGTH + 1; size excludes the terminator on success.
+        if unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut size) } == 0 { return "unknown".into(); }
+        String::from_utf16_lossy(&buffer[..size as usize])
+    }
+    pub(super) fn process_identity(pid: u32) -> Result<Option<u64>, String> {
+        // Query only: no termination rights. OwnedHandle closes the process on every return path.
+        let raw = unsafe { OpenProcess(0x1000, 0, pid) };
+        if raw.is_null() {
+            let e = std::io::Error::last_os_error();
+            return if e.raw_os_error() == Some(87) { Ok(None) } else { Err(e.to_string()) };
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let (mut creation, mut exit, mut kernel, mut user) = (FileTime::default(), FileTime::default(), FileTime::default(), FileTime::default());
+        if unsafe { GetProcessTimes(handle.as_raw_handle(), &mut creation, &mut exit, &mut kernel, &mut user) } == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        let mut code = 0;
+        if unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) } == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        if code != 259 { return Ok(None); }
+        Ok(Some((u64::from(creation.high) << 32) | u64::from(creation.low)))
+    }
+}
 struct LockGuard { path: std::path::PathBuf, pid: u32 }
 impl Drop for LockGuard { fn drop(&mut self) { if read_json(&self.path).map_or(false, |v| v["pid"] == json!(self.pid)) { let _ = std::fs::remove_file(&self.path); sync_dir(self.path.parent().unwrap_or(std::path::Path::new("."))); } } }
 fn lock_live(v: &Value) -> Result<bool, String> {
     let host = v["host"].as_str().unwrap_or(""); if host != host_name() { return Err(format!("job_locked: job.lock was written on host '{host}'; this host is '{}' and a lock from another host cannot be verified (same-host lock only). Remove job.lock by hand if that job is certainly dead.", host_name())); }
-    let pid = v["pid"].as_u64().unwrap_or(0) as u32; Ok(pid != 0 && start_ticks(pid).map_or(false, |t| Some(t) == v["start_ticks"].as_u64()))
+    let pid = v["pid"].as_u64().unwrap_or(0) as u32;
+    if pid == 0 { return Ok(false); }
+    let identity = process_identity(pid).map_err(|e| format!("job_locked: cannot verify process {pid}: {e}"))?;
+    Ok(identity.map_or(false, |t| Some(t) == v["start_ticks"].as_u64()))
 }
 fn acquire(dir: &std::path::Path) -> Result<LockGuard, String> {
     use std::io::Write;
     let path = dir.join("job.lock"); let pid = std::process::id();
+    let ticks = process_identity(pid)?;
     for _ in 0..3 {
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f) => {
-                let body = json!({"pid": pid, "host": host_name(), "started_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), "start_ticks": start_ticks(pid)});
+                let body = json!({"pid": pid, "host": host_name(), "started_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), "start_ticks": ticks});
                 f.write_all(body.to_string().as_bytes()).map_err(|e| e.to_string())?; f.sync_all().map_err(|e| e.to_string())?; sync_dir(dir); return Ok(LockGuard { path, pid }); }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let v = read_json(&path); match v { Some(v) => { if lock_live(&v)? { return Err(format!("job_locked: another export job (pid {}) is running in {}; wait for it, cancel it, or use a different dir", v["pid"], dir.display())); } }

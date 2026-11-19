@@ -3,7 +3,15 @@
 use kimo_core::guard;
 use std::sync::atomic::Ordering::Relaxed;
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(not(windows))]
 fn ram() -> usize { std::fs::read_to_string("/proc/meminfo").unwrap().lines().find(|l| l.starts_with("MemTotal")).and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse::<usize>().ok())).unwrap() * 1024 }
+#[cfg(windows)]
+fn ram() -> usize {
+    let output=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"]).output().unwrap();
+    assert!(output.status.success(),"physical RAM query: {}",String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().parse().unwrap()
+}
+
 #[test] fn hard_ceiling_is_below_physical_ram_and_threads_follow_budget() { let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("KIMO_MEM_MB", "1200"); guard::init();
     let hard = guard::HARD.load(Relaxed); assert!(hard <= ram() / 100 * 85, "hard ceiling {hard} must be <= 85% of RAM {}", ram());

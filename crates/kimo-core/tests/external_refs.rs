@@ -97,6 +97,10 @@ fn resolve_path_rules() {
 fn unregistered_path_fields_fail() {
     // (file, field) -> why
     let registered: &[(&str, &str, &str)] = &[
+        ("ext/caption_engine.rs", "path", "RESOLVED: transient VisibleMedia.path comes from Project::resolve before frame/audio sampling"),
+        ("ext/caption_engine.rs", "font", "CALL SPEC: copied into Source::Text.font, whose project reference is registered in deps"),
+        ("ext/chart_tools.rs", "font", "CALL SPEC: chart text style expanded into registered Source::Text.font references"),
+        ("vision/models.rs", "file", "MODEL CACHE / DIAGNOSTIC: pinned model filename and tamper error text, never a project dependency"),
         ("model.rs", "path", "REF Asset.path and OccSpec.path"), ("model.rs", "font", "REF Source::Text.font"),
         ("shards.rs", "occlusion", "REF Plane.occlusion"), ("shards.rs", "texture", "REF Plane.texture"),
         ("color/view_video.rs", "config_path", "REF Project.ocio_view_delivery.config_path"),
@@ -141,6 +145,13 @@ fn unregistered_path_fields_fail() {
 #[test]
 fn open_sites_are_classified() {
     const SITES: &[(&str, usize, &str)] = &[
+        ("ext/export_fast.rs", 4, "2 PROJECT-DERIVED video/audio inputs resolved by Project::resolve in plan(); 2 argument-count checks, one in a test, not extra opens"),
+        ("ext/svg_tools.rs", 2, "CALL INPUT: size check and text read of the caller SVG path; SVG is expanded into native shapes, not retained as a file reference"),
+        ("ext/chart_tools.rs", 1, "CALL INPUT: CSV text read from caller path; expanded into native clips, not retained as a file reference"),
+        ("ext/caption_engine.rs", 2, "PROJECT-DERIVED: visible_media resolves asset paths before both frame and audio sampling"),
+        ("ext/look_tools.rs", 2, "1 system font selected by resolve_font; 1 caller ref_path video sampled for comparison, not persisted in the project"),
+        ("vision/tests.rs", 3, "TEST FIXTURES: downloaded fixture bytes, generated annotation PNG and pinned model-cache size verification"),
+        ("vision/models.rs", 1, "MODEL CACHE: SHA-512 of a pinned model download, not a project asset"),
         ("proxy.rs", 3, "PROJECT-DERIVED: original and proxy paths resolved by Project::resolve before fingerprint/probe/transcode; output path resolved against project base"),
         ("auto_proxy.rs", 3, "PROJECT-DERIVED: the source asset path resolved by Project::resolve at enqueue time, then ffmpeg -i for the edit proxy encode; 2 read_to_string: the cache-local edit proxy sidecar (never stored in the project) and the encoder's own stderr pipe (not a file)"),
         ("analysis_proxy.rs", 3, "PROJECT-DERIVED: the source asset path resolved by Project::resolve before ffprobe keyframe-gap check / ffmpeg transcode / cache-sidecar read; output proxy path is cache-local, never stored in the project"),
@@ -200,7 +211,7 @@ fn open_sites_are_classified() {
         ("motion.rs", 1, "caller path (tool argument / output / temp file / test), not stored in the project"),
         ("planar.rs", 2, "PROJECT-DERIVED, resolved through deps (resolve / resolve_str) at the call site"),
         ("reframe.rs", 1, "PROJECT-DERIVED, resolved through deps (Project::resolve -> deps::resolve_path) at the call site: the clip's media decoded by auto_reframe's subject analysis"),
-        ("render.rs", 21, "PROJECT-DERIVED, resolved through deps (resolve / resolve_str) at the call site; 1 caller path: check_still_path reads the first bytes of a still's output path so a still never overwrites a video; V8.8.0: +1 is not a real open site, it's the literal \"-i\" inside x264_preset_none_is_byte_identical_to_before's own expected-argv test fixture; preview stream (2026-11): +2 caller path, not a project path: decode_via_file reads back the size and bytes of the temp file its own ffmpeg just wrote (the real-time preview's decode transport); the count was already 19 at 8126ebd, one more than classified"),
+        ("render.rs", 19, "4 PROJECT-DERIVED reads: two ffmpeg decode inputs and two asset metadata checks, resolved by preparation callers; 1 output signature read; 4 caller/pipe inputs for still/video/alpha/concat output; 10 test fixture reads and expected-argv literals. Removed temp-file decode transport is no longer counted"),
         ("shards.rs", 3, "PROJECT-DERIVED, resolved through deps (resolve / resolve_str) at the call site"),
         ("text.rs", 1, "PROJECT-DERIVED, resolved through deps (resolve / resolve_str) at the call site"),
         ("threed/csm.rs", 1, "no project path: an ffmpeg stdin pipe (-i -) fed with raw RGBA frames inside a #[cfg(test)] #[ignore] frame-dump harness; output goes to a test-supplied directory (KIMO_*_FRAMES env), nothing is read from or stored in the project (here: KIMO_CSM_FRAMES)"),

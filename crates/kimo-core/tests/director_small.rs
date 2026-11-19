@@ -146,6 +146,13 @@ fn silent_no_audio_track(name: &str, dur: f64) -> String {
     for want in ["import_media", "add_clip", "export", "auto_rough_cut", "place_broll", "caption_from_words", "finish_audio", "auto_grade", "lint_edit", "review_export", "search_tools"] {
         assert!(names.contains(&want), "director profile lacks {want}: {names:?}");
     }
+    // Detailed inspection remains discoverable/callable without expanding the small initial profile.
+    for name in ["look", "watch", "compare_reference"] {
+        let full = kimo_core::toolgroups::describe(&json!({"action": name})).unwrap();
+        assert_eq!(full["action"], name);
+        let found = kimo_core::toolgroups::search_tools(name, 25, None, &json!([]), &json!([]));
+        assert!(found["matches"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
+    }
     assert!(names.len() <= 36, "{} tools: {names:?}", names.len()); // KF2: 29 + 4 highlight/reframe tools + 2 meta tools = 35
     let bytes = serde_json::to_string(&list).unwrap().len(); assert!(bytes < 29_900, "director list is {bytes} bytes"); // KF2: +4 tools pushed this from ~21k; V7.7Q: place_broll's words/asset_tags relevance params pushed it to ~29.1k; V7.9Q: finish_audio's match_strength/compress_strength args pushed it to ~29.5k; V8.8.0/8.8.1 (quality audit #1/#2): project_set's x264_preset/color_tag_sanity fields, with no per-field description to keep this small, pushed it to ~29.76k; 29.9k keeps real headroom under the 150k flat-list cost
     for t in &list { let d = t["description"].as_str().unwrap(); assert!(d.len() <= 150, "{}: {} chars", t["name"], d.len()); }
@@ -820,9 +827,12 @@ fn gray_pixels(png: &str, w: usize, h: usize) -> Vec<u8> {
     let t2 = sid(&call(&mut ss, "add_track", json!({})), "track_id");
     let bottom = sid(&call(&mut ss, "add_text", json!({"track_id": t2, "text": "BOTTOM LINE", "start": 0, "duration": 2, "size": 70})), "clip_id");
     let bottom_rect = call(&mut ss, "compute_text_bounds", json!({"clip_id": bottom}))["canvas_rect"].clone();
-    let bottom_h = bottom_rect[3].as_f64().unwrap();
+    let bottom_top = bottom_rect[1].as_f64().unwrap();
     let want_top = top_bottom + 5.0; // 5px clear -- crowded by any reasonable standard
-    call(&mut ss, "set_property", json!({"clip_id": bottom, "property": "y", "value": want_top + bottom_h / 2.0 - 360.0}));
+    call(&mut ss, "set_property", json!({"clip_id": bottom, "property": "y", "value": want_top - bottom_top}));
+
+    let placed = call(&mut ss, "compute_text_bounds", json!({"clip_id": bottom}))["canvas_rect"].clone();
+    assert!((placed[1].as_f64().unwrap() - top_bottom - 5.0).abs() < 0.01, "fixture must have the promised five-pixel ink gap: {placed}");
 
     let r = call(&mut ss, "lint_edit", json!({"platform": "none"}));
     let codes: Vec<&str> = r["problems"].as_array().unwrap().iter().filter_map(|p| p["code"].as_str()).collect();
@@ -1020,16 +1030,21 @@ fn talk_v(name: &str, dur: f64, speech: &[(f64, f64)], src: &str, vf: &str) -> S
 /// once per sampled instant, not twice. thread-local counter: see its own doc comment for why this
 /// is safe next to other tests in this binary running concurrently.
 #[test] fn lint_edit_prepares_each_picture_scan_sample_exactly_once() {
-    let mut ss = portrait();
-    let t = sid(&call(&mut ss, "add_track", json!({})), "track_id");
-    let a = sid(&call(&mut ss, "import_media", json!({"path": broll("kr2_prep.mp4", 3.0, "")})), "asset_id");
-    call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": 3, "fit": "cover"}));
-    let before = kimo_core::render::analysis_prepare_call_count();
-    let r = call(&mut ss, "lint_edit", json!({"platform": "none"}));
-    let after = kimo_core::render::analysis_prepare_call_count();
-    // picture scan samples at t = 0.25, 0.75, ..., < 3.0 -> 6 samples
-    let mut expected = 0usize; let mut t = 0.25; while t < 3.0 { expected += 1; t += 0.5; }
-    assert_eq!(after - before, expected, "get_scopes' own prepare_analysis_range call is the only preparation that should run per sample now (a duplicate pre-warm call would double this): {r}");
+    // A 3s clip adds its midpoint between grid samples; a 3.5s clip's midpoint
+    // coincides with the grid. Both plans contain exactly seven distinct instants.
+    for duration in [3.0, 3.5] {
+        let mut ss = portrait();
+        let t = sid(&call(&mut ss, "add_track", json!({})), "track_id");
+        let a = sid(&call(&mut ss, "import_media", json!({"path": broll(&format!("kr2_prep_{duration}.mp4"), duration, "")})), "asset_id");
+        call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": duration, "fit": "cover"}));
+        let before = kimo_core::render::analysis_prepare_call_count();
+        let r = call(&mut ss, "lint_edit", json!({"platform": "none"}));
+        let after = kimo_core::render::analysis_prepare_call_count();
+        assert_eq!(r["picture_check"]["planned"], 7, "{r}");
+        assert_eq!(r["picture_check"]["samples"], 7, "{r}");
+        assert_eq!(r["picture_check"]["complete"], true, "{r}");
+        assert_eq!(after - before, 7, "exactly one preparation per distinct sample, including midpoint deduplication: {r}");
+    }
 }
 
 /// KR2: lint_edit's dialogue-track finder (director_tools.rs `speech()`) probed each candidate track

@@ -187,7 +187,7 @@ fn look(ss: &mut Session, a: &Value) -> Result<Value, String> {
             }
         }
         // motion path of a keyed move: where the clip's box centre travels over the clip
-        if has("motion_paths") && (c.props.get("x").map(|p| !p.keys.is_empty()).unwrap_or(false) || c.props.get("y").map(|p| !p.keys.is_empty()).unwrap_or(false)) {
+        if has("motion_paths") && c.props.iter().any(|(name, prop)| matches!(name.as_str(), "x" | "y") && !prop.keys.is_empty()) {
             if let Some(b) = e["box"].as_array().map(|v| v.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect::<Vec<_>>()) {
                 let (bcx, bcy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
                 let n = 80usize; let mut prev: Option<(f64, f64)> = None;

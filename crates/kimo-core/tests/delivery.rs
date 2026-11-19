@@ -10,7 +10,7 @@ fn framemd5(p: &str) -> String { String::from_utf8(Command::new("ffmpeg").args([
 fn c(ss: &mut Session, n: &str, v: Value) -> Value { dispatch(ss, n, &v).unwrap_or_else(|e| panic!("{n}: {e}")) }
 fn err(ss: &mut Session, n: &str, v: Value) -> String { dispatch(ss, n, &v).err().unwrap_or_else(|| panic!("{n} should fail")) }
 fn tree(d: &Path) -> Vec<(String, String)> { let mut out = vec![]; let mut st = vec![d.to_path_buf()]; while let Some(x) = st.pop() { for e in std::fs::read_dir(&x).unwrap().flatten() { let p = e.path(); if p.is_dir() { st.push(p) } else { out.push((p.strip_prefix(d).unwrap().to_string_lossy().into_owned(), sha256_hex(&std::fs::read(&p).unwrap()))); } } } out.sort(); out }
-fn find_font() -> Option<PathBuf> { let mut st = vec![PathBuf::from("/usr/share/fonts")]; while let Some(x) = st.pop() { if let Ok(rd) = std::fs::read_dir(&x) { for e in rd.flatten() { let p = e.path(); if p.is_dir() { st.push(p) } else if p.extension().map_or(false, |x| x == "ttf") { return Some(p); } } } } None }
+fn find_font() -> Option<PathBuf> { kimo_core::text::system_fallback_font() }
 fn set_fstype(b: &mut Vec<u8>, v: u16) { let n = u16::from_be_bytes([b[4], b[5]]) as usize; for i in 0..n { let r = 12 + 16 * i; if &b[r..r + 4] == b"OS/2" { let off = u32::from_be_bytes([b[r + 8], b[r + 9], b[r + 10], b[r + 11]]) as usize; b[off + 8..off + 10].copy_from_slice(&v.to_be_bytes()); return; } } panic!("no OS/2"); }
 
 #[test]
