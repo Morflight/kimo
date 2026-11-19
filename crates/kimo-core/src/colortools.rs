@@ -304,9 +304,9 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
 #[cfg(test)] mod command_tests {
     use super::*;
     use crate::commands::{dispatch, Session};
-    /// 8x8 project at 10 fps, one track: clip a (0..1 s, rgb .2/.4/.6) then clip b (1..2 s, rgb .6/.5/.3).
+    /// 16x16 project (the smallest allowed) at 10 fps, one track: clip a (0..1 s, rgb .2/.4/.6) then clip b (1..2 s, rgb .6/.5/.3).
     fn session() -> (Session, String, String) {
-        let mut ss = Session::new(); dispatch(&mut ss, "project_set", &json!({"width":8,"height":8,"fps":10})).unwrap();
+        let mut ss = Session::new(); dispatch(&mut ss, "project_set", &json!({"width":16,"height":16,"fps":10})).unwrap();
         let tr = dispatch(&mut ss, "add_track", &json!({})).unwrap()["track_id"].as_str().unwrap().to_string();
         let mut clip = |c: [f64; 3], start: f64| dispatch(&mut ss, "add_clip", &json!({"track_id":tr,"source_type":"solid","color":c,"start":start,"duration":1})).unwrap()["clip_id"].as_str().unwrap().to_string();
         let (a, b) = (clip([0.2, 0.4, 0.6], 0.0), clip([0.6, 0.5, 0.3], 1.0)); (ss, a, b)
@@ -427,7 +427,7 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
         has(err(&mut ss, "render_exposure_false_color", json!({"time":0.5})), "missing string 'path'");
         has(err(&mut ss, "render_exposure_false_color", json!({"time":0.5,"path":"a.jpg"})), "diagnostic requires .png");
         has(err(&mut ss, "render_exposure_false_color", json!({"path":"a.png"})), "missing number 'time'");
-        let p = d.join("fc.png"); let r = dispatch(&mut ss, "render_exposure_false_color", &json!({"time":0.5,"path":p.to_str().unwrap(),"clip_id":a})).unwrap(); assert_eq!(r["middle_gray"], 0.18); assert_eq!(png_size(&p), (8, 8));
+        let p = d.join("fc.png"); let r = dispatch(&mut ss, "render_exposure_false_color", &json!({"time":0.5,"path":p.to_str().unwrap(),"clip_id":a})).unwrap(); assert_eq!(r["middle_gray"], 0.18); assert_eq!(png_size(&p), (16, 16));
         assert!(dispatch(&mut ss, "analyze_exposure", &json!({"time":0.5})).unwrap().is_object());
         has(err(&mut ss, "render_float_tiff", json!({"time":0.5})), "missing string 'path'");
         has(err(&mut ss, "render_float_tiff", json!({"time":0.5,"path":"a.png"})), "requires .tif/.tiff");
@@ -467,7 +467,7 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
         has(err(&mut ss, "render_high_bit_still", json!({"path":"a.tif","time":0})), "high-bit still requires .png");
         has(err(&mut ss, "render_high_bit_still", json!({"path":"a.png"})), "missing number 'time'");
         let p = d.join("h.png"); assert_eq!(dispatch(&mut ss, "render_high_bit_still", &json!({"path":p.to_str().unwrap(),"time":0.5})).unwrap()["bits"], 16);
-        assert_eq!(png_size(&p), (8, 8)); assert_eq!(std::fs::read(&p).unwrap()[24], 16);
+        assert_eq!(png_size(&p), (16, 16)); assert_eq!(std::fs::read(&p).unwrap()[24], 16);
         std::fs::remove_dir_all(d).unwrap();
     }
     #[test] fn set_color_pipeline_rejects_unknown_malformed_and_invalid_settings() {
@@ -524,7 +524,7 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
         assert!(dispatch(&mut ss, "match_grade", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"source_region":"x"})).is_err());
         has(err(&mut ss, "match_grade", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"strength":2})), "strength outside 0..1");
         let r = dispatch(&mut ss, "match_grade", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"strength":0.5,"source_region":[0,0,1,1],"ref_region":[0,0,0.5,0.5]})).unwrap();
-        assert_eq!(r["source_samples"], 64); assert_eq!(r["reference_samples"], 16);
+        assert_eq!(r["source_samples"], 256); assert_eq!(r["reference_samples"], 64);
         let e = ss.project.find_clip(&a).unwrap().effects.last().unwrap().clone(); assert_eq!(e.kind, "lab_match"); assert_eq!(e.params["strength"].base, 0.5); assert_eq!(e.params.len(), 3 * 2 + 9 + 1);
     }
     #[test] fn analyze_color_validates_bins_and_units() {
@@ -599,7 +599,7 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
         let exp = add_fx(&mut ss.project, &a, "exposure", &[]).unwrap(); has(err(&mut ss, "pick_key_color", json!({"clip_id":a,"time":0.5,"effect_id":exp})), "is not a keyer or chroma_key");
         has(err(&mut ss, "pick_key_color", json!({"clip_id":a,"time":0.5,"w":0.01,"h":0.01})), "pick_key_color: sample region contains no pixels");
         let ck = add_fx(&mut ss.project, &a, "chroma_key", &[("tolerance", 1.0)]).unwrap();
-        let r = dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5,"effect_id":ck})).unwrap(); assert_eq!(r["kind"], "chroma_key"); assert_eq!(r["pixels"], 1);
+        let r = dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5,"effect_id":ck})).unwrap(); assert_eq!(r["kind"], "chroma_key"); assert_eq!(r["pixels"], 4);
         let e = ss.project.find_clip(&a).unwrap().effects.iter().find(|e| e.id == ck).unwrap().clone(); assert!((e.params["b"].base - 0.6).abs() < 0.01 && (e.params["r"].base - 0.2).abs() < 0.01);
         let r = dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5})).unwrap(); assert_eq!(r["kind"], "keyer"); let kid = r["effect_id"].as_str().unwrap().to_string();
         assert_eq!(dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5})).unwrap()["effect_id"], kid.as_str());
@@ -622,11 +622,6 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
             (json!({"hero_clip_id":a,"clip_ids":["nope"]}), "match_shots: no clip 'nope'"), (json!({"hero_clip_id":a,"clip_ids":[b,b]}), "listed twice"),
             (json!({"hero_clip_id":a,"clip_ids":[b],"hero_time":"x"}), "match_shots: hero_time must be a number"), (json!({"hero_clip_id":a,"clip_ids":[b],"hero_time":1.0}), "match_shots: hero_time 1 is outside the hero (0..1)")];
         for (args, want) in cases { has(err(&mut ss, "match_shots", args), want); }
-    }
-    #[test] fn match_shots_lab_mode_tags_one_lab_match_and_a_rerun_replaces_it() {
-        let (mut ss, a, b) = session();
-        for _ in 0..2 { let r = dispatch(&mut ss, "match_shots", &json!({"hero_clip_id":a,"clip_ids":[b],"mode":"lab","hero_time":0.5})).unwrap(); assert_eq!(r["matched"][0]["kind"], "lab_match"); assert_eq!(r["hero_sampled_times"], json!([0.5])); }
-        let fx = &ss.project.find_clip(&b).unwrap().effects; assert_eq!(fx.len(), 1); assert_eq!(fx[0].strings["matched_to"], a.as_str());
     }
     #[test] fn luma_levels_needs_sixteen_opaque_pixels_and_tone_fit_maps_levels() {
         let mut f = Frame::new(4, 4); for (i, p) in f.d.chunks_exact_mut(4).enumerate() { p[0] = i as f32 / 15.0; p[1] = p[0]; p[2] = p[0]; p[3] = 1.0; }

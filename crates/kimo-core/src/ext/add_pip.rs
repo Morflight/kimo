@@ -218,7 +218,7 @@ fn run(ss: &mut Session, a: &Value) -> Result<Value, String> {
 
     let dir = if x_off >= 0.0 { 1.0 } else { -1.0 };
     let slide_enter = (animate_in == "slide").then_some((x_off + dir * box_w, "out_quart"));
-    let slide_exit = (animate_out == "slide").then_some((x_off + dir * box_w, "in_quart"));
+    let slide_exit = (animate_out == "slide").then_some((x_off + dir * box_w, "in"));
     animate_prop(ss, &pip_clip_id, "x", x_off, duration_s, slide_enter, slide_exit)?;
     call(ss, "set_property", &json!({"clip_id": pip_clip_id, "property": "y", "value": y_off}))?;
 

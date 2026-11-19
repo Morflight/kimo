@@ -72,7 +72,7 @@ mod tests {
   let r=run("sample_diffuse_sh_raw",json!({"coefficients":c,"normal":[0.3,-0.2,0.9]})).unwrap();
   for(j,k)in[1.,2.,4.].iter().enumerate(){assert!((r["irradiance"][j].as_f64().unwrap()-0.2820947918*k).abs()<1e-12);}
   assert_eq!(r["specular_ibl"],false);
-  assert_eq!(run("sample_diffuse_sh_raw",json!({"coefficients":c,"normal":[0.,0.,0.]})).unwrap_err(),"nonzero vector required");
+  assert_eq!(run("sample_diffuse_sh_raw",json!({"coefficients":c,"normal":[0.,0.,0.]})).unwrap_err(),"direction nonzero required");
  }
  #[test]fn cpu_reference_render_writes_a_png(){
   let dir=std::env::temp_dir().join(format!("kimo-threed-foundation-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();

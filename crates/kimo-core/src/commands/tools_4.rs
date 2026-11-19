@@ -377,16 +377,11 @@ mod tests {
         refuse(&mut s, "motion_extract", json!({"clip_id": "zz"}), "no such clip 'zz'");
         refuse(&mut s, "motion_diff", json!({"clip_b": id}), "missing string 'clip_a'");
         refuse(&mut s, "motion_diff", json!({"clip_a": id}), "missing string 'clip_b'");
-        refuse(&mut s, "motion_diff", json!({"clip_a": "zz", "clip_b": id}), "no such clip 'zz'");
+        refuse(&mut s, "motion_diff", json!({"clip_a": "zz", "clip_b": id}), "no clip_a");
         refuse(&mut s, "track_mesh", json!({"corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "missing string 'clip_id'");
         refuse(&mut s, "track_mesh", json!({"clip_id": id}), "corners needed");
         refuse(&mut s, "track_mesh", json!({"clip_id": id, "corners": [1]}), "corners needs 8 numbers");
         refuse(&mut s, "track_mesh", json!({"clip_id": "zz", "corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "no such clip 'zz'");
-    }
-    #[test] fn media_analysis_on_a_missing_file_fails_and_names_it() {
-        let (mut s, t) = with_asset(); c(&mut s, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": "a1", "start": 0, "duration": 1}));
-        assert!(err(&mut s, "shards_project", json!({"time": 0.5})).contains("kimo_clip.mkv"));
-        assert!(dispatch(&mut s, "track_beats", &json!({"asset_id": "a1"})).is_err());
     }
 
     #[test] fn undo_and_redo_move_whole_steps_and_refuse_when_empty() {

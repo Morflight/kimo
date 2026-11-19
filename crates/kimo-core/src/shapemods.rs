@@ -120,8 +120,10 @@ mod tests {
     #[test] fn gradients_blend_along_the_angle() {
         let plain = build(&[], disk, 50.0, 50.0, 0.0); assert_eq!(plain.stroke_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.1; 3]); assert_eq!(plain.fill_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.1; 3]);
         let bw = [("r1", 0.0), ("g1", 0.0), ("b1", 0.0), ("r2", 1.0), ("g2", 1.0), ("b2", 1.0)]; let wb = [("r1", 1.0), ("g1", 1.0), ("b1", 1.0), ("r2", 0.0), ("g2", 0.0), ("b2", 0.0)];
-        let s = build(&[fx("shape_gradient_stroke", &bw, &[])], disk, 50.0, 50.0, 0.0); assert_eq!(s.stroke_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.75; 3]);
-        let s = build(&[fx("shape_gradient_fill", &wb, &[])], disk, 50.0, 50.0, 0.0); assert_eq!(s.fill_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.25; 3]);
+        let stroke = [fx("shape_gradient_stroke", &bw, &[])];
+        let s = build(&stroke, disk, 50.0, 50.0, 0.0); assert_eq!(s.stroke_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.75; 3]);
+        let fill = [fx("shape_gradient_fill", &wb, &[])];
+        let s = build(&fill, disk, 50.0, 50.0, 0.0); assert_eq!(s.fill_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.25; 3]);
     }
     #[test] fn path_of_reads_the_shape_path_effect() {
         assert!(path_of(&[fx("shape_path", &[], &[("d", "M 0 0 L 10 0"), ("keys", "not json")])], 0.0).is_some());
