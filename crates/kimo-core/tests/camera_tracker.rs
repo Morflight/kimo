@@ -303,3 +303,71 @@ fn line_solution() -> Solution {
         let p = distort_px((x as f64 + 0.5, y as f64 + 0.5), &k); let (es, et) = (p.0 / w as f64, 1.0 - p.1 / h as f64); worst = worst.max((s - es).abs().max((t - et).abs())); }
     println!("CASE st_map: {r} worst |s,t - mapping| {worst:.3e}"); assert!(worst <= 1.0 / 65535.0, "ST map value off by {worst}");
 }
+
+// ---------- fast tests on a hand-built tiny solve (no solving): exact expectations from the known poses and points ----------
+/// 160x120, f = 200; ground points at y = 2 (y is down, cameras at y = 0 above it), two points above the ground; 5 frames, the
+/// camera slides along x by 0.2 per frame, frame 2 unregistered.
+fn tiny_solution() -> Solution {
+    let points: Vec<V3> = vec![[-1.0, 2.0, 5.0], [1.0, 2.0, 5.0], [-1.0, 2.0, 8.0], [1.0, 2.0, 8.0], [0.0, 2.0, 6.0], [0.0, 2.0, 5.0], [0.0, 1.0, 6.0], [0.5, 1.5, 7.0]];
+    let poses: Vec<Option<Pose>> = (0..5).map(|i| if i == 2 { None } else { Some(cam_pose([0.2 * i as f64, 0.0, 0.0], 0.0, 0.0, 0.0)) }).collect();
+    Solution { mode: "full", k1k2: [0.0; 2], poses, intr: Intr { f: 200.0, cx: 80.0, cy: 60.0, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }, points, point_track: (0..8).collect(), rms: 0.1,
+        frame_rms: vec![0.1, 0.2, f64::NAN, 0.1, 0.1], registered: 4, notes: vec![] }
+}
+fn tiny_session(sol: Solution) -> (Session, String, String) {
+    let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 160, "height": 120, "fps": 10})); let t = call(&mut ss, "add_track", json!({}))["track_id"].clone();
+    let clip = call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "solid", "color": [0.2, 0.2, 0.2], "start": 1, "duration": 0.5}))["clip_id"].as_str().unwrap().to_string();
+    let id = camera_solve::store_solution(&clip, 0, 10.0, 1.0, 160, 120, sol, 8, false); (ss, id, clip)
+}
+fn cam_keys(ss: &Session, p: &str) -> Vec<(f64, f64)> { ss.project.camera.get(p).map(|pr| pr.keys.iter().map(|k| (k.t, k.v)).collect()).unwrap_or_default() }
+
+#[test] fn tiny_solve_summary_info_apply_and_export() {
+    let (mut ss, id, clip) = tiny_session(tiny_solution()); assert_eq!(id, "solve1");
+    let l = call(&mut ss, "list_camera_solves", json!({})); let s0 = &l["solves"][0];
+    assert_eq!(s0["registered"], 4); assert_eq!(s0["unregistered_frames"], json!([2])); assert_eq!(s0["points"], 8); assert_eq!(s0["quality"], "usable"); assert_eq!(s0["worst_frame"], json!({"frame": 1, "rms_px": 0.2}));
+    assert!((s0["fov_deg"].as_f64().unwrap() - 2.0 * (60.0f64 / 200.0).atan().to_degrees()).abs() < 1e-12); assert!((s0["mean_frame_rms_px"].as_f64().unwrap() - 0.125).abs() < 1e-12); assert_eq!(s0["clip_id"], clip);
+    let i = call(&mut ss, "camera_solve_info", json!({"scale_px": 100})); let fd = i["frames_data"].as_array().unwrap(); assert_eq!(fd.len(), 5); assert!(fd[2].is_null());
+    assert!((fd[3]["cam_x"].as_f64().unwrap() - 60.0).abs() < 1e-9 && fd[3]["cam_pan"].as_f64().unwrap().abs() < 1e-9);
+    assert_eq!(call(&mut ss, "camera_solve_info", json!({"every": 2}))["frames_data"].as_array().unwrap().len(), 3); assert_eq!(call(&mut ss, "camera_solve_info", json!({"frames": [4, 9]}))["frames_data"].as_array().unwrap().len(), 1);
+    let a = call(&mut ss, "apply_camera_solve", json!({"scale_px": 100})); assert_eq!(a["keys"], 4); assert_eq!(a["span"], json!([1.0, 1.4]));
+    let kx = cam_keys(&ss, "cam_x"); assert_eq!(kx.len(), 4); assert!((kx[2].0 - 1.3).abs() < 1e-12 && (kx[2].1 - 60.0).abs() < 1e-9); assert_eq!(cam_keys(&ss, "cam_fov").len(), 4);
+    // a second apply without fov replaces the keys in the span and leaves cam_fov alone
+    call(&mut ss, "apply_camera_solve", json!({"scale_px": 50, "fov": false})); let kx = cam_keys(&ss, "cam_x"); assert_eq!(kx.len(), 4); assert!((kx[2].1 - 30.0).abs() < 1e-9);
+    let path = std::env::temp_dir().join(format!("kimo-tiny-solve-{}.json", std::process::id())); let e = call(&mut ss, "export_camera_solve", json!({"path": path.to_str().unwrap(), "scale_px": 100}));
+    assert_eq!(e["frames"], 5); assert_eq!(e["points"], 8); let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap(); std::fs::remove_file(&path).unwrap();
+    assert_eq!(doc["points_kimo"][0], json!([-100.0, 200.0, 300.0])); assert!(doc["poses"][2].is_null()); assert_eq!(doc["intrinsics"]["width"], 160);
+}
+#[test] fn tiny_ground_plane_and_placed_layers() {
+    let (mut ss, id, _) = tiny_session(tiny_solution()); call(&mut ss, "apply_camera_solve", json!({"scale_px": 100}));
+    let pl = call(&mut ss, "place_at_track", json!({"track_id": 4, "kind": "solid", "size": 20})); let cid = pl["clip_id"].as_str().unwrap().to_string();
+    assert_eq!(pl["position"], json!([0.0, 200.0, 400.0])); assert!((pl["layer_scale"].as_f64().unwrap() - 6.0 * 100.0 / 200.0).abs() < 1e-12, "depth 6 x 100 px / f 200"); assert!(pl.get("note").is_none());
+    let tx = call(&mut ss, "place_at_track", json!({"track_id": 6, "kind": "text", "text": "A", "layer_track": pl["layer_track"]})); assert_eq!(tx["layer_track"], pl["layer_track"]);
+    let nu = call(&mut ss, "place_at_track", json!({"track_id": 0, "scale_px": 10})); assert_eq!(nu["kind"], "null"); assert!(nu.get("layer_scale").is_none()); assert_eq!(nu["position"], json!([-10.0, 20.0, -150.0]));
+    // ground plane through the four corner points, origin at point 0, two units between points 0 and 1 scaled to 4
+    let g = call(&mut ss, "set_ground_plane", json!({"track_ids": [0, 1, 2, 3], "scale_tracks": [0, 1], "scale_distance": 4}));
+    assert_eq!(g["solve_id"], id); assert!((g["scale"].as_f64().unwrap() - 2.0).abs() < 1e-12 && g["residual_rms"].as_f64().unwrap() < 1e-12); assert_eq!(g["reapplied"], true); assert_eq!(g["keys"], 4);
+    assert!((g["camera_height"].as_f64().unwrap() - 4.0).abs() < 1e-9, "cameras 2 units above the ground, scaled by 2: {g}"); assert!((g["normal_before"][1].as_f64().unwrap() + 1.0).abs() < 1e-12);
+    let sol = camera_solve::solution(&id).unwrap(); for (k, p) in sol.points.iter().take(4).enumerate() { assert!(p[1].abs() < 1e-9, "ground point {k} on y = 0"); } for a in 0..3 { assert!(sol.points[0][a].abs() < 1e-9); }
+    let moved = g["moved_layers"].as_array().unwrap(); assert_eq!(moved.len(), 3); assert!(moved.contains(&json!(cid)));
+    let c = ss.project.find_clip(&cid).unwrap(); let want = [sol.points[4][0] * 100.0, sol.points[4][1] * 100.0, sol.points[4][2] * 100.0 - 200.0]; for (k, p) in ["x", "y", "pos_z"].iter().enumerate() { assert!((c.props[*p].base - want[k]).abs() < 1e-6, "{p}: {} vs {}", c.props[*p].base, want[k]); }
+    // not applied yet: no re-apply, a note instead
+    let (mut s2, _, _) = tiny_session(tiny_solution()); let g2 = call(&mut s2, "set_ground_plane", json!({"track_ids": [0, 1, 2], "origin_track": 4})); assert_eq!(g2["reapplied"], false); assert!(g2["note"].is_string()); assert_eq!(g2["origin_track"], 4);
+    let p2 = call(&mut s2, "place_at_track", json!({"track_id": 7})); assert!(p2["note"].is_string());
+}
+/// ffv1 plate, 10 fps: `expr` is an ffmpeg geq luma expression of X, Y and the frame number N.
+fn tiny_plate(tag: &str, size: &str, d: f64, expr: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("kimo-ct-{tag}-{}.mkv", std::process::id())); let g = format!("nullsrc=s={size}:r=10:d={d},format=rgb24,geq=r='{expr}':g='{expr}':b='{expr}'");
+    assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", &g, "-c:v", "ffv1", "-pix_fmt", "bgr0", p.to_str().unwrap()]).status().unwrap().success()); p
+}
+fn media_session(p: &std::path::Path, w: u32, h: u32, dur: f64) -> (Session, String) {
+    let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": w, "height": h, "fps": 10})); let a = call(&mut ss, "import_media", json!({"path": p}))["asset_id"].clone();
+    let t = call(&mut ss, "add_track", json!({}))["track_id"].clone(); let c = call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": dur}))["clip_id"].as_str().unwrap().to_string(); (ss, c)
+}
+#[test] fn tiny_solve_camera_on_a_panning_plate_solves_rotation_only() {
+    // a texture panning 2 px per frame: no parallax, so the solve is a pure rotation about the camera centre
+    let p = tiny_plate("pan", "128x96", 0.8, "128+45*sin(0.55*(X-2*N))*sin(0.47*Y+0.3)+30*sin(0.21*(X-2*N)+0.33*Y)+20*cos(0.13*(X-2*N)-0.29*Y+1)"); let (mut ss, c) = media_session(&p, 128, 96, 0.8);
+    let r = call(&mut ss, "solve_camera", json!({"clip_id": c, "mode": "rotation", "max_features": 150, "max_keyframes": 5, "fov_deg": 40}));
+    assert_eq!(r["mode"], "rotation_only"); assert_eq!(r["registered"], 8); assert_eq!(r["frames"], 8); assert!(r["rms_px"].as_f64().unwrap() < 1.0, "{r}"); assert!(r["tracks"].as_u64().unwrap() >= 30);
+    // the camera pans right: the solved pan grows monotonically over the frames
+    let info = call(&mut ss, "camera_solve_info", json!({"every": 7})); let fd = info["frames_data"].as_array().unwrap(); assert!(fd[1]["cam_pan"].as_f64().unwrap().abs() > 0.5, "{info}");
+    std::fs::remove_file(p).unwrap();
+}

@@ -7,3 +7,26 @@ pub fn commands()->Vec<Command>{vec![Command{name:"sample_texture_material",desc
 #[cfg(all(feature="mesh-import",feature="material-textures",feature="flat-sah"))]{let path=str_arg(a,"path")?;if !path.to_lowercase().ends_with(".png"){return Err("PNG required".into());}let out=crate::threed::textured_bvh::render(&read(a,"asset")?,&read(a,"camera")?,read(a,"width")?,read(a,"height")?,&read::<Vec<crate::threed::lighting_stage::Light>>(a,"lights")?,read(a,"ambient_irradiance")?)?;crate::render::write_image(&out.frame,path)?;Ok(json!({"path":path,"covered_pixels":out.covered,"bvh_queries":out.bvh_queries,"backend":"cpu_primary_ray_flat_sah","encoding":"clamped linear, no display transform"}))}
 #[cfg(not(all(feature="mesh-import",feature="material-textures",feature="flat-sah")))]{let _=a;Err("requires mesh-import,material-textures,flat-sah".into())}
 }}]}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ fn run(name:&str,a:Value)->Result<Value,String>{let c=commands().into_iter().find(|c|c.name==name).unwrap();(c.run)(&mut Session::new(),&a)}
+ fn surface(albedo:f64)->Value{json!({"albedo":[albedo,albedo,albedo],"metallic":0.,"roughness":0.5,"base":null,"metal_rough":null,"occlusion":null,"normal":null,"ao_strength":1.,"normal_scale":1.,"double_sided":false})}
+ fn args(s:Value,ambient:Value)->Value{json!({"surface":s,"images":[],"uv":[0.5,0.5],"normal":[0.,0.,1.],"tangent":[1.,0.,0.,1.],"point":[0.,0.,0.],"eye":[0.,0.,4.],"lights":[],"ambient_irradiance":ambient})}
+ #[test]fn untextured_surface_under_ambient_only_is_irradiance_times_albedo_over_pi(){
+  let pi=std::f64::consts::PI;
+  let r=run("sample_texture_material",args(surface(0.5),json!([pi,2.*pi,0.]))).unwrap();
+  for(j,w)in[0.5,1.,0.].iter().enumerate(){assert!((r["linear_radiance"][j].as_f64().unwrap()-w).abs()<1e-12,"{r}");}
+  assert_eq!(run("sample_texture_material",args(surface(0.5),json!([-1.,0.,0.]))).unwrap_err(),"bounded ambient irradiance required");
+  let mut missing=surface(0.5);missing["base"]=json!({"image":0,"wrap_s":"repeat","wrap_t":"repeat","linear":false});
+  assert!(run("sample_texture_material",args(missing,json!([0.,0.,0.]))).is_err(),"slot without an image");
+  let mut a=args(surface(0.5),json!([0.,0.,0.]));a.as_object_mut().unwrap().remove("uv");
+  assert_eq!(run("sample_texture_material",a).unwrap_err(),"uv required");
+  assert_eq!(run("sample_texture_material",json!({"surface":surface(0.5)})).unwrap_err(),"images required");
+ }
+ #[cfg(not(all(feature="mesh-import",feature="material-textures")))]
+ #[test]fn gltf_surface_import_reports_missing_features(){assert_eq!(run("import_gltf_surface",json!({})).unwrap_err(),"requires mesh-import,material-textures");}
+ #[cfg(not(all(feature="mesh-import",feature="material-textures",feature="flat-sah")))]
+ #[test]fn textured_bvh_render_reports_missing_features(){assert_eq!(run("render_textured_bvh",json!({})).unwrap_err(),"requires mesh-import,material-textures,flat-sah");}
+}

@@ -84,3 +84,36 @@ fn isolated(scene_desc:&Scene,w:usize,h:usize)->Vec<lit_raster::Output>{
  assert_eq!(o.covered,0);assert!(o.frame.d.iter().all(|v|*v==0.));
  println!("SCENE-CPU empty: empty is a result, no error");
 }
+
+// ---- the scene descriptor tools (ext/scene_compose.rs) over the same executor, on a 32x18 target ----
+fn tool(n:&str,a:serde_json::Value)->Result<serde_json::Value,String>{let mut s=kimo_core::commands::Session::new();kimo_core::commands::dispatch(&mut s,n,&a)}
+fn small_scene()->Scene{Scene{sources:vec![Source::Primitive{primitive:Primitive::Sphere{radius:0.9,longitude_slices:12,latitude_slices:6}},Source::Stream{stream:sphere(0.5)}],
+ nodes:vec![Node{source:0,world:t(0.,0.,3.),material:0},Node{source:1,world:t(0.6,0.,2.5),material:1}],materials:vec![surf([0.9,0.1,0.1]),surf([0.1,0.9,0.1])],lights:lights(),camera:cam()}}
+fn tmp(name:&str)->std::path::PathBuf{std::env::temp_dir().join(format!("kimo-scenetool-{}-{name}",std::process::id()))}
+fn is_png(p:&std::path::Path)->bool{std::fs::read(p).map(|b|b.starts_with(b"\x89PNG")).unwrap_or(false)}
+
+#[test]fn scene_tools_compile_render_and_report_the_executor_stats(){
+ let sc=serde_json::to_value(small_scene()).unwrap();
+ let c=tool("compile_scene3d_descriptor",serde_json::json!({"scene":sc})).unwrap();assert_eq!((c["stats"]["draws"].as_u64(),c["stats"]["sources_resolved"].as_u64()),(Some(2),Some(2)));
+ let lib=scene::render_cpu(&scene::compile(&small_scene(),&mut Cache::new()).unwrap(),32,18).unwrap();
+ let path=tmp("plain.png");let r=tool("render_scene3d_cpu",serde_json::json!({"scene":sc,"width":32,"height":18,"path":path})).unwrap();
+ assert_eq!(r["covered_pixels"].as_u64(),Some(lib.covered as u64),"the tool renders exactly the library executor");assert!(lib.covered>0&&is_png(&path));assert!(r.get("cpu_lighting").is_none());
+ // cpu_lighting is taken out of the scene object before parsing: IBL on a uniform environment
+ let mut lit=sc.clone();lit["cpu_lighting"]=serde_json::json!({"ibl":{"environment":{"kind":"uniform","radiance":[1,1,1]},"samples":16}});
+ let r=tool("render_scene3d_cpu",serde_json::json!({"scene":lit,"width":32,"height":18,"path":path})).unwrap();assert_eq!(r["cpu_lighting"]["ibl"],true);assert_eq!(r["covered_pixels"].as_u64(),Some(lib.covered as u64));
+ std::fs::remove_file(&path).unwrap();
+}
+
+#[test]fn scene_tools_sample_animation_and_render_sequences(){
+ let sc=serde_json::to_value(small_scene()).unwrap();
+ let anim=serde_json::json!({"nodes":[{"node":0,"translation":{"times":[0.0,2.0],"values":[[-1.2,0.0,3.0],[1.2,0.0,3.0]]}}],"lights":[]});
+ let r=tool("sample_scene3d_animation",serde_json::json!({"scene":sc,"animation":anim,"time":1.5})).unwrap();
+ assert_eq!((r["nodes_animated"].as_u64(),r["lights_animated"].as_u64(),r["camera_animated"].as_bool()),(Some(1),Some(0),Some(false)));
+ assert!((r["scene"]["nodes"][0]["world"][0][3].as_f64().unwrap()-0.6).abs()<1e-12,"linear translation key at 1.5 of 0..2");
+ let dir=tmp("seq");let r=tool("render_scene3d_sequence",serde_json::json!({"scene":sc,"animation":anim,"times":[0.0,2.0],"dir":dir,"width":32,"height":18})).unwrap();
+ assert_eq!(r["count"],2);for k in 0..2{let p=std::path::PathBuf::from(r["frames"][k]["path"].as_str().unwrap());assert!(is_png(&p),"{p:?}");assert!(r["frames"][k]["render"]["covered_pixels"].as_u64().unwrap()>0);}
+ assert_eq!(r["frames"][1]["time"],2.0);
+ let mut lit=sc.clone();lit["cpu_lighting"]=serde_json::json!({"ibl":{"environment":{"kind":"uniform","radiance":[0.5,0.5,0.5]},"samples":16}});
+ let r=tool("render_scene3d_sequence",serde_json::json!({"scene":lit,"animation":anim,"times":[1.0],"dir":dir,"width":32,"height":18})).unwrap();assert_eq!(r["frames"][0]["render"]["cpu_lighting"]["ibl"],true);
+ std::fs::remove_dir_all(&dir).unwrap();
+}

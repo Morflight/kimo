@@ -136,3 +136,24 @@ fn proof_frames_walking_figure() {
     let mut full = Session::new(); c(&mut full, "project_set", json!({"width": w, "height": h, "fps": 10})); let a = c(&mut full, "import_media", json!({"path": path.to_str().unwrap()}))["asset_id"].clone(); let t = c(&mut full, "add_track", json!({}))["track_id"].clone();
     c(&mut full, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": 4.0})); for (k, tt) in [0.3, 1.1, 1.9, 2.7, 3.5].iter().enumerate() { save(&format!("pf_source_{k}"), &frame(&full, *tt)); }
 }
+
+// ---------- fast tiny checks: a 24x48 portrait plate in a 32x16 landscape canvas (vertical axis) and a still image ----------
+fn tiny_portrait(tag: &str, still: bool) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("kimo-reframe-tiny-{tag}-{}.{}", std::process::id(), if still { "png" } else { "mkv" }));
+    let d = "lt(hypot(X-12,Y-38),6)"; let g = format!("nullsrc=s=24x48:r=10:d=1,format=rgb24,geq=r='if({d},232,52)':g='if({d},122,60)':b='if({d},40,74)'");
+    let mut a: Vec<String> = ["-v", "error", "-y", "-f", "lavfi", "-i", &g].iter().map(|s| s.to_string()).collect(); if still { a.extend(["-frames:v".into(), "1".into()]); } else { a.extend(["-c:v".into(), "ffv1".into()]); } a.push(p.to_str().unwrap().into());
+    assert!(std::process::Command::new("ffmpeg").args(&a).status().unwrap().success()); p
+}
+fn tiny_scene(path: &std::path::Path, w: u32, h: u32) -> (Session, String) {
+    let mut s = Session::new(); c(&mut s, "project_set", json!({"width": w, "height": h, "fps": 10}));
+    let a = c(&mut s, "import_media", json!({"path": path.to_str().unwrap()}))["asset_id"].clone(); let t = c(&mut s, "add_track", json!({}))["track_id"].clone();
+    let id = c(&mut s, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": 1.0}))["clip_id"].as_str().unwrap().to_string(); (s, id)
+}
+#[test] fn tiny_reframe_follows_the_vertical_axis_and_holds_a_still_image() {
+    let p = tiny_portrait("v", false); let (s, id) = tiny_scene(&p, 32, 16);
+    for m in ["default", "slow", "fast", "static"] { let plan = kimo_core::reframe::analyze(&s.project, &id, m).unwrap(); assert!(!plan.axis_x); assert_eq!(plan.report["axis"], "y");
+        let v = plan.keys[0].1; assert!(v > 0.7 && v <= 1.0, "{m}: the disc sits low in the frame: {}", plan.report); if m == "static" { assert_eq!(plan.keys.len(), 1); } assert_eq!(plan.report["window_px"], json!([24.0, 12.0])); }
+    let pi = tiny_portrait("still", true); let (s4, id4) = tiny_scene(&pi, 32, 16); let pl = kimo_core::reframe::analyze(&s4.project, &id4, "default").unwrap();
+    assert_eq!(pl.keys.len(), 1); assert_eq!(pl.report["analysed_frames"], 1); assert!(pl.keys[0].1 > 0.7);
+    for f in [p, pi] { std::fs::remove_file(f).unwrap(); }
+}

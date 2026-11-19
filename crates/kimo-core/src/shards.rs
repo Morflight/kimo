@@ -162,7 +162,7 @@ pub fn render_ctx(ctx: &RenderCtx, e: &ShardBurst, f: &mut Frame, t: f64, cam: &
             for y in ya..=yb { for x in xa..=xb { let (px, py) = (x as f64 + 0.5, y as f64 + 0.5); let mut d = f64::MAX; for v in 0..n { let (a, b) = (poly[v], poly[(v + 1) % n]); let (ex, ey) = (b.0 - a.0, b.1 - a.1); let l = (ex * ex + ey * ey).sqrt().max(1e-9); d = d.min(-sg * ((px - a.0) * ey - (py - a.1) * ex) / l); }
                 let cov = sstep((d + sb) / (2.0 * sb)); if cov <= 0.002 { continue; } let o = y * w + x; let v = (cov * sa * occ.as_ref().map(|m| 1.0 - m[o] as f64).unwrap_or(1.0)) as f32 / nsub as f32; shadow[o] = shadow[o] + v - shadow[o] * v * nsub as f32 / 1.0 * 0.0; } } }
         prims.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap());
-        PROBE.with(|pr| { let mut v = pr.borrow_mut(); v.clear(); for q in prims.iter().filter(|q| q.face == 0) { let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN); let mut c = (0.0, 0.0); for j in 0..q.n { x0 = x0.min(q.pts[j].0); x1 = x1.max(q.pts[j].0); y0 = y0.min(q.pts[j].1); y1 = y1.max(q.pts[j].1); c.0 += q.pts[j].0 / q.n as f64; c.1 += q.pts[j].1 / q.n as f64; } v.push(ProbeShard { id: q.id, cx: c.0, cy: c.1, bbox: [x0, y0, x1, y1], depth: q.depth, alpha: q.alpha }); } });
+        { let mut v = PROBE.lock().unwrap_or_else(|e| e.into_inner()); v.clear(); for q in prims.iter().filter(|q| q.face == 0) { let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN); let mut c = (0.0, 0.0); for j in 0..q.n { x0 = x0.min(q.pts[j].0); x1 = x1.max(q.pts[j].0); y0 = y0.min(q.pts[j].1); y1 = y1.max(q.pts[j].1); c.0 += q.pts[j].0 / q.n as f64; c.1 += q.pts[j].1 / q.n as f64; } v.push(ProbeShard { id: q.id, cx: c.0, cy: c.1, bbox: [x0, y0, x1, y1], depth: q.depth, alpha: q.alpha }); } }
         for pr in &prims {
             let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN); for v in 0..pr.n { x0 = x0.min(pr.pts[v].0); x1 = x1.max(pr.pts[v].0); y0 = y0.min(pr.pts[v].1); y1 = y1.max(pr.pts[v].1); }
             let pad = pr.blur * 1.2 + 2.0; let (xa, xb, ya, yb) = (((x0 - pad).floor().max(0.0)) as usize, ((x1 + pad).ceil().min(w as f64 - 1.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize, ((y1 + pad).ceil().min(hh as f64 - 1.0)) as usize); if x0 > x1 || xa > xb || ya > yb || (x1 - x0) > w as f64 * 3.0 { continue; }
@@ -278,10 +278,25 @@ fn load_occ(pat: &str, frame: i64, w: usize, hh: usize) -> Option<std::sync::Arc
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ProbeShard { pub id: u64, pub cx: f64, pub cy: f64, pub bbox: [f64; 4], pub depth: f64, pub alpha: f64 }
-thread_local! { static PROBE: std::cell::RefCell<Vec<ProbeShard>> = std::cell::RefCell::new(Vec::new()); }
+/// Process-wide, not thread-local: the render writes it on a worker thread and shards_project reads it on the caller's thread.
+static PROBE: std::sync::Mutex<Vec<ProbeShard>> = std::sync::Mutex::new(Vec::new());
 /// Per-shard screen-space centre, bounding box, depth and alpha of the last shard render (front face, last motion sub-sample). Pixels, canvas space.
-pub fn take_probe() -> Vec<ProbeShard> { PROBE.with(|p| std::mem::take(&mut *p.borrow_mut())) }
+pub fn take_probe() -> Vec<ProbeShard> { std::mem::take(&mut *PROBE.lock().unwrap_or_else(|e| e.into_inner())) }
 
 /// Depth sink of a not-yet-released cell: ramps over `preload_time`, strongest at the impact, held until the cell's birth.
 fn pre_dep(p: &Plane, d: f64, k: f64, ts: f64, birth: f64) -> f64 { if p.preload_depth <= 0.0 || ts >= birth { return 0.0; } let r = sstep(ts / p.preload_time.max(1e-3)); p.preload_depth * k * r * (-(d / (p.radius * k * 5.0)).powi(2)).exp() }
 fn refd_zero(v: &f64) -> bool { *v == 0.0 }
+
+#[cfg(test)] mod tests {
+    use super::*;
+    fn burst() -> ShardBurst { serde_json::from_value(serde_json::json!({"count": 20})).unwrap() }
+    #[test] fn probe_written_on_a_render_thread_is_read_on_the_caller_thread() {
+        // same-thread reference count
+        let mut f = Frame::new(64, 36); render(&burst(), &mut f, 0.1, &Camera::default(), 25.0, 2.0); let same = take_probe();
+        assert!(!same.is_empty()); assert!(take_probe().is_empty(), "take_probe empties the probe");
+        // render on a worker thread (as the renderer does), read here: was always empty with a thread_local probe
+        std::thread::spawn(|| { let mut f = Frame::new(64, 36); render(&burst(), &mut f, 0.1, &Camera::default(), 25.0, 2.0); }).join().unwrap();
+        let other = take_probe(); assert_eq!(other.len(), same.len());
+        for (a, b) in same.iter().zip(&other) { assert_eq!(a.id, b.id); assert_eq!(a.bbox, b.bbox); }
+    }
+}

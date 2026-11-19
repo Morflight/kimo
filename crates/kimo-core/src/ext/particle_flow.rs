@@ -23,3 +23,38 @@ pub fn commands() -> Vec<Command> {
         Ok(json!({"path":path,"active":out.active,"drawn":out.drawn,"occluded_by_mesh":out.occluded_by_mesh,"behind_camera":out.behind_camera,"sim_time":sim.time(),"backend":"cpu_camera_v2_depth_splat"}))
     } }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn args() -> Value {
+        json!({"flow": {"emitter": {"seed": 1, "count": 4, "origin": [0, 0, 0], "spread": [0.1, 0.1, 0.1], "base_velocity": [0, 0, 0], "velocity_jitter": 0, "birth_rate": 40, "lifetime": [1, 2],
+                "color_stops": [{"offset": 0, "rgb": [1, 1, 1]}, {"offset": 1, "rgb": [1, 1, 1]}], "alpha_start": 1, "alpha_end": 1, "fade_in": 0.1, "fade_out": 0.1, "size_start": 0.05, "size_end": 0.05, "blend": "additive", "hardness": 4},
+                "field": {"kind": "curl3", "noise": "perlin", "seed": 1, "frequency": 1, "amplitude": 0, "octaves": 1}, "gravity": [0, 0, 0], "drag": 0, "coupling": 0, "field_accel": 0, "dt": 0.01},
+            "camera": {"eye": [0, 0, -4], "pan": 0, "tilt": 0, "roll": 0, "sensor_height": 24, "focal_length": 35, "near": 0.1}, "time": 0.2, "width": 16, "height": 12, "path": "/nonexistent-kimo-dir/flow.png"})
+    }
+    fn run(a: Value) -> Result<Value, String> { (commands()[0].run)(&mut crate::commands::Session::new(), &a) }
+    fn without(k: &str) -> Value { let mut a = args(); a.as_object_mut().unwrap().remove(k); a }
+    fn with(k: &str, v: Value) -> Value { let mut a = args(); a[k] = v; a }
+    #[test]
+    fn render_particle_flow_refuses_missing_and_malformed_inputs() {
+        assert_eq!(run(without("flow")).unwrap_err(), "flow required");
+        assert_eq!(run(without("camera")).unwrap_err(), "camera required");
+        for k in ["time", "width", "height", "path"] { let e = run(without(k)).unwrap_err(); assert!(e.contains(k), "{e}"); }
+        assert!(run(with("camera", json!(3))).unwrap_err().contains("invalid type"));
+        assert_eq!(run(with("path", json!("x.jpg"))).unwrap_err(), "PNG path required");
+        assert!(run(with("mesh", json!(5))).unwrap_err().contains("invalid type"));
+        assert!(run(with("depth_range", json!("near"))).unwrap_err().contains("invalid type"));
+        assert_eq!(run(with("depth_range", json!([1]))).unwrap_err(), "depth_range [near,far]");
+        let mut a = args(); a["flow"]["dt"] = json!(0); assert_eq!(run(a).unwrap_err(), "dt (0, 1]");
+        assert_eq!(run(with("time", json!(-1))).unwrap_err(), "advance requires current<=to_time<=1e4");
+        assert_eq!(run(with("width", json!(4000))).unwrap_err(), "target 1..1920x1080");
+    }
+    #[test]
+    fn render_particle_flow_reports_an_unwritable_path_and_writes_a_png() {
+        assert!(run(args()).is_err(), "directory does not exist");
+        let d = std::env::temp_dir().join(format!("kimo-pflow-{}", std::process::id())); std::fs::create_dir_all(&d).unwrap(); let p = d.join("flow.png");
+        let r = run(with("path", json!(p.to_str().unwrap()))).unwrap(); assert_eq!(r["active"], 4); assert_eq!(r["behind_camera"], 0); assert_eq!(r["sim_time"], 0.2); assert!(p.exists());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+}

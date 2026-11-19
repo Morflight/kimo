@@ -85,3 +85,42 @@ fn chunk(d: &std::path::Path, i: u64) -> std::path::PathBuf { d.join("out.mp4.ch
     }
     panic!("the cancel never landed mid-chunk in 4 attempts");
 }
+
+// ---- stream-copy fast path (export_fast), on 32x24 10 fps media ----
+fn ff(args: &[&str]) { assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y"]).args(args).status().unwrap().success(), "{args:?}"); }
+/// 1 s of h264 (32x24, 10 fps, solid colour) with an aac tone, and a 1 s wav tone.
+fn fast_media(d: &std::path::Path) -> (String, String) {
+    let v = d.join("v.mp4"); let w = d.join("a.wav");
+    ff(&["-f", "lavfi", "-i", "color=c=0x336699:s=32x24:r=10:d=1", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", v.to_str().unwrap()]);
+    ff(&["-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1", w.to_str().unwrap()]);
+    (v.to_string_lossy().into_owned(), w.to_string_lossy().into_owned())
+}
+fn media_proj(w: u32, h: u32, fps: f64) -> Session { let mut ss = Session::new(); c(&mut ss, "project_set", json!({"width": w, "height": h, "fps": fps})); ss }
+fn put(ss: &mut Session, path: &str, start: f64, dur: f64) -> (String, String) {
+    let a = c(ss, "import_media", json!({"path": path}))["asset_id"].as_str().unwrap().to_string();
+    let t = c(ss, "add_track", json!({}))["track_id"].as_str().unwrap().to_string();
+    let id = c(ss, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": start, "duration": dur}))["clip_id"].as_str().unwrap().to_string();
+    (t, id)
+}
+
+#[test] fn one_untouched_video_plus_audio_is_stream_copied_and_verified() {
+    let d = tmp("fastpath"); let (v, w) = fast_media(&d);
+    let mut ss = media_proj(32, 24, 10.0);
+    put(&mut ss, &v, 0.0, 1.0);
+    let (_, wid) = put(&mut ss, &w, 0.5, 0.5);
+    c(&mut ss, "set_audio", json!({"clip_id": wid, "fade_in": 0.1, "fade_out": 0.1}));
+    let out = d.join("fast.mp4");
+    let r = c(&mut ss, "export_job_start", json!({"path": out.to_str().unwrap(), "wait": true}));
+    assert_eq!(r["path_used"]["mode"], "stream_copy", "{r}");
+    assert_eq!(r["path_used"]["audio_clips"], 2, "the video's own audio plus the wav: {r}");
+    let s = &r["status"];
+    assert_eq!(s["state"], "done", "{s}");
+    assert_eq!((s["frames_done"].clone(), s["frames_total"].clone(), s["chunks"]["done"].clone()), (json!(10), json!(10), json!(1)), "{s}");
+    assert_eq!(s["result"]["duration"], 1.0);
+    assert_eq!(frames(&out), 10, "every source frame copied");
+    assert!(!d.join("fast.mp4.partial.mp4").exists());
+    // fast:false forces the chunked render of the same project
+    let r2 = c(&mut ss, "export_job_start", json!({"path": d.join("slow.mp4").to_str().unwrap(), "wait": true, "fast": false}));
+    assert_eq!((r2["path_used"]["mode"].clone(), r2["path_used"]["why_not_stream_copy"].clone(), r2["status"]["state"].clone()), (json!("render"), json!("off"), json!("done")), "{r2}");
+    std::fs::remove_dir_all(&d).ok();
+}

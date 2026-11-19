@@ -77,3 +77,54 @@ impl Stack<'_> {
         [c1[0] + (c2[0] - c1[0]) * k, c1[1] + (c2[1] - c1[1]) * k, c1[2] + (c2[2] - c1[2]) * k]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keyframe::Prop;
+    fn fx(kind: &str, p: &[(&str, f64)], s: &[(&str, &str)]) -> Effect {
+        Effect { id: "fx".into(), kind: kind.into(), params: p.iter().map(|(k, v)| (k.to_string(), Prop::new(*v))).collect(), strings: s.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+    }
+    /// disk of radius 10 centred on (50, 50)
+    fn disk(x: f64, y: f64) -> f64 { (x - 50.0).hypot(y - 50.0) - 10.0 }
+    fn dist(e: &[Effect], x: f64, y: f64) -> f64 { (build(e, disk, 50.0, 50.0, 0.0).dist)(x, y) }
+    #[test] fn primitive_signed_distances() {
+        assert_eq!(sd("ellipse", 0, 10.0, 5.0, 0.0, 0.0, 0.0), -5.0); assert_eq!(sd("ellipse", 0, 10.0, 5.0, 0.0, 10.0, 0.0), 0.0);
+        assert!((sd("polygon", 4, 10.0, 10.0, 0.0, 0.0, 0.0) + 10.0 * (PI / 4.0).cos()).abs() < 1e-12);
+        assert_eq!(sd("line", 0, 10.0, 0.5, 0.0, 0.0, 0.0), -1.0, "line half-thickness is at least 1 px");
+        assert!((sd("rect", 0, 10.0, 10.0, 2.0, 10.0, 10.0) - (8f64.sqrt() - 2.0)).abs() < 1e-12); assert_eq!(sd("rect", 0, 10.0, 10.0, 0.0, 0.0, 0.0), -10.0);
+    }
+    #[test] fn offset_and_repeater_modify_the_distance() {
+        assert_eq!(dist(&[fx("shape_offset", &[("amount", 2.0)], &[])], 50.0, 50.0), -12.0);
+        assert_eq!(dist(&[fx("shape_repeater", &[("copies", 2.0), ("dx", 30.0)], &[])], 80.0, 50.0), -10.0, "second copy 30 px right");
+        assert!((dist(&[fx("shape_repeater", &[("copies", 2.0), ("dx", 0.0), ("scale", 2.0), ("rotation", 90.0)], &[])], 50.0, 65.0) + 5.0).abs() < 1e-9, "scaled, rotated copy reaches (50,65)");
+    }
+    #[test] fn merge_modes_combine_with_a_second_shape() {
+        let m = |mode: &str| vec![fx("shape_merge", &[("w", 10.0), ("h", 10.0), ("dx", 8.0)], &[("shape", "rect"), ("mode", mode)])];
+        for (mode, want) in [("union", [-1.0, -4.0, -5.0]), ("subtract", [2.0, 3.0, -5.0]), ("intersect", [2.0, -3.0, 8.0]), ("exclude", [-1.0, 3.0, -5.0])] {
+            let e = m(mode); for (i, x) in [62.0, 56.0, 45.0].iter().enumerate() { assert_eq!(dist(&e, *x, 50.0), want[i], "{mode} at x {x}"); }
+        }
+        let p = [fx("shape_merge", &[], &[("shape", "path"), ("mode", "intersect"), ("d", "M -5 -5 L 5 -5 L 5 5 L -5 5 Z")])];
+        assert!((dist(&p, 50.0, 50.0) + 5.0).abs() < 1e-6, "intersection with the 10 px path square");
+        assert!((dist(&[fx("shape_merge", &[], &[])], 95.0, 50.0) + 5.0).abs() < 1e-9, "default: union with a 100 px ellipse");
+        assert_eq!(dist(&[fx("shape_unknown", &[("amount", 9.0)], &[]), fx("blur", &[], &[])], 50.0, 50.0), -10.0, "unknown modifiers are ignored");
+    }
+    #[test] fn trim_gate_follows_the_outline_parameter() {
+        assert_eq!(build(&[], disk, 50.0, 50.0, 0.0).trim_gate(1.0, 0.01), 1.0);
+        let half = [fx("shape_trim", &[("start", 0.0), ("end", 0.5)], &[])]; let s = build(&half, disk, 50.0, 50.0, 0.0);
+        assert_eq!(s.trim_gate(-1.0, -0.01), 1.0); assert_eq!(s.trim_gate(1.0, 0.01), 0.0);
+        let full = [fx("shape_trim", &[("offset", 0.25)], &[])]; let s = build(&full, disk, 50.0, 50.0, 0.0); assert_eq!(s.trim_gate(1.0, 0.01), 1.0); assert_eq!(s.trim_gate(-1.0, -0.01), 1.0);
+        let path = [fx("shape_path", &[], &[("d", "M 0 0 L 100 0")]), fx("shape_trim", &[("end", 0.5)], &[])]; let s = build(&path, disk, 50.0, 50.0, 0.0);
+        assert_eq!(s.trim_gate(10.0, 0.0), 1.0); assert_eq!(s.trim_gate(90.0, 0.0), 0.0);
+    }
+    #[test] fn gradients_blend_along_the_angle() {
+        let plain = build(&[], disk, 50.0, 50.0, 0.0); assert_eq!(plain.stroke_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.1; 3]); assert_eq!(plain.fill_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.1; 3]);
+        let bw = [("r1", 0.0), ("g1", 0.0), ("b1", 0.0), ("r2", 1.0), ("g2", 1.0), ("b2", 1.0)]; let wb = [("r1", 1.0), ("g1", 1.0), ("b1", 1.0), ("r2", 0.0), ("g2", 0.0), ("b2", 0.0)];
+        let s = build(&[fx("shape_gradient_stroke", &bw, &[])], disk, 50.0, 50.0, 0.0); assert_eq!(s.stroke_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.75; 3]);
+        let s = build(&[fx("shape_gradient_fill", &wb, &[])], disk, 50.0, 50.0, 0.0); assert_eq!(s.fill_color(5.0, 0.0, 20.0, 20.0, [0.1; 3]), [0.25; 3]);
+    }
+    #[test] fn path_of_reads_the_shape_path_effect() {
+        assert!(path_of(&[fx("shape_path", &[], &[("d", "M 0 0 L 10 0"), ("keys", "not json")])], 0.0).is_some());
+        assert!(path_of(&[fx("shape_path", &[], &[])], 0.0).is_none()); assert!(path_of(&[], 0.0).is_none());
+    }
+}

@@ -153,3 +153,24 @@ fn moov_before_mdat(path: &str) -> bool {
         assert!(names.contains(&n), "missing preset in inspect_export_preset list: {n}");
     }
 }
+
+#[test] fn web_master_and_alpha_presets_encode_tiny_projects() {
+    // web-1080 never upscales: a 32x18 project stays 32x18, H.264 yuv420p, moov first
+    let s = project(32, 18); let path = tmp("mp4");
+    let mut s = s; let r = c(&mut s, "export_preset", json!({"path": path, "preset": "web-1080"})); assert_eq!(r["output_size"], json!([32, 18]));
+    let v = probe(&path); let vs = video_stream(&v); assert_eq!((vs["codec_name"].as_str(), vs["pix_fmt"].as_str(), vs["width"].as_u64()), (Some("h264"), Some("yuv420p"), Some(32))); assert!(moov_before_mdat(&path));
+    std::fs::remove_file(&path).unwrap();
+    // master: whole timeline only, FFV1 16-bit RGB
+    let mk = tmp("mkv"); c(&mut s, "export_preset", json!({"path": mk, "preset": "master"}));
+    let v = probe(&mk); let vs = video_stream(&v); assert_eq!((vs["codec_name"].as_str(), vs["pix_fmt"].as_str()), (Some("ffv1"), Some("gbrp16le"))); std::fs::remove_file(&mk).unwrap();
+    assert!(dispatch(&mut s, "export_preset", &json!({"path": tmp("mkv"), "preset": "master", "start": 0.0})).unwrap_err().contains("whole timeline"));
+    // alpha-prores: ProRes 4444 with alpha (ffprobe reports the 12-bit decode format)
+    let mov = tmp("mov"); c(&mut s, "export_preset", json!({"path": mov, "preset": "alpha-prores", "start": 0.0, "end": 0.1}));
+    let v = probe(&mov); let vs = video_stream(&v); assert_eq!(vs["codec_name"].as_str(), Some("prores")); assert!(vs["pix_fmt"].as_str().unwrap().starts_with("yuva444p"), "4:4:4 with alpha: {}", vs["pix_fmt"]); std::fs::remove_file(&mov).unwrap();
+    // refusals: wrong extensions, bad ranges, HDR/managed outputs
+    for (preset, ext) in [("web-1080", "mov"), ("master", "mp4"), ("alpha-prores", "mp4")] { assert!(dispatch(&mut s, "export_preset", &json!({"path": tmp(ext), "preset": preset})).unwrap_err().contains("this preset requires a"), "{preset}"); }
+    for (a, b) in [(-1.0, 0.1), (0.1, 0.1), (0.2, 0.1)] { assert!(dispatch(&mut s, "export_preset", &json!({"path": tmp("mp4"), "preset": "web-1080", "start": a, "end": b})).unwrap_err().contains("0 <= start < end"), "{a}..{b}"); }
+    assert!(dispatch(&mut s, "export_preset", &json!({"path": tmp("mp4"), "preset": "web-1080", "start": 5.0, "end": 6.0})).unwrap_err().contains("starts after the end"));
+    s.project.color_pipeline.enabled = true;
+    assert!(dispatch(&mut s, "export_preset", &json!({"path": tmp("mov"), "preset": "alpha-prores"})).unwrap_err().contains("disable the managed color pipeline"));
+}

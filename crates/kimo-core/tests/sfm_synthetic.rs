@@ -62,3 +62,47 @@ fn eval(sol: &Solution, gt: &[Pose]) -> (f64, f64) {
     for n in &sol.notes { eprintln!("  {n}"); }
     assert!(sol.registered >= 48 && sol.rms < 1.0 && worst < 0.3 && (sol.intr.f - f).abs() / f < 0.03);
 }
+
+// ---------- fast tiny-scene tests (noise-free, 320x240, 8 frames, 60 points): exact recovery up to the similarity gauge ----------
+fn tiny_scene(nf: usize, f: f64, rot_only: bool) -> (Vec<Track>, Vec<Pose>) {
+    let mut rng = Rng(1234); let (w, h) = (320.0, 240.0); let u = |r: &mut Rng| (r.next() % 100000) as f64 / 100000.0;
+    let pts: Vec<V3> = (0..70).map(|_| { let p = [(u(&mut rng) - 0.5) * 8.0, (u(&mut rng) - 0.5) * 6.0, 5.0 + u(&mut rng) * 10.0]; if rot_only { let l = norm(&p); [p[0] / l * 50.0, p[1] / l * 50.0, p[2] / l * 50.0] } else { p } }).collect();
+    let poses: Vec<Pose> = (0..nf).map(|i| { let s = i as f64 / (nf - 1) as f64; let r = exp_so3(&[0.01 * s, if rot_only { -0.2 * (s - 0.5) } else { -0.05 * (s - 0.5) }, 0.02 * s]);
+        let c = if rot_only { [0.0; 3] } else { [-2.0 + 4.0 * s, 0.3 * (3.0 * s).sin(), -0.5 * s * s] }; let v = mv(&r, &c); Pose { r, t: [-v[0], -v[1], -v[2]] } }).collect();
+    let mut tracks = vec![]; for (j, x) in pts.iter().enumerate() { let mut ob = vec![]; for (i, p) in poses.iter().enumerate() { let c = p.apply(x); if c[2] < 0.5 { continue; } let (a, b) = (f * c[0] / c[2] + w / 2.0, f * c[1] / c[2] + h / 2.0);
+        if a < 0.0 || b < 0.0 || a > w || b > h || (j * 7 + i * 3) % 11 == 0 { continue; } ob.push((i, a, b)); } if ob.len() >= 4 { tracks.push(Track { obs: ob }); } }
+    (tracks, poses)
+}
+#[test] fn tiny_scene_known_focal_is_recovered_exactly() {
+    let (tracks, gt) = tiny_scene(8, 300.0, false);
+    let sol = solve(&tracks, 8, 320.0, 240.0, &SolveOpts { focal_px: Some(300.0), refine_focal: false, max_keyframes: 4, ..Default::default() }).expect("solve");
+    let (pe, re) = eval(&sol, &gt); assert_eq!(sol.mode, "full"); assert_eq!(sol.registered, 8, "{:?}", sol.notes);
+    assert!(sol.rms < 1e-3 && pe < 1e-3 && re < 0.01, "rms {} pos {pe} rot {re}", sol.rms); assert_eq!(sol.intr.f, 300.0);
+    assert_eq!(sol.points.len(), sol.point_track.len()); assert!(sol.frame_rms.iter().all(|e| *e < 1e-3));
+    assert!(sol.notes.iter().any(|n| n.starts_with("init pair frames 0-")) && sol.notes.last().unwrap().starts_with("8/8 frames registered"));
+    // every solved point reprojects onto its observations
+    for (x, &t) in sol.points.iter().zip(&sol.point_track) { for &(f, u, v) in &tracks[t].obs { let p = project(sol.poses[f].as_ref().unwrap(), x, &sol.intr).unwrap(); assert!((p.0 - u).abs() < 1e-2 && (p.1 - v).abs() < 1e-2); } }
+}
+#[test] fn tiny_scene_unknown_focal_is_estimated() {
+    let (tracks, gt) = tiny_scene(8, 300.0, false);
+    let sol = solve(&tracks, 8, 320.0, 240.0, &SolveOpts { max_keyframes: 4, ..Default::default() }).expect("solve");
+    let (pe, re) = eval(&sol, &gt); assert!((sol.intr.f - 300.0).abs() < 1.0 && sol.rms < 0.01 && pe < 0.01 && re < 0.05, "f {} rms {} pos {pe} rot {re}", sol.intr.f, sol.rms);
+}
+#[test] fn tiny_nodal_pan_falls_back_to_rotation_only() {
+    let (tracks, gt) = tiny_scene(6, 280.0, true); let o = SolveOpts { focal_px: Some(280.0), refine_focal: false, max_keyframes: 3, ..Default::default() };
+    let e = solve(&tracks, 6, 320.0, 240.0, &o).err().unwrap(); assert!(e.contains("no usable initial pair"), "{e}");
+    let e = solve_auto(&tracks, 6, 320.0, 240.0, &o, "full").err().unwrap(); assert!(e.contains("no usable initial pair"), "{e}");
+    let sol = solve_auto(&tracks, 6, 320.0, 240.0, &o, "auto").expect("auto falls back"); assert_eq!(sol.mode, "rotation_only"); assert_eq!(sol.registered, 6);
+    assert!(sol.notes[0].contains("fell back to rotation-only")); assert!(sol.rms < 1e-3, "rms {}", sol.rms);
+    let r0 = sol.poses[0].unwrap().r; for i in 0..6 { let rs = mm(&sol.poses[i].unwrap().r, &tp(&r0)); let rg = mm(&gt[i].r, &tp(&gt[0].r)); let e = log_so3(&mm(&tp(&rg), &rs)); assert!(norm(&e).to_degrees() < 0.01, "frame {i}"); assert_eq!(sol.poses[i].unwrap().t, [0.0; 3]); }
+    for d in &sol.points { assert!((norm(d) - 1.0).abs() < 1e-9, "points are unit directions"); }
+    // the explicit rotation mode, with the focal estimated
+    let sr = solve_auto(&tracks, 6, 320.0, 240.0, &SolveOpts { max_keyframes: 3, ..Default::default() }, "rotation").unwrap(); assert!((sr.intr.f - 280.0).abs() < 2.0, "focal {}", sr.intr.f);
+}
+#[test] fn tiny_scene_distortion_and_tangential_models_stay_at_zero_on_a_pinhole() {
+    let (tracks, gt) = tiny_scene(8, 300.0, false);
+    let sol = solve(&tracks, 8, 320.0, 240.0, &SolveOpts { focal_px: Some(300.0), refine_focal: false, refine_dist: true, tangential: true, max_keyframes: 4, ..Default::default() }).expect("solve");
+    let (pe, re) = eval(&sol, &gt); assert!(sol.rms < 0.01 && pe < 0.01 && re < 0.05, "rms {} pos {pe} rot {re}", sol.rms);
+    assert!(sol.intr.k1.abs() < 2e-3 && sol.intr.k2.abs() < 2e-3 && sol.intr.p1.abs() < 1e-4 && sol.intr.p2.abs() < 1e-4, "{:?}", sol.intr);
+    assert!(sol.notes.iter().any(|n| n.starts_with("distortion multi-start picked")) && sol.notes.iter().any(|n| n.starts_with("tangential: all-frame BA")), "{:?}", sol.notes);
+}

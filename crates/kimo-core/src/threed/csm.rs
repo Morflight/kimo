@@ -21,8 +21,9 @@ pub const MAX_CASCADES:usize=8;
 /// Bound depth payload across the whole cascade set, not only each map axis.
 pub const MAX_CASCADE_DEPTH_BYTES:usize=128*1024*1024;
 fn cascade_depth_len(count:usize,map_size:usize)->Result<usize,String>{
- let len=map_size.checked_mul(map_size).ok_or("cascade depth byte count overflow")?;
- let bytes=len.checked_mul(count).and_then(|n|n.checked_mul(std::mem::size_of::<f64>())).ok_or("cascade depth byte count overflow")?;
+ // Callers bound count to 1..=8 and map_size to 1..=4096, so these products cannot overflow.
+ let len=map_size*map_size;
+ let bytes=len*count*std::mem::size_of::<f64>();
  if bytes>MAX_CASCADE_DEPTH_BYTES{return Err("cascade depth payload exceeds 128 MiB limit".into());}
  Ok(len)
 }
@@ -99,7 +100,8 @@ pub struct Cascade{
 pub fn light_frame(travel_direction:[f64;3])->Result<Matrix,String>{
  let f=unit(travel_direction)?;
  let seed=if f[1].abs()<0.99{[0.,1.,0.]}else{[1.,0.,0.]};
- let r=unit(cross(f,seed))?;let u=cross(r,f);
+ // seed is never within ~8 degrees of f, so the cross product is never zero.
+ let r=unit(cross(f,seed)).expect("seed axis is never parallel to the light direction");let u=cross(r,f);
  Ok([[r[0],r[1],r[2],0.],[u[0],u[1],u[2],0.],[f[0],f[1],f[2],0.],[0.,0.,0.,1.]])
 }
 
@@ -185,11 +187,11 @@ fn validate_fit_resolution(c:&Cascade,size:usize)->Result<(),String>{
  Ok(())
 }
 fn validate_map_payload_budget(maps:&[super::shadow::DirectionalShadowMap])->Result<(),String>{
+ // At most 8 maps (one per validated cascade) of at most 4096x4096: the sum cannot overflow.
  let mut bytes=0usize;
  for m in maps{
   if m.width==0||m.height==0||m.width>4096||m.height>4096{return Err("cascade shadow map must match its fit and dimensions".into());}
-  let n=m.width.checked_mul(m.height).and_then(|v|v.checked_mul(std::mem::size_of::<f64>())).ok_or("cascade depth byte count overflow")?;
-  bytes=bytes.checked_add(n).ok_or("cascade depth byte count overflow")?;
+  bytes+=m.width*m.height*std::mem::size_of::<f64>();
  }
  if bytes>MAX_CASCADE_DEPTH_BYTES{return Err("cascade depth payload exceeds 128 MiB limit".into());}
  Ok(())
@@ -219,7 +221,8 @@ pub fn build_cascade_maps(cascades:Vec<Cascade>,map_size:usize,blend_band:f64)->
  for c in &cascades{validate_fit_resolution(c,map_size)?;}
  let mut maps=Vec::with_capacity(cascades.len());
  for c in &cascades{
-  let mut depth=Vec::new();depth.try_reserve_exact(len).map_err(|_|"cascade depth allocation failed".to_string())?;depth.resize(len,f64::INFINITY);
+  // len is bounded by the 128 MiB budget checked above.
+  let depth=vec![f64::INFINITY;len];
   maps.push(super::shadow::DirectionalShadowMap{view:c.view,bounds:c.bounds,width:map_size,height:map_size,depth});
  }
  Ok(CascadedShadowMaps{cascades,maps,blend_band})
@@ -242,16 +245,13 @@ pub fn select_cascade(cascades:&[Cascade],blend_band:f64,d:f64)->Result<(usize,f
  if !blend_band.is_finite()||!(0.0..0.5).contains(&blend_band){return Err("blend band in [0,0.5) required".into());}
  if !d.is_finite()||d<=0.{return Err("positive finite camera depth required".into());}
  let n=cascades.len();
- for i in 0..n{
-  let c=&cascades[i];
-  if d>c.far&&i+1<n{continue;}
-  let i=i.min(n-1);let c=&cascades[i];
-  let start=c.far-blend_band*(c.far-c.near);
-  let width=c.far-start;
-  let t=if i+1<n&&width>0.{((d-start)/width).clamp(0.,1.)}else{0.};
-  return Ok((i,t));
- }
- Ok((n-1,0.))
+ // First cascade whose far reaches d; anything deeper clamps to the last one.
+ let i=cascades[..n-1].iter().position(|c|d<=c.far).unwrap_or(n-1);
+ let c=&cascades[i];
+ let start=c.far-blend_band*(c.far-c.near);
+ let width=c.far-start;
+ let t=if i+1<n&&width>0.{((d-start)/width).clamp(0.,1.)}else{0.};
+ Ok((i,t))
 }
 
 /// CSM visibility: the receiver's cascade by camera depth, disk-PCF sampled, blended
@@ -604,5 +604,93 @@ pub(super) fn csm_visibility_validated(csm:&CascadedShadowMaps,cam:&Camera,world
   assert!((set[0].near-0.1).abs()<1e-15&&(set[3].far-100.).abs()<1e-9,"endpoints");
   for w in set.windows(2){assert!((w[0].far-w[1].near).abs()<1e-15,"adjacent cascades share the split");}
   for (i,cs) in set.iter().enumerate(){assert!(cs.bounds[1][0]>cs.bounds[0][0]&&cs.bounds[1][2]>cs.bounds[0][2],"cascade {i} non-empty");}
+ }
+ fn flat_cam(sensor_height:f64,focal_length:f64)->Camera{Camera{eye:[0.;3],pan:0.,tilt:0.,roll:0.,sensor_height,focal_length,near:0.1}}
+ const BAD_CAMERA:&str="finite camera values, positive sensor_height/focal_length/near required";
+ #[test]fn slice_sphere_is_the_corner_average_and_farthest_corner(){
+  // box x in [1,3], y in [-1,1], z in [0,2]: center (2,0,1), every corner at sqrt(3)
+  let mut corners=[[0.;3];8];
+  for(k,p)in corners.iter_mut().enumerate(){*p=[if k&1==0{1.}else{3.},if k&2==0{-1.}else{1.},if k&4==0{0.}else{2.}];}
+  let(center,radius)=slice_sphere(&corners);
+  assert_eq!(center,[2.,0.,1.]);
+  assert!((radius-3f64.sqrt()).abs()<1e-15);
+  // an off-center far corner sets the radius: (5,0,1) is 3 from the new center x=2.25
+  corners[1]=[5.,-1.,0.];let(center,radius)=slice_sphere(&corners);
+  assert_eq!(center[0],2.25);
+  assert!((radius-(2.75f64*2.75+1.+1.).sqrt()).abs()<1e-15);
+ }
+ #[test]fn practical_split_reports_overflowing_log_distances(){
+  // far/near = 1e600 overflows to infinity, so the fully logarithmic middle split is infinite
+  assert_eq!(practical_split(1e-300,1e300,2,1.).unwrap_err(),"split distances overflow");
+ }
+ #[test]fn world_from_camera_refuses_bad_cameras_points_and_overflow(){
+  let mut bad=cam();bad.near=0.;
+  assert_eq!(world_from_camera(&bad,[0.,0.,1.]).unwrap_err(),BAD_CAMERA);
+  assert_eq!(world_from_camera(&cam(),[f64::NAN,0.,1.]).unwrap_err(),"finite camera-space coordinates required");
+  let mut far=flat_cam(24.,35.);far.eye=[1e308,0.,0.];
+  assert_eq!(world_from_camera(&far,[1e308,0.,1.]).unwrap_err(),"camera inverse transform overflow");
+  assert_eq!(frustum_slice_corners(&bad,1.,1.,2.).unwrap_err(),BAD_CAMERA);
+  // aspect 1e10 makes the far corners' x = 3.4e9 * 1e300 overflow in camera space
+  assert_eq!(frustum_slice_corners(&cam(),1e10,1.,1e300).unwrap_err(),"finite camera-space coordinates required");
+ }
+ #[test]fn light_frame_refuses_a_zero_direction(){
+  assert_eq!(light_frame([0.;3]).unwrap_err(),"nonzero vector required");
+  // straight down uses the x seed: r = f x x = (0,0,1), u = r x f = (1,0,0)
+  let m=light_frame([0.,-1.,0.]).unwrap();
+  assert_eq!(m[0],[0.,0.,1.,0.]);assert_eq!(m[1],[1.,0.,0.,0.]);assert_eq!(m[2],[0.,-1.,0.,0.]);
+ }
+ #[test]fn fit_cascade_refuses_bad_bounds_slices_and_overflowing_extents(){
+  let dir=[0.,-1.,0.];
+  assert_eq!(fit_cascade(dir,&cam(),1.,0.5,8.,[[f64::NAN,0.,0.],[1.;3]],64).unwrap_err(),"finite scene bounds required");
+  assert_eq!(fit_cascade(dir,&cam(),0.,0.5,8.,aabb(),64).unwrap_err(),"positive finite aspect required");
+  // sensor/(2 focal) = 1, aspect 1.7: far corners (1.7e308, 1e308, 1e308) are finite but their
+  // distance hypot(1.7e308, 1e308) exceeds f64::MAX
+  assert_eq!(fit_cascade(dir,&flat_cam(24.,12.),1.7,1.,1e308,aabb(),64).unwrap_err(),"degenerate frustum slice");
+  // half-extent 0.5, far 1.5e308: radius ~1.3e308 is finite, but one texel on a 2-texel map is 2r
+  assert_eq!(fit_cascade(dir,&flat_cam(24.,24.),1.,1.,1.5e308,aabb(),2).unwrap_err(),"cascade texel size underflow");
+  assert_eq!(cascaded_light_space(dir,&cam(),1.,0.5,8.,0,0.5,aabb(),64).unwrap_err(),"cascade count 1..=8 required");
+ }
+ #[test]fn cascade_sets_refuse_bad_depths_maps_bands_and_casters(){
+  let fits=cascaded_light_space([0.,-1.,0.],&cam(),1.,0.1,10.,2,0.5,aabb(),16).unwrap();
+  let mut bad=fits.clone();bad[0].far=bad[0].near;
+  assert_eq!(build_cascade_maps(bad,16,0.).unwrap_err(),"finite ordered positive cascade depths required");
+  assert_eq!(build_cascade_maps(fits.clone(),0,0.).unwrap_err(),"cascade map 1..4096 per axis");
+  assert_eq!(build_cascade_maps(fits.clone(),16,-0.1).unwrap_err(),"blend band in [0,0.5) required");
+  let good=build_cascade_maps(fits.clone(),16,0.25).unwrap();
+  assert_eq!(good.maps[1].depth,vec![f64::INFINITY;256],"maps start empty");
+  let mut set=good.clone();set.maps[0].width=0;
+  assert_eq!(set.validate().unwrap_err(),"cascade shadow map must match its fit and dimensions");
+  let mut set=good.clone();set.cascades.clear();set.maps.clear();
+  assert_eq!(set.validate().unwrap_err(),"cascade count 1..=8 required");
+  let mut set=good.clone();set.blend_band=0.5;
+  assert_eq!(set.validate().unwrap_err(),"blend band in [0,0.5) required");
+  // an 8x8 map paired with a 16-texel fit, with bounds and view copied from the fit
+  let mut set=good.clone();set.maps[0].width=8;set.maps[0].height=8;set.maps[0].depth=vec![f64::INFINITY;64];
+  assert_eq!(set.validate().unwrap_err(),"cascade texel_world must match actual map resolution");
+  let(p,i)=csm_scene();
+  let mut set=good.clone();set.blend_band=0.7;
+  assert_eq!(raster_cascades(&p,&i,&mut set).unwrap_err(),"blend band in [0,0.5) required");
+  let mut set=good.clone();
+  assert_eq!(raster_cascades(&p,&[[0,1,99]],&mut set).unwrap_err(),"shadow caster index out of bounds");
+  assert!(set.maps.iter().all(|m|m.depth.iter().all(|d|*d==f64::INFINITY)),"a refused raster writes nothing");
+  assert_eq!(select_cascade(&[],0.,1.).unwrap_err(),"cascade count 1..=8 required");
+ }
+ #[test]fn select_cascade_clamps_depths_beyond_every_cascade_to_the_last(){
+  let fits=cascaded_light_space([0.,-1.,0.],&cam(),1.,1.,9.,2,0.,aabb(),16).unwrap(); // [1,5],[5,9]
+  assert_eq!(select_cascade(&fits[..1],0.25,100.).unwrap(),(0,0.),"a single cascade never blends");
+  assert_eq!(select_cascade(&fits,0.25,0.5).unwrap(),(0,0.),"before the first near clamps to cascade 0");
+  assert_eq!(select_cascade(&fits,0.25,5.).unwrap(),(0,1.),"the split depth is the end of cascade 0's band");
+  assert_eq!(select_cascade(&fits,0.25,5.5).unwrap(),(1,0.));
+ }
+ #[test]fn csm_visibility_refuses_bad_receivers_and_is_zero_facing_away(){
+  let fits=cascaded_light_space([0.,-1.,0.],&cam(),1.,0.1,10.,1,0.5,aabb(),16).unwrap();
+  let set=build_cascade_maps(fits,16,0.).unwrap();
+  assert_eq!(csm_visibility(&set,&cam(),[0.;3],[f64::NAN,1.,0.],1.,4.,0,0).unwrap_err(),"finite shadow receiver required");
+  assert_eq!(csm_visibility(&set,&cam(),[f64::INFINITY,0.,0.],[0.,1.,0.],1.,4.,0,0).unwrap_err(),"finite shadow receiver required");
+  assert_eq!(csm_visibility(&set,&cam(),[0.;3],[0.,1.,0.],f64::NAN,4.,0,0).unwrap_err(),"finite shadow cosine required");
+  assert_eq!(csm_visibility(&set,&cam(),[0.;3],[0.,1.,0.],0.,4.,0,0).unwrap(),0.,"n.l <= 0 is unlit");
+  assert_eq!(csm_visibility(&set,&cam(),[0.;3],[0.,1.,0.],-0.5,4.,0,0).unwrap(),0.);
+  let mut bad=cam();bad.focal_length=0.;
+  assert_eq!(csm_visibility(&set,&bad,[0.;3],[0.,1.,0.],1.,4.,0,0).unwrap_err(),BAD_CAMERA);
  }
 }

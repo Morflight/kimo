@@ -640,3 +640,81 @@ fn proj() -> Session { let mut ss = Session::new(); call(&mut ss, "project_set",
     let gap = text_left_canvas - dot_right_canvas;
     assert!(gap >= 0.7 * dot_w, "V8.5.8: the dot-to-text gap must still be at least 0.7x the dot's own diameter ({dot_w}px) after the scale-up, got {gap}px");
 }
+
+// ------------------------------------------------------------------------------------------------------------------
+// Fast tiny-media versions: 64x36 at 10 fps, a few seconds, the same voice-like tone as `talk`.
+// ------------------------------------------------------------------------------------------------------------------
+fn tiny_talk(name: &str, speech: &[(f64, f64)], dead_head: f64) -> String {
+    let p = dir().join(name);
+    let dur = speech.iter().map(|(_, e)| *e).fold(0.0_f64, f64::max) + dead_head;
+    let gate: Vec<String> = speech.iter().map(|(s, e)| format!("between(t,{},{})", s + dead_head, e + dead_head)).collect();
+    let a = format!("aevalsrc='({})*0.6*(0.25*sin(2*PI*140*t)+0.15*sin(2*PI*280*t+1)+0.1*sin(2*PI*420*t+2))*(0.55+0.45*sin(2*PI*4.3*t))':s=48000:d={dur}", gate.join("+"));
+    ffmpeg(&["-f", "lavfi", "-i", &format!("testsrc2=s=64x36:r=10:d={dur}"), "-f", "lavfi", "-i", &a, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", p.to_str().unwrap()]);
+    p.to_string_lossy().into_owned()
+}
+fn tiny_broll(name: &str, dur: f64) -> String {
+    let p = dir().join(name);
+    ffmpeg(&["-f", "lavfi", "-i", &format!("mandelbrot=s=64x36:r=10:end_pts={}", (dur * 10.0) as i64), "-t", &dur.to_string(), "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", p.to_str().unwrap()]);
+    p.to_string_lossy().into_owned()
+}
+fn tiny_proj() -> Session { let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 64, "height": 36, "fps": 10})); ss }
+fn has_warning(r: &Value, needle: &str) -> bool { r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains(needle)) }
+
+/// auto_edit with only the stages under test switched on (the rest off), so each call stays small.
+fn lean(extra: Value) -> Value {
+    let mut a = json!({"captions": false, "grade": false, "adaptive_denoise": false, "punch_ins": false, "push_in": false, "broll_transitions": false, "broll_color_match": false,
+        "pacing": false, "end_screen": false});
+    for (k, v) in extra.as_object().unwrap() { a[k] = v.clone(); }
+    a
+}
+
+#[test] fn tiny_auto_edit_loops_the_music_bed_under_the_end_card_and_swells_it() {
+    let mut ss = tiny_proj();
+    let a = sid(&call(&mut ss, "import_media", json!({"path": tiny_talk("t_bed_th.mp4", &[(0.0, 1.6)], 0.6)})), "asset_id");
+    let m = sid(&call(&mut ss, "import_media", json!({"path": music("t_bed.wav", 1.0)})), "asset_id");
+    let r = call(&mut ss, "auto_edit", lean(json!({"talking_head_asset_ids": [a], "music_asset_id": m, "end_screen": true, "end_screen_duration": 2.0})));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    let (dur, total) = (r["duration"].as_f64().unwrap(), r["total_duration"].as_f64().unwrap());
+    assert!(dur < 2.1 && dur > 1.2, "the 0.6 s of dead air is cut from 2.2 s: {r}");
+    assert!((total - (dur + 2.0)).abs() < 1e-9, "a 2 s end card follows the dialogue: {r}");
+    for st in ["rough_cut", "music", "audio", "duck", "end_screen", "review"] { assert!(r["stages"][st].is_object(), "stage {st} missing: {r}"); }
+    // the 1 s bed is tiled over dialogue + end card: one clip per second, seams faded 0.1 s, the tail faded to silence
+    let mt = music_track_for(&ss, &sid(&r["stages"]["music"], "clip_id"));
+    let mut segs: Vec<_> = ss.project.tracks.iter().find(|t| t.id == mt).unwrap().clips.iter().cloned().collect();
+    segs.sort_by(|x, y| x.start.total_cmp(&y.start));
+    assert_eq!(segs.len(), total.ceil() as usize, "{r}");
+    assert!((segs.last().unwrap().start + segs.last().unwrap().duration - total).abs() < 1e-6);
+    assert_eq!((segs[0].audio.fade_in, segs[0].audio.fade_out), (0.0, 0.1));
+    assert_eq!((segs[1].audio.fade_in, segs[1].audio.fade_out), (0.1, 0.1));
+    let last = segs.last().unwrap();
+    assert!((last.audio.fade_out - 0.5f64.min(last.duration)).abs() < 1e-9);
+    // once the dialogue ends the bed swells by 11 dB over 0.3 s
+    let k = &last.audio.volume.keys;
+    assert_eq!(k.len(), 2, "{k:?}");
+    assert!((k[1].t - k[0].t - 0.3f64.min(last.duration)).abs() < 2e-3 && (k[1].v / k[0].v - 10f64.powf(11.0 / 20.0)).abs() < 0.03, "{k:?}");
+    // the finished project carries every quality option
+    let pj = serde_json::to_value(&ss.project).unwrap();
+    assert_eq!((pj["linear_blend"].clone(), pj["x264_preset"].clone(), pj["color_tag_sanity"].clone(), pj["frame_blend_conform"].clone(), pj["hdr_tonemap"].clone()),
+        (json!(true), json!("slow"), json!(true), json!(true), json!(true)));
+    assert!(serde_json::to_string(&pj).unwrap().contains("SUBSCRIBE FOR MORE"), "the end card text is on the timeline");
+}
+
+#[test] fn tiny_auto_edit_broll_stages_and_forced_splits() {
+    let mut ss = tiny_proj();
+    let a = sid(&call(&mut ss, "import_media", json!({"path": tiny_talk("t_br_th.mp4", &[(0.0, 4.0)], 0.0)})), "asset_id");
+    let b = sid(&call(&mut ss, "import_media", json!({"path": tiny_broll("t_br_b.mp4", 1.5)})), "asset_id");
+    let r = call(&mut ss, "auto_edit", lean(json!({"talking_head_asset_ids": [a], "broll_asset_ids": [b], "punch_ins": true, "punch_max_static": 1.5, "push_in": true,
+        "broll_transitions": true, "broll_color_match": true, "stabilize_handheld": true})));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert!(r["stages"]["broll"].is_object(), "{r}");
+    assert!(has_warning(&r, "handheld shake scan skipped"), "64x36 b-roll is under stabilize's 64x64 minimum: {r}");
+    // no visible dialogue piece sits static past 1.5 s
+    let track_id = r["track_id"].as_str().unwrap();
+    let br: Vec<(f64, f64)> = r["stages"]["broll"]["clips"].as_array().unwrap().iter().map(|c| (c["start"].as_f64().unwrap(), c["end"].as_f64().unwrap())).collect();
+    let pieces: Vec<(f64, f64)> = ss.project.tracks.iter().find(|t| t.id == track_id).unwrap().clips.iter().filter(|c| matches!(&c.source, Source::Media { asset } if *asset == a)).map(|c| (c.start, c.start + c.duration)).collect();
+    assert!(pieces.len() >= 2, "{pieces:?}");
+    for (s, e) in &pieces {
+        let covered: f64 = br.iter().map(|(bs, be)| (e.min(*be) - s.max(*bs)).max(0.0)).sum::<f64>() / (e - s);
+        if covered < 0.5 { assert!(e - s <= 1.5 + 0.11, "piece {s}..{e} static too long: {r}"); }
+    }
+}

@@ -6,3 +6,29 @@ pub fn commands()->Vec<Command>{vec![
  #[cfg(feature="surface-contour")]{Ok(json!(crate::threed::contour_wrapped::polygonize(&read(a,"graph")?,&read(a,"config")?)?))}
  #[cfg(not(feature="surface-contour"))]{let _=a;Err("surface-contour feature not compiled".into())}
  }}]}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ fn run(name:&str,a:Value)->Result<Value,String>{let c=commands().into_iter().find(|c|c.name==name).unwrap();(c.run)(&mut Session::new(),&a)}
+ fn sphere()->Value{json!({"nodes":[{"kind":"sphere","center":[0.,0.,0.],"radius":1.}],"output":0})}
+ #[test]fn inspect_and_sample_a_unit_sphere_graph(){
+  let r=run("inspect_sdf_graph",json!({"graph":sphere()})).unwrap();
+  assert_eq!(r["validated"],true);assert_eq!(r["output"],0);assert_eq!(r["nodes"],sphere()["nodes"]);
+  assert!(run("inspect_sdf_graph",json!({"graph":{"nodes":[{"kind":"sphere","center":[0.,0.,0.],"radius":1.}],"output":3}})).is_err(),"output past the last node");
+  assert_eq!(run("inspect_sdf_graph",json!({})).unwrap_err(),"graph required");
+  // |(2,0,0)| - 1 = 1; inside at the centre: -1
+  assert_eq!(run("sample_sdf_graph",json!({"graph":sphere(),"point":[2.,0.,0.]})).unwrap(),json!({"field":1.}));
+  assert_eq!(run("sample_sdf_graph",json!({"graph":sphere(),"point":[0.,0.,0.]})).unwrap(),json!({"field":-1.}));
+  assert_eq!(run("sample_sdf_graph",json!({"graph":sphere()})).unwrap_err(),"point required");
+ }
+ #[cfg(feature="surface-contour")]
+ #[test]fn contour_of_a_sphere_is_a_non_empty_mesh_and_of_empty_space_is_empty(){
+  let cfg=json!({"bounds":[[-2.,-2.,-2.],[2.,2.,2.]],"resolution":8,"normal_epsilon":1e-4});
+  let r=run("contour_sdf_graph",json!({"graph":sphere(),"config":cfg})).unwrap();
+  assert_eq!(r["empty"],false);
+  let far=json!({"nodes":[{"kind":"sphere","center":[10.,0.,0.],"radius":1.}],"output":0});
+  assert_eq!(run("contour_sdf_graph",json!({"graph":far,"config":cfg})).unwrap()["empty"],true);
+  assert_eq!(run("contour_sdf_graph",json!({"graph":sphere()})).unwrap_err(),"config required");
+ }
+}

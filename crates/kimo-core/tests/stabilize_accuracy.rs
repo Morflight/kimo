@@ -327,3 +327,25 @@ fn quad(b: &H3, r: [f64; 4]) -> [P; 4] { [ap(b, (r[0], r[1])), ap(b, (r[2], r[1]
     // synthesis range in frames: round(secs * fps) clamped 1..30
     assert_eq!(synth_frames_for(0.3, 24.0), 7); assert_eq!(synth_frames_for(0.3, 30.0), 9); assert_eq!(synth_frames_for(0.03, 24.0), 1); assert_eq!(synth_frames_for(2.0, 60.0), 30); assert_eq!(Opts::default().synth_frames, 9);
 }
+
+// ---------- fast tiny-frame tests (96x80, 8 frames, analytic texture through a known camera path C_t) ----------
+const TW: usize = 96; const TH: usize = 80;
+fn tc(m: H3) -> H3 { let (cx, cy) = (TW as f64 * 0.5, TH as f64 * 0.5); trackmath::mul(&trackmath::mul(&tr(cx, cy), &m), &tr(-cx, -cy)) }
+/// Frame t shows the texture through C_t (frame-0 pixel -> frame-t pixel): pixel p = tex(C_t^-1 p).
+fn tiny_frames(path: &[H3]) -> Vec<Vec<f32>> { let tx = Tex::new(5, [-40.0, -40.0, 140.0, 120.0]);
+    path.iter().map(|c| { let ci = trackmath::inv3(c).unwrap(); (0..TW * TH).map(|i| { let q = ap(&ci, ((i % TW) as f64, (i / TW) as f64)); tx.at(q.0, q.1) as f32 }).collect() }).collect() }
+fn tiny_path(persp: bool) -> Vec<H3> { (0..8).map(|t| { let t = t as f64; let mut m = [[(1.0 + 0.004 * (0.7 * t).sin()) * (0.008 * t.sin()).cos(), -(0.008 * t.sin()).sin(), 2.5 * (1.3 * t).sin()], [(0.008 * t.sin()).sin(), (1.0 + 0.004 * (0.7 * t).sin()) * (0.008 * t.sin()).cos(), 1.8 * (0.9 * t).cos() - 1.8], [0.0, 0.0, 1.0]];
+    if persp { m[2][0] = 1e-4 * (0.5 * t).sin(); m[2][1] = -1e-4 * (0.8 * t).sin(); } tc(m) }).collect() }
+fn corner_err(a: &H3, b: &H3) -> f64 { [(0.0, 0.0), (TW as f64, 0.0), (TW as f64, TH as f64), (0.0, TH as f64)].iter().map(|p| trackmath::dist(ap(a, *p), ap(b, *p))).fold(0.0, f64::max) }
+fn est(path: &[H3], m: Method, o: &Opts) -> Result<PathEstimate, String> { let fr = tiny_frames(path); let mut get = |i: usize| -> Result<Vec<f32>, String> { Ok(fr[i].clone()) }; estimate_path(&mut get, path.len(), TW, TH, m, o) }
+
+#[test] fn tiny_estimate_path_recovers_similarity_and_perspective_cameras() {
+    let o = Opts { fps: 10.0, max_features: 200, ..Opts::default() };
+    let p = tiny_path(false); let e = est(&p, Method::Similarity, &o).unwrap(); assert_eq!(e.path.len(), 8); assert_eq!(e.path[0], IDENT);
+    for t in 1..8 { let err = corner_err(&e.path[t], &p[t]); assert!(err < 0.05, "similarity frame {t}: corner error {err}"); assert!(e.inlier_frac[t] > 0.9 && e.fit_rms_px[t] < 0.05 && e.n_features[t] >= 6, "frame {t}"); }
+    let pp = tiny_path(true); let ep = est(&pp, Method::Perspective, &o).unwrap();
+    for t in 1..8 { let err = corner_err(&ep.path[t], &pp[t]); assert!(err < 0.08, "perspective frame {t}: corner error {err}"); }
+    // Position keeps only the translation of the frame centre
+    let es = est(&p, Method::Position, &o).unwrap(); let c = (TW as f64 * 0.5, TH as f64 * 0.5);
+    for t in 0..8 { let h = es.path[t]; assert_eq!((h[0][0], h[0][1], h[1][0], h[1][1], h[2][0], h[2][1]), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)); let want = ap(&p[t], c); assert!((h[0][2] - (want.0 - c.0)).abs() < 0.05 && (h[1][2] - (want.1 - c.1)).abs() < 0.05, "frame {t}"); }
+}

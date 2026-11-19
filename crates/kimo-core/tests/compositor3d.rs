@@ -202,3 +202,47 @@ fn hash(f: &Frame) -> u64 { let mut h: u64 = 0xcbf29ce484222325; for v in &f.d {
     // a valid call does change it, and names the light
     let r = c(&mut ss, "set_3d_compositor", json!({"enabled": true, "shadows": {"enabled": true, "light_id": "key"}})); println!("accepted: {r}"); assert_eq!(r["comp3d"]["shadows"]["light_id"], "key");
 }
+
+/// A small 64x48 3D group: a wide wall at pos_z 50 and a 10 px caster at (-10, 0, -20) with `blend`; `lights` are set_light args
+/// whose pos defaults to world (-30, 0, -60) (lighting.rs fractions, world z = -z * H); `shadows` is the compositor's shadow config.
+fn small3d(wall_fill: [f64; 3], caster_fill: [f64; 3], blend: &str, lights: &[Value], shadows: Value) -> Frame {
+    let mut ss = Session::new(); c(&mut ss, "project_set", json!({"width": 64, "height": 48, "fps": 25}));
+    let mk = |ss: &mut Session, w: f64, fill: [f64; 3], props: &[(&str, f64)]| { let t = c(ss, "add_track", json!({}))["track_id"].as_str().unwrap().to_string();
+        let id = sid(&c(ss, "add_shape", json!({"track_id": t, "shape": "rect", "width": w, "height": w, "fill": fill, "start": 0.0, "duration": 5.0})));
+        for (k, v) in props { c(ss, "set_property", json!({"clip_id": id, "property": k, "value": v})); } id };
+    mk(&mut ss, 64.0, wall_fill, &[("pos_z", 50.0), ("scale", 3.0)]); let cst = mk(&mut ss, 10.0, caster_fill, &[("pos_z", -20.0), ("x", -10.0)]);
+    c(&mut ss, "set_3d_layer_shadows", json!({"clip_id": cst, "casts_shadows": true})); c(&mut ss, "set_blend", json!({"clip_id": cst, "mode": blend}));
+    for (k, l) in lights.iter().enumerate() { let mut l = l.clone(); if l.get("id").is_none() { l["id"] = json!(format!("l{k}")); } if l.get("pos").is_none() { l["pos"] = json!([-30.0 / 64.0 + 0.5, 0.5, 60.0 / 48.0]); }
+        if l["kind"] == "area" { let id = l["id"].as_str().unwrap().to_string(); ss.project.lights.insert(id, serde_json::from_value(l).unwrap()); } else { c(&mut ss, "set_light", l); } }
+    c(&mut ss, "set_3d_compositor", json!({"enabled": true, "shadows": shadows}));
+    render::render_frame(&ss.project, 1.0, &render::Cache::new()).unwrap()
+}
+fn hard(on: bool) -> Value { json!({"enabled": on, "softness": 0}) }
+/// (largest darkening, largest brightening) of the red channel from `a` to `b`
+fn darker(a: &Frame, b: &Frame) -> (f32, f32) { let d: Vec<f32> = a.d.chunks(4).zip(b.d.chunks(4)).map(|(p, q)| p[0] - q[0]).collect(); (d.iter().cloned().fold(0.0f32, f32::max), d.iter().cloned().fold(0.0f32, f32::min)) }
+
+#[test]
+fn spot_and_directional_lights_cast_shadows_and_a_spot_aimed_away_casts_none() {
+    let lit = |l: Value, sh: Value| small3d([1.0; 3], [0.0, 0.0, 1.0], "normal", &[l], sh);
+    // spot aimed at the caster (lighting dir z points toward the viewer, so world (20, 0, 40) is (20, 0, -40))
+    let spot = json!({"kind": "spot", "dir": [20.0, 0.0, -40.0], "cone": 45.0});
+    let (mx, mn) = darker(&lit(spot.clone(), hard(false)), &lit(spot, hard(true))); assert!(mx > 0.3 && mn >= -1e-6, "spot shadow: max darkening {mx}, min {mn}");
+    let away = json!({"kind": "spot", "dir": [0.0, 0.0, 1.0], "cone": 20.0});
+    assert_eq!(lit(away.clone(), hard(true)).d, lit(away, hard(false)).d, "outside the cone: no shadow");
+    let dir = json!({"kind": "directional", "dir": [1.0, 0.0, -2.0]});
+    let (mx, mn) = darker(&lit(dir.clone(), hard(false)), &lit(dir, hard(true))); assert!(mx > 0.3 && mn >= -1e-6, "directional shadow: {mx} {mn}");
+    // a soft directional light almost along x (the other basis branch) still only darkens
+    let side = json!({"kind": "directional", "dir": [1.0, 0.0, -0.3]});
+    let (mx, mn) = darker(&lit(side.clone(), hard(false)), &lit(side, json!({"enabled": true, "softness": 4, "samples": 4}))); assert!(mn >= -1e-6, "soft: {mx} {mn}");
+}
+
+#[test]
+fn blend_modes_apply_inside_the_3d_group() {
+    // red wall behind, green caster in front; the caster centre lands at screen x = 32 - 10 f / (f - 20)
+    let f = 24.0 / (25f64).to_radians().tan(); let x = (32.0 - 10.0 * f / (f - 20.0)) as usize;
+    for (mode, want) in [("normal", [0.0, 1.0, 0.0]), ("add", [1.0, 1.0, 0.0]), ("multiply", [0.0, 0.0, 0.0]), ("screen", [1.0, 1.0, 0.0]), ("overlay", [1.0, 0.0, 0.0])] {
+        let fr = small3d([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], mode, &[], hard(false));
+        let i = (24 * 64 + x) * 4; let got = [fr.d[i], fr.d[i + 1], fr.d[i + 2]];
+        for j in 0..3 { assert!((got[j] - want[j]).abs() < 1e-5, "{mode}: {got:?} vs {want:?}"); }
+    }
+}

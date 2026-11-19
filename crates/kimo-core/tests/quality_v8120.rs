@@ -321,3 +321,124 @@ fn compare_restyle(style: &str, preset: &str) -> (bool, Vec<u64>, Vec<u64>) {
     assert_eq!(proven_identical, vec!["clean".to_string()], "if this grew, update the CHANGELOG claim to match; if it shrank, something regressed");
     assert_eq!(known_gap.len(), 7, "expected exactly pop/karaoke/boxed/impact/subtitle/boxed_simple/yellow to carry the documented animation gap");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Functional tests of caption_engine_compose on tiny projects (320x180 or smaller, no media).
+// ---------------------------------------------------------------------------------------------
+use kimo_core::model::Source;
+
+fn caption_clips(ss: &Session) -> Vec<std::sync::Arc<kimo_core::model::Clip>> { ss.project.tracks.last().unwrap().clips.clone() }
+fn text_of(c: &kimo_core::model::Clip) -> (String, f64, [f64; 3], f64) {
+    match &c.source { Source::Text { text, size, color, stroke_width, .. } => (text.clone(), *size, *color, *stroke_width), _ => panic!("not a text clip") }
+}
+fn white_proj(w: u32, h: u32) -> Session {
+    let mut ss = Session::new(); call2(&mut ss, "project_set", json!({"width": w, "height": h, "fps": 10}));
+    let t = call2(&mut ss, "add_track", json!({}))["track_id"].clone();
+    call2(&mut ss, "add_clip", json!({"track_id": t, "source_type": "solid", "color": [1, 1, 1], "start": 0, "duration": 4})); ss
+}
+
+#[test] fn compose_custom_spec_applies_style_states_contrast_animation_and_overrides() {
+    let mut ss = white_proj(128, 72);
+    let luma = measure_bg_luma(&mut ss, 0.5, [0, 0, 128, 72]).expect("a white canvas is measurable");
+    assert!(luma > 0.95, "white background luma {luma}");
+    assert_eq!(measure_bg_luma(&mut ss, 0.5, [200, 0, 10, 10]), None, "a rect outside the frame measures nothing");
+    let r = call2(&mut ss, "caption_engine_compose", json!({
+        "words": [{"text":"hello","start":0.0,"end":0.4,"conf":0.3},{"text":"brave","start":0.5,"end":0.9},{"text":"world.","start":1.0,"end":1.4},{"text":"again","start":2.4,"end":2.8}],
+        "language": "en",
+        "segment": {"max_chars_per_line": 30, "max_lines": 1, "max_cps": 1000},
+        "layout": {"face_avoidance": false, "position": "top"},
+        "style": {"fill": "#ff8000", "stroke_frac": 0.05, "stroke_color": [0, 0, 1], "shadow_blur": 4.0, "shadow_opacity": 0.5,
+            "box": {"color": [0, 0, 0, 0.5], "pad_frac": 0.2, "radius_frac": 0.1}, "case": "title", "size_frac": 0.05, "align": "left"},
+        "word_states": {"active": {"scale": 1.2}, "spoken": {"fill": [0, 1, 0]}, "upcoming": {"opacity": 0.4}},
+        "emphasis": {"list": ["brave"], "delta": {"fill": "#ff0000"}},
+        "animation": {"unit_in": [{"prop": "scale", "from": 0.8, "to": 1.0, "duration_s": 0.1, "ease": "out_back"}, {"prop": "blur", "from": 3, "to": 0, "duration_s": 0.2}],
+            "unit_out": [{"prop": "opacity", "from": 1, "to": 0, "duration_s": 0.1}, {"prop": "y", "from": -22, "to": -30, "duration_s": 0.25, "ease": "linear"}], "active_lead_s": 0.0},
+        "overrides": [{"unit_index": 0, "word_index": 1, "style": {"fill": "#0000ff", "scale": 1.5, "opacity": 0.9}},
+            {"unit_index": 1, "word_index": 0, "keyframes": [{"prop": "rotation", "t": 0.0, "v": 5.0, "ease": "hold"}, {"prop": "skew_x", "t": 0.5, "v": 2.0}]},
+            {"word_index": 9, "style": {"scale": 2.0}},
+            {"unit_index": 1, "word_index": 0, "style": {"scale": 1.1}},
+            {"unit_index": 0, "word_index": 2, "style": {"fill": [0, 1, 0]}}],
+        "shot_cuts": [0.1]
+    }));
+    assert_eq!((r["units"].as_u64(), r["words"].as_u64(), r["face_avoidance_fired"].as_u64()), (Some(2), Some(4), Some(0)));
+    assert_eq!(r["straddle_warnings"], json!(["unit 0: could not avoid straddling a shot cut at 0.100s without a sub-minimum flash"]));
+    let g = &ss.project.editorial.captions[r["caption_id"].as_str().unwrap()];
+    assert_eq!(g.style, "engine_custom");
+    let tr = &ss.project.editorial.transcripts[r["transcript_id"].as_str().unwrap()];
+    assert_eq!(tr.language, "en");
+    assert_eq!(tr.words[0].flags, vec![kimo_core::transcript::WordFlag::LowConfidence]);
+    assert!(tr.words[1].flags.is_empty());
+    let clips = caption_clips(&ss);
+    assert_eq!((clips[0].start, clips[0].duration), (0.0, 1.75));
+    assert!((clips[1].start - 2.36).abs() < 1e-9 && (clips[1].duration - 0.79).abs() < 1e-9);
+    let (t0, size0, fill0, stroke0) = text_of(&clips[0]);
+    assert_eq!((t0.as_str(), fill0), ("Hello Brave World.", [1.0, 128.0 / 255.0, 0.0]));
+    assert_eq!(text_of(&clips[1]).0, "Again");
+    let (st, sh, bx) = contrast_strength(luma, &ContrastSpec::default());
+    assert_eq!(stroke0, (st * size0).round(), "stroke follows the measured white background");
+    let fx = clips[0].text_fx.as_ref().unwrap();
+    assert!((fx.bg.unwrap()[3] - bx).abs() < 1e-9 && (fx.shadow_blur - sh.max(4.0)).abs() < 1e-9, "{:?} {}", fx.bg, fx.shadow_blur);
+    assert_eq!(fx.animators.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["upcoming", "spoken", "active", "emph0", "ov0_1", "ov0_2"]);
+    assert_eq!((fx.animators[5].fill, fx.animators[5].scale.base, fx.animators[5].opacity.base), (Some([0.0, 1.0, 0.0]), 1.0, 1.0));
+    let ov = &fx.animators[4];
+    assert_eq!((ov.start.base, ov.end.base, ov.fill, ov.scale.base, ov.opacity.base), (1.0 / 3.0, 2.0 / 3.0, Some([0.0, 0.0, 1.0]), 1.5, 0.9));
+    let fx1 = clips[1].text_fx.as_ref().unwrap();
+    assert_eq!(fx1.animators.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["upcoming", "spoken", "active", "ov1_0"], "no emphasised word in unit 1; only its own word-0 override");
+    assert_eq!((fx1.animators[3].scale.base, fx1.animators[3].fill, fx1.animators[3].opacity.base), (1.1, None, 1.0), "a partial style override leaves the rest untouched");
+    assert_eq!(clips[0].props["y"].base, -22.0, "top band 0.2 -> (0.2-0.5)*72");
+    assert_eq!(clips[0].props["y"].keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>(), vec![(1.5, -22.0), (1.75, -30.0)]);
+    assert_eq!((clips[0].props["scale"].at(0.0), clips[0].props["scale"].at(0.1)), (0.8, 1.0));
+    assert_eq!((clips[0].props["blur"].at(0.0), clips[0].props["blur"].at(0.2)), (3.0, 0.0));
+    assert_eq!((clips[0].props["opacity"].at(1.65), clips[0].props["opacity"].at(1.75)), (1.0, 0.0));
+    assert!(clips[0].props["rotation"].keys.is_empty() && !clips[0].props.contains_key("skew_x"));
+    assert_eq!(clips[1].props["rotation"].keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>(), vec![(0.0, 5.0)]);
+    assert_eq!(clips[1].props["skew_x"].keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>(), vec![(0.5, 2.0)]);
+}
+
+#[test] fn compose_presets_merge_replace_default_fades_and_short_side_sizing() {
+    let mut ss = new_proj();
+    call2(&mut ss, "project_set", json!({"width": 320, "height": 180, "fps": 10}));
+    let w3 = json!([{"text":"one","start":0.0,"end":0.3},{"text":"two","start":0.3,"end":0.6},{"text":"three","start":0.6,"end":0.9}]);
+    let a = call2(&mut ss, "caption_engine_compose", json!({"words": w3, "preset": "pop", "style": {"fill": "#00ff00"}}));
+    let a_id = a["caption_id"].as_str().unwrap().to_string();
+    assert_eq!(ss.project.editorial.captions[&a_id].style, "engine_pop");
+    let a_clips = caption_clips(&ss);
+    assert_eq!(a_clips.len(), 1);
+    assert_eq!((text_of(&a_clips[0]).0.as_str(), text_of(&a_clips[0]).2), ("ONE TWO THREE", [0.0, 1.0, 0.0]), "pop's upper case, the caller's fill wins");
+    let b = call2(&mut ss, "caption_engine_compose", json!({"words": w3, "preset": "subtitle", "replace": a_id}));
+    assert!(!ss.project.editorial.captions.contains_key(&a_id) && !ss.project.editorial.cue_words.contains_key(&a_clips[0].id));
+    assert_eq!(ss.project.tracks.len(), 1, "the emptied Captions track of the replaced group is removed");
+    assert_ne!(b["transcript_id"], a["transcript_id"]);
+    let c = &caption_clips(&ss)[0];
+    assert_eq!(text_of(c).1, 12.0, "size 0.0667 of the 180 px short side");
+    assert_eq!(c.props["y"].base, 63.0, "fixed_y_frac 0.35 of 180");
+    // no animation spec: default gentle fade in (start after nothing) and out (nothing after)
+    let d = c.duration;
+    assert_eq!(c.props["opacity"].keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>(), vec![(0.0, 0.0), (0.07, 1.0), (d - 0.08, 1.0), (d, 0.0)]);
+    // replacing a group whose Captions track also holds another clip keeps that track and that clip
+    let b_track = b["track_id"].as_str().unwrap().to_string();
+    let other = call2(&mut ss, "add_clip", json!({"track_id": b_track, "source_type": "solid", "color": [1, 0, 0], "start": 5, "duration": 1}))["clip_id"].clone();
+    let c2 = call2(&mut ss, "caption_engine_compose", json!({"words": w3, "preset": "subtitle", "layout": null, "replace": b["caption_id"]}));
+    let kept = ss.project.tracks.iter().find(|t| t.id == b_track).expect("a track with a foreign clip survives");
+    assert_eq!(kept.clips.iter().map(|c| json!(c.id)).collect::<Vec<_>>(), vec![other]);
+    assert_eq!(caption_clips(&ss)[0].props["y"].base, 63.0, "a null layout keeps the preset's own layout");
+    // a group whose track is already gone is still removed cleanly
+    let c2_track = c2["track_id"].as_str().unwrap().to_string();
+    ss.project.tracks.retain(|t| t.id != c2_track);
+    call2(&mut ss, "caption_engine_compose", json!({"words": w3, "replace": c2["caption_id"], "contrast": {"auto": false}}));
+    assert!(!ss.project.editorial.captions.contains_key(c2["caption_id"].as_str().unwrap()));
+    assert_eq!(ss.project.editorial.captions.len(), 1);
+    // three bridged single-word cues: the first only fades in, the middle has no fade, the last only fades out
+    let mut s2 = white_proj(64, 36);
+    call2(&mut s2, "caption_engine_compose", json!({"words": [{"text":"A.","start":0.0,"end":0.5},{"text":"B.","start":0.5,"end":1.0},{"text":"C.","start":1.0,"end":1.5}],
+        "contrast": {"auto": false}, "layout": {"face_avoidance": false}, "style": {"case": "lower"}, "animation": {"active_lead_s": 0.0},
+        "emphasis": {"by_energy": true, "delta": {"scale": 2.0}}}));
+    let cl = caption_clips(&s2);
+    assert_eq!(cl.iter().map(|c| text_of(c).0).collect::<Vec<_>>(), vec!["a.", "b.", "c."]);
+    assert!(cl.iter().all(|c| c.text_fx.as_ref().unwrap().animators.is_empty()), "no media: no energy, nothing emphasised");
+    let keys = |i: usize| cl[i].props["opacity"].keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>();
+    assert_eq!(keys(0), vec![(0.0, 0.0), (0.07, 1.0)]);
+    assert!(keys(1).is_empty() && cl[1].props["opacity"].base == 1.0);
+    let d2 = cl[2].duration;
+    assert_eq!(keys(2), vec![(0.0, 1.0), (d2 - 0.08, 1.0), (d2, 0.0)]);
+}

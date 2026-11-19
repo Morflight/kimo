@@ -47,7 +47,8 @@ fn encode_still_bytes(cmd:&mut Proc,bytes:Vec<u8>,expected:usize,deadline:std::t
 pub fn scope_png(f: &Frame, kind: &str, path: &str) -> Result<(), String> {
     crate::guard::check();
     let pixels=f.w.checked_mul(f.h).filter(|n|*n>0).ok_or("invalid scope frame dimensions")?;if pixels.checked_mul(4)!=Some(f.d.len()){return Err("invalid scope frame shape".into())}
-    let (ow, oh) = match kind { "vectorscope" => (320usize, 320usize), _ => (512, 288) };let out_bytes=ow.checked_mul(oh).and_then(|n|n.checked_mul(4)).ok_or("scope byte count overflow")?;let acc_bytes=ow.checked_mul(oh).and_then(|n|n.checked_mul(3*std::mem::size_of::<f32>())).ok_or("scope allocation overflow")?;crate::guard::reserve(acc_bytes.checked_add(out_bytes).and_then(|n|n.checked_add(if kind=="histogram"{ow*3*std::mem::size_of::<f32>()}else{0})).ok_or("scope allocation overflow")?);let mut acc = vec![0f32; ow * oh * 3];
+    // ow x oh is at most 512x288 or 320x320, so these byte counts cannot overflow
+    let (ow, oh) = match kind { "vectorscope" => (320usize, 320usize), _ => (512, 288) };let out_bytes=ow*oh*4;let acc_bytes=ow*oh*3*std::mem::size_of::<f32>();crate::guard::reserve(acc_bytes+out_bytes+if kind=="histogram"{ow*3*std::mem::size_of::<f32>()}else{0});let mut acc = vec![0f32; ow * oh * 3];
     let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let step = ((f.w * f.h) / 200_000).max(1);
     match kind {
@@ -297,6 +298,342 @@ fn tag(p: &mut Project, clip: &str, fx: &str, hero: &str) -> Result<(), String> 
         let mut zero=ss.project.clone();zero.find_clip_mut(&a).unwrap().start=0.;let z=clip_frame(&zero,&a,0.8).unwrap();
         for (a,b) in f.d.iter().zip(z.d.iter()) { assert!((a-b).abs()<1e-7); }
         assert!(clip_frame(&ss.project,&a,2.).is_err());assert!(clip_frame(&ss.project,&a,5.).is_err());
+    }
+}
+
+#[cfg(test)] mod command_tests {
+    use super::*;
+    use crate::commands::{dispatch, Session};
+    /// 8x8 project at 10 fps, one track: clip a (0..1 s, rgb .2/.4/.6) then clip b (1..2 s, rgb .6/.5/.3).
+    fn session() -> (Session, String, String) {
+        let mut ss = Session::new(); dispatch(&mut ss, "project_set", &json!({"width":8,"height":8,"fps":10})).unwrap();
+        let tr = dispatch(&mut ss, "add_track", &json!({})).unwrap()["track_id"].as_str().unwrap().to_string();
+        let mut clip = |c: [f64; 3], start: f64| dispatch(&mut ss, "add_clip", &json!({"track_id":tr,"source_type":"solid","color":c,"start":start,"duration":1})).unwrap()["clip_id"].as_str().unwrap().to_string();
+        let (a, b) = (clip([0.2, 0.4, 0.6], 0.0), clip([0.6, 0.5, 0.3], 1.0)); (ss, a, b)
+    }
+    fn managed(ss: &mut Session) { dispatch(ss, "set_color_pipeline", &json!({"settings":{"enabled":true}})).unwrap(); }
+    fn err(ss: &mut Session, tool: &str, a: Value) -> String { dispatch(ss, tool, &a).unwrap_err() }
+    fn has(e: String, want: &str) { assert!(e.contains(want), "{e:?} lacks {want:?}"); }
+    fn tmp(tag: &str) -> std::path::PathBuf { let d = std::env::temp_dir().join(format!("kimo-colortools-{tag}-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }
+    fn png_size(p: &std::path::Path) -> (u32, u32) { let b = std::fs::read(p).unwrap(); assert_eq!(&b[1..4], b"PNG"); (u32::from_be_bytes([b[16], b[17], b[18], b[19]]), u32::from_be_bytes([b[20], b[21], b[22], b[23]])) }
+
+    #[test] fn argument_readers_name_the_missing_or_mistyped_key() {
+        assert_eq!(sa(&json!({}), "path").unwrap_err(), "missing string 'path'");
+        assert_eq!(na(&json!({"time":"x"}), "time").unwrap_err(), "argument 'time' must be a number (got string)");
+        assert_eq!(on(&json!({"k":2.5}), "k", 1.0), 2.5); assert_eq!(on(&json!({}), "k", 1.0), 1.0);
+    }
+    #[test] fn stats_rejects_regions_outside_the_frame_and_averages_inside() {
+        let mut f = Frame::new(4, 2); for i in 0..8 { f.d[i*4] = if i % 4 < 2 { 0.0 } else { 1.0 }; }
+        for r in [[-0.1, 0., 0.5, 0.5], [0., 0., 0., 0.5], [0.6, 0., 0.5, 0.5], [f64::NAN, 0., 0.5, 0.5]] { assert_eq!(stats(&f, Some(r)).unwrap_err(), "sample region must be positive and within0..1"); }
+        assert_eq!(stats(&f, Some([0.0, 0.0, 0.1, 0.1])).unwrap_err(), "sample region contains no pixels");
+        let (m, sd) = stats(&f, Some([0.5, 0.0, 0.5, 1.0])).unwrap(); assert_eq!(m, [1.0, 0.0, 0.0]); assert_eq!(sd, [0.0; 3]);
+        let (m, sd) = stats(&f, None).unwrap(); assert_eq!(m[0], 0.5); assert_eq!(sd[0], 0.5);
+    }
+    #[test] fn clip_frame_and_add_fx_reject_unknown_clips() {
+        let (ss, _, _) = session(); has(clip_frame(&ss.project, "nope", 0.0).err().unwrap(), "no clip 'nope'");
+        let mut p = ss.project.clone(); assert_eq!(add_fx(&mut p, "nope", "exposure", &[]).unwrap_err(), "no such clip");
+    }
+    #[test] fn scope_png_rejects_an_unknown_scope_and_writes_each_known_one() {
+        let d = tmp("scope"); let mut f = Frame::new(4, 4); for (i, v) in f.d.iter_mut().enumerate() { *v = (i % 7) as f32 / 6.0; }
+        has(scope_png(&f, "zebra", d.join("z.png").to_str().unwrap()).unwrap_err(), "unknown scope 'zebra'");
+        for (k, size) in [("waveform", (512, 288)), ("parade", (512, 288)), ("histogram", (512, 288)), ("vectorscope", (320, 320))] { let p = d.join(format!("{k}.png")); scope_png(&f, k, p.to_str().unwrap()).unwrap(); assert_eq!(png_size(&p), size); }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test] fn header_inspection_commands_require_a_path() {
+        let (mut ss, _, _) = session();
+        for tool in ["inspect_color_frame_metadata", "inspect_color_delivery", "inspect_float_media"] { has(err(&mut ss, tool, json!({})), "missing string 'path'"); }
+        has(err(&mut ss, "inspect_float_media", json!({"path":"a.mov"})), "inspection requires .exr/.tif/.tiff");
+        assert!(dispatch(&mut ss, "inspect_float_media", &json!({"path":"/nonexistent/kimo.exr"})).is_err());
+        assert!(dispatch(&mut ss, "inspect_float_media", &json!({"path":"/nonexistent/kimo.tif"})).is_err());
+        assert!(dispatch(&mut ss, "inspect_color_pipeline", &json!({})).is_ok());
+    }
+    #[test] fn reference_and_diagnostic_renders_validate_paths_and_times() {
+        let (mut ss, _, _) = session();
+        has(err(&mut ss, "compare_aces2_reference", json!({})), "missing number 'time'");
+        has(err(&mut ss, "export_aces2_reference_video", json!({"path":"a.mp4","crf":18.5})), "CRF0..51");
+        has(err(&mut ss, "export_aces2_reference_video", json!({"path":"a.mp4","crf":52})), "CRF0..51");
+        has(err(&mut ss, "export_aces2_reference_video", json!({})), "missing string 'path'");
+        has(err(&mut ss, "render_aces2_reference", json!({})), "missing string 'path'");
+        has(err(&mut ss, "render_aces2_reference", json!({"path":"a.jpg","time":0})), "reference SDR requires .png");
+        has(err(&mut ss, "render_aces2_reference", json!({"path":"a.png"})), "missing number 'time'");
+        has(err(&mut ss, "render_gamut_excursions", json!({})), "missing string 'path'");
+        has(err(&mut ss, "render_gamut_excursions", json!({"path":"a.jpg","time":0})), "diagnostic requires .png");
+        has(err(&mut ss, "render_gamut_excursions", json!({"path":"a.png"})), "missing number 'time'");
+        has(err(&mut ss, "audit_color_output", json!({})), "missing number 'time'");
+    }
+    #[test] fn managed_only_commands_refuse_a_display_referred_project() {
+        let (mut ss, a, b) = session();
+        has(err(&mut ss, "compare_linear_exposure", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5})), "linear comparison requires managed project");
+        has(err(&mut ss, "sample_linear_neutral", json!({"time":0.5,"region":[0,0,1,1]})), "linearneutral requires managed project");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"linear_grade"})), "managedlinear effect requires enabled pipeline");
+        has(err(&mut ss, "analyze_exposure_sequence", json!({"start":0,"end":2})), "sequence exposure requires managed project");
+        has(err(&mut ss, "render_exposure_false_color", json!({"time":0.5,"path":"a.png"})), "falsecolor requires managed project");
+        has(err(&mut ss, "analyze_exposure", json!({"time":0.5})), "exposure diagnostics require managed working-linear project");
+        has(err(&mut ss, "render_float_tiff", json!({"time":0.5,"path":"a.tif"})), "float TIFF requires enabled pipeline");
+        has(err(&mut ss, "render_float_exr", json!({"time":0.5,"path":"a.exr"})), "EXR working export requires enabled pipeline");
+        has(err(&mut ss, "set_effect_encoding", json!({"clip_id":a,"effect_id":"fx"})), "effect wrapper requires enabled project pipeline");
+        has(err(&mut ss, "set_clip_input_color", json!({"clip_id":a,"gamut":0,"transfer":1})), "clip input color requires enabled project pipeline");
+    }
+    #[test] fn display_referred_commands_refuse_a_managed_project() {
+        let (mut ss, a, b) = session(); managed(&mut ss);
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":"a.cube"})), "portable clip LUT bake currently requires legacy/display pipeline");
+        has(err(&mut ss, "match_grade", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5})), "match_grade needs display-referred sRGB");
+        has(err(&mut ss, "auto_color", json!({"clip_id":a})), "auto_color is display-referred");
+        has(err(&mut ss, "pick_white_balance", json!({"clip_id":a,"time":0.5})), "legacy white-balance picker requires display-referred project");
+        has(err(&mut ss, "match_color", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5})), "legacy color match requires display-referred project");
+        has(err(&mut ss, "match_shots", json!({"hero_clip_id":a})), "match_shots is display-referred");
+    }
+    #[test] fn compare_linear_exposure_needs_both_clips_and_compares_them() {
+        let (mut ss, a, b) = session(); managed(&mut ss);
+        has(err(&mut ss, "compare_linear_exposure", json!({"ref_clip_id":b,"time":0.5,"ref_time":1.5})), "missing string 'clip_id'");
+        has(err(&mut ss, "compare_linear_exposure", json!({"clip_id":a,"time":0.5,"ref_time":1.5})), "missing string 'ref_clip_id'");
+        assert!(dispatch(&mut ss, "compare_linear_exposure", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5})).is_ok());
+    }
+    #[test] fn sample_linear_neutral_validates_the_region() {
+        let (mut ss, _, _) = session(); managed(&mut ss);
+        has(err(&mut ss, "sample_linear_neutral", json!({"time":0.5})), "regionarray required");
+        has(err(&mut ss, "sample_linear_neutral", json!({"time":0.5,"region":[0,0,1]})), "region needs4numbers");
+        has(err(&mut ss, "sample_linear_neutral", json!({"time":0.5,"region":[0,0,1,"x"]})), "numericregion required");
+        has(err(&mut ss, "sample_linear_neutral", json!({"region":[0,0,1,1]})), "missing number 'time'");
+    }
+    #[test] fn add_managed_linear_effect_binds_each_kind_to_the_working_gamut() {
+        let (mut ss, a, _) = session(); managed(&mut ss);
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a})), "missing string 'kind'");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"blur"})), "unsupported managedlinear effect");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"linear_grade","params":[1]})), "params object required");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"linear_grade","params":{"knee":1}})), "unknown linear_grade parameter knee");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"linear_grade","params":{"gamut":3}})), "gamut inherited from working pipeline");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":a,"kind":"linear_grade","params":{"exposure":"1"}})), "numeric params required");
+        has(err(&mut ss, "add_managed_linear_effect", json!({"clip_id":"nope","kind":"linear_grade"})), "no such clip");
+        for (kind, params) in [("linear_grade", json!({"exposure":1})), ("luminance_shoulder", json!({})), ("white_adaptation", json!({})), ("soft_gamut_ray", json!({}))] {
+            let r = dispatch(&mut ss, "add_managed_linear_effect", &json!({"clip_id":a,"kind":kind,"params":params})).unwrap(); assert_eq!(r["working_gamut"], 3); assert_eq!(r["state"], "working_linear");
+            let id = r["effect_id"].as_str().unwrap(); let e = ss.project.find_clip(&a).unwrap().effects.iter().find(|e| e.id == id).unwrap().clone();
+            assert_eq!(e.kind, kind); assert_eq!(e.strings["bound_linear_gamut"], "3"); assert_eq!(e.params["gamut"].base, 3.0);
+        }
+    }
+    #[test] fn analyze_exposure_sequence_validates_and_reports_adjacent_median_changes() {
+        let (mut ss, _, _) = session(); managed(&mut ss);
+        for bad in [json!({"start":-1,"end":1}), json!({"start":1,"end":1}), json!({"start":0,"end":3}), json!({"start":0,"end":2,"samples":2.5}), json!({"start":0,"end":2,"samples":1}), json!({"start":0,"end":2,"jump_stops":17}), json!({"start":0,"end":2,"middle_gray":0})] {
+            has(err(&mut ss, "analyze_exposure_sequence", bad), "invalid sequence range/count/threshold/gray"); }
+        has(err(&mut ss, "analyze_exposure_sequence", json!({"end":2})), "missing number 'start'");
+        has(err(&mut ss, "analyze_exposure_sequence", json!({"start":0})), "missing number 'end'");
+        let r = dispatch(&mut ss, "analyze_exposure_sequence", &json!({"start":0,"end":2,"samples":2,"jump_stops":0})).unwrap();
+        let s = r["samples"].as_array().unwrap(); assert_eq!(s.len(), 2); assert_eq!(s[0]["time"], 0.0); assert_eq!(s[1]["time"], 1.0); assert!(s[0]["adjacent_delta_stops"].is_null());
+        let ev = r["threshold_events"].as_array().unwrap(); assert_eq!(ev.len(), 1); assert_eq!(ev[0]["previous_time"], 0.0);
+        assert_eq!(ev[0]["median_delta_stops"], s[1]["adjacent_delta_stops"]);
+    }
+    #[test] fn false_color_float_and_analysis_renders_validate_then_write() {
+        let (mut ss, a, _) = session(); managed(&mut ss); let d = tmp("float");
+        has(err(&mut ss, "render_exposure_false_color", json!({"time":0.5})), "missing string 'path'");
+        has(err(&mut ss, "render_exposure_false_color", json!({"time":0.5,"path":"a.jpg"})), "diagnostic requires .png");
+        has(err(&mut ss, "render_exposure_false_color", json!({"path":"a.png"})), "missing number 'time'");
+        let p = d.join("fc.png"); let r = dispatch(&mut ss, "render_exposure_false_color", &json!({"time":0.5,"path":p.to_str().unwrap(),"clip_id":a})).unwrap(); assert_eq!(r["middle_gray"], 0.18); assert_eq!(png_size(&p), (8, 8));
+        assert!(dispatch(&mut ss, "analyze_exposure", &json!({"time":0.5})).unwrap().is_object());
+        has(err(&mut ss, "render_float_tiff", json!({"time":0.5})), "missing string 'path'");
+        has(err(&mut ss, "render_float_tiff", json!({"time":0.5,"path":"a.png"})), "requires .tif/.tiff");
+        has(err(&mut ss, "render_float_tiff", json!({"path":"a.tif"})), "missing number 'time'");
+        let t = d.join("w.tiff"); let r = dispatch(&mut ss, "render_float_tiff", &json!({"time":0.5,"path":t.to_str().unwrap()})).unwrap(); assert_eq!(r["sample_type"], "float32"); assert!(t.exists());
+        has(err(&mut ss, "render_float_exr", json!({"time":0.5})), "missing string 'path'");
+        has(err(&mut ss, "render_float_exr", json!({"time":0.5,"path":"a.tif"})), "requires .exr");
+        has(err(&mut ss, "render_float_exr", json!({"path":"a.exr"})), "missing number 'time'");
+        let x = d.join("w.exr"); let r = dispatch(&mut ss, "render_float_exr", &json!({"time":0.5,"path":x.to_str().unwrap()})).unwrap(); assert_eq!(r["working_gamut"], 3); assert!(x.exists());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test] fn set_hdr_mastering_clears_and_validates_the_declared_metadata() {
+        let (mut ss, _, _) = session();
+        assert_eq!(dispatch(&mut ss, "set_hdr_mastering", &json!({"clear":true})).unwrap()["cleared"], true);
+        has(err(&mut ss, "set_hdr_mastering", json!({})), "missing metadata");
+        assert!(dispatch(&mut ss, "set_hdr_mastering", &json!({"metadata":"x"})).is_err());
+        let m = json!({"red":[0.708,0.292],"green":[0.17,0.797],"blue":[0.131,0.046],"white":[0.3127,0.329],"min_nits":0.005,"max_nits":1000.0,"max_cll":1000,"max_fall":400});
+        let mut bad = m.clone(); bad["max_nits"] = json!(0.001); has(err(&mut ss, "set_hdr_mastering", json!({"metadata":bad})), "invalid mastering luminance");
+        has(err(&mut ss, "set_hdr_mastering", json!({"metadata":m})), "static mastering metadata requires enabled Rec2020 PQ output");
+        dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":true,"output_gamut":1,"output_transfer":6}})).unwrap();
+        assert_eq!(dispatch(&mut ss, "set_hdr_mastering", &json!({"metadata":m})).unwrap()["provenance"], "caller supplied, not measured");
+        assert_eq!(ss.project.color_pipeline.mastering.as_ref().unwrap().max_cll, 1000);
+    }
+    #[test] fn set_effect_encoding_wraps_and_clears_one_effect() {
+        let (mut ss, a, _) = session(); managed(&mut ss); let fx = add_fx(&mut ss.project, &a, "exposure", &[("stops", 1.0)]).unwrap();
+        for bad in [json!({"clip_id":a,"effect_id":fx,"gamut":0.5}), json!({"clip_id":a,"effect_id":fx,"transfer":9}), json!({"clip_id":a,"effect_id":fx,"gamut":8})] { has(err(&mut ss, "set_effect_encoding", bad), "invalid effect encoding"); }
+        has(err(&mut ss, "set_effect_encoding", json!({"clip_id":"nope","effect_id":fx})), "no clip");
+        has(err(&mut ss, "set_effect_encoding", json!({"clip_id":a,"effect_id":"nope"})), "no effect");
+        let r = dispatch(&mut ss, "set_effect_encoding", &json!({"clip_id":a,"effect_id":fx,"gamut":0,"transfer":1})).unwrap(); assert_eq!(r["effect_gamut"], 0.0); assert_eq!(r["working_gamut"], 3);
+        let strings = |ss: &Session| ss.project.find_clip(&a).unwrap().effects[0].strings.clone(); assert!(strings(&ss).contains_key("wrapper_working_gamut"));
+        assert_eq!(dispatch(&mut ss, "set_effect_encoding", &json!({"clip_id":a,"effect_id":fx,"clear":true})).unwrap()["cleared"], true);
+        assert!(["wrapper_working_gamut", "wrapper_gamut", "wrapper_transfer", "wrapper_reference_white"].iter().all(|k| !strings(&ss).contains_key(*k)));
+    }
+    #[test] fn render_high_bit_still_writes_a_16_bit_png() {
+        let (mut ss, _, _) = session(); let d = tmp("hibit");
+        has(err(&mut ss, "render_high_bit_still", json!({})), "missing string 'path'");
+        has(err(&mut ss, "render_high_bit_still", json!({"path":"a.tif","time":0})), "high-bit still requires .png");
+        has(err(&mut ss, "render_high_bit_still", json!({"path":"a.png"})), "missing number 'time'");
+        let p = d.join("h.png"); assert_eq!(dispatch(&mut ss, "render_high_bit_still", &json!({"path":p.to_str().unwrap(),"time":0.5})).unwrap()["bits"], 16);
+        assert_eq!(png_size(&p), (8, 8)); assert_eq!(std::fs::read(&p).unwrap()[24], 16);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test] fn set_color_pipeline_rejects_unknown_malformed_and_invalid_settings() {
+        let (mut ss, _, _) = session();
+        has(err(&mut ss, "set_color_pipeline", json!({})), "settings object required");
+        has(err(&mut ss, "set_color_pipeline", json!({"settings":{"bogus":1}})), "unknown color pipeline setting bogus");
+        assert!(dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":"yes"}})).is_err());
+        has(err(&mut ss, "set_color_pipeline", json!({"settings":{"working_gamut":9}})), "invalid project color pipeline");
+        let r = dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":true,"linear_resample":true}})).unwrap(); assert_eq!(r["decode"], "native16-bit -> working-linear fit");
+        let r = dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":true}})).unwrap(); assert_eq!(r["decode"], "16-bit RGBA project-sized when enabled");
+    }
+    #[test] fn set_clip_input_color_validates_and_needs_a_media_clip() {
+        let (mut ss, a, _) = session(); managed(&mut ss);
+        has(err(&mut ss, "set_clip_input_color", json!({"clip_id":a,"transfer":1})), "missing number 'gamut'");
+        has(err(&mut ss, "set_clip_input_color", json!({"clip_id":a,"gamut":0})), "missing number 'transfer'");
+        for bad in [json!({"clip_id":a,"gamut":0.5,"transfer":1}), json!({"clip_id":a,"gamut":0,"transfer":1.5}), json!({"clip_id":a,"gamut":8,"transfer":1}), json!({"clip_id":a,"gamut":0,"transfer":9})] { has(err(&mut ss, "set_clip_input_color", bad), "invalid clip color input"); }
+        has(err(&mut ss, "set_clip_input_color", json!({"clip_id":"nope","gamut":0,"transfer":1})), "no clip");
+        has(err(&mut ss, "set_clip_input_color", json!({"clip_id":a,"gamut":0,"transfer":1})), "input color override requires media clip");
+    }
+    #[test] fn export_high_bit_validates_crf_path_and_format() {
+        let (mut ss, _, _) = session();
+        for crf in [json!(18.5), json!(-1), json!(52)] { has(err(&mut ss, "export_high_bit", json!({"path":"a.mkv","format":"ffv1_16","crf":crf})), "invalid crf"); }
+        has(err(&mut ss, "export_high_bit", json!({"format":"ffv1_16"})), "missing string 'path'");
+        has(err(&mut ss, "export_high_bit", json!({"path":"a.mkv"})), "missing string 'format'");
+    }
+    #[test] fn export_grade_lut_validates_and_bakes_pointwise_effects() {
+        let (mut ss, a, _) = session(); let d = tmp("lut"); let path = d.join("g.cube"); let ps = path.to_str().unwrap().to_string();
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps,"size":16})), "LUT size must be 17,33,65");
+        for (lo, hi) in [(1.0, 0.0), (0.0, 17.0), (-17.0, 0.0)] { has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps,"size":17,"domain_min":lo,"domain_max":hi})), "finite increasing LUT domain"); }
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":"nope","time":0.5,"path":ps})), "no clip");
+        let fx = add_fx(&mut ss.project, &a, "exposure", &[("stops", 1.0)]).unwrap();
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"path":ps})), "missing number 'time'");
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5})), "missing string 'path'");
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":d.join("missing").join("g.cube").to_str().unwrap()})), "os error");
+        let r = dispatch(&mut ss, "export_grade_lut", &json!({"clip_id":a,"time":0.5,"path":ps,"size":17})).unwrap(); assert_eq!(r["entries"], 17 * 17 * 17); assert_eq!(r["frozen_time"], 0.5);
+        let text = std::fs::read_to_string(&path).unwrap(); let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(&lines[..4], ["TITLE \"Kimo pointwise grade\"", "LUT_3D_SIZE 17", "DOMAIN_MIN 0 0 0", "DOMAIN_MAX 1 1 1"]);
+        assert_eq!(lines[4], "0.00000000 0.00000000 0.00000000"); assert_eq!(lines[5], "0.12500000 0.00000000 0.00000000"); assert_eq!(*lines.last().unwrap(), "2.00000000 2.00000000 2.00000000");
+        ss.project.find_clip_mut(&a).unwrap().effects[0].params.insert("stops".into(), Prop::new(1e6));
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps,"size":17})), "grade produces nonfinite LUT values");
+        ss.project.find_clip_mut(&a).unwrap().effects[0].strings.insert("mask_layer".into(), "m".into());
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps})), "cannot bake spatial/masked/unsupported effect 'exposure'");
+        let e = &mut ss.project.find_clip_mut(&a).unwrap().effects[0]; e.strings.clear(); e.strings.insert("wrapper_working_gamut".into(), "3".into());
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps})), "cannot bake spatial/masked/unsupported effect 'exposure'");
+        ss.project.find_clip_mut(&a).unwrap().effects[0].kind = "blur".into(); let _ = fx;
+        has(err(&mut ss, "export_grade_lut", json!({"clip_id":a,"time":0.5,"path":ps})), "cannot bake spatial/masked/unsupported effect 'blur'");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test] fn match_grade_validates_and_adds_a_lab_match() {
+        let (mut ss, a, b) = session();
+        has(err(&mut ss, "match_grade", json!({"clip_id":a,"ref_clip_id":a,"time":0.5,"ref_time":0.5})), "source and reference must differ");
+        has(err(&mut ss, "match_grade", json!({"ref_clip_id":b})), "missing string 'clip_id'");
+        has(err(&mut ss, "match_grade", json!({"clip_id":a})), "missing string 'ref_clip_id'");
+        assert!(dispatch(&mut ss, "match_grade", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"source_region":"x"})).is_err());
+        has(err(&mut ss, "match_grade", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"strength":2})), "strength outside 0..1");
+        let r = dispatch(&mut ss, "match_grade", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"strength":0.5,"source_region":[0,0,1,1],"ref_region":[0,0,0.5,0.5]})).unwrap();
+        assert_eq!(r["source_samples"], 64); assert_eq!(r["reference_samples"], 16);
+        let e = ss.project.find_clip(&a).unwrap().effects.last().unwrap().clone(); assert_eq!(e.kind, "lab_match"); assert_eq!(e.params["strength"].base, 0.5); assert_eq!(e.params.len(), 3 * 2 + 9 + 1);
+    }
+    #[test] fn analyze_color_validates_bins_and_units() {
+        let (mut ss, a, _) = session();
+        for bins in [json!(8), json!(16.5), json!(5000)] { has(err(&mut ss, "analyze_color", json!({"time":0.5,"bins":bins})), "invalid bins"); }
+        has(err(&mut ss, "analyze_color", json!({"time":0.5,"units":"lux"})), "units working/nits required");
+        has(err(&mut ss, "analyze_color", json!({"time":0.5,"units":"nits"})), "nits requires declared managed working-linear pipeline");
+        let r = dispatch(&mut ss, "analyze_color", &json!({"time":0.5,"clip_id":a,"bins":16})).unwrap(); assert_eq!(r["domain"], "legacy_display_assumed_BT709"); assert_eq!(r["gamut_id"], 0); assert!(r["reference_white_nits"].is_null());
+        managed(&mut ss); let r = dispatch(&mut ss, "analyze_color", &json!({"time":0.5,"units":"nits"})).unwrap(); assert_eq!(r["domain"], "working_scene_linear"); assert_eq!(r["units"], "nits"); assert_eq!(r["reference_white_nits"], 100.0); assert_eq!(r["gamut_id"], 3);
+    }
+    #[test] fn set_color_curve_validates_channel_points_and_clip() {
+        let (mut ss, a, _) = session();
+        has(err(&mut ss, "set_color_curve", json!({"clip_id":a,"channel":"x","points":[[0,0],[1,1]]})), "invalid curve channel");
+        has(err(&mut ss, "set_color_curve", json!({"clip_id":a,"channel":"m"})), "missing points");
+        assert!(dispatch(&mut ss, "set_color_curve", &json!({"clip_id":a,"channel":"m","points":"x"})).is_err());
+        has(err(&mut ss, "set_color_curve", json!({"clip_id":"nope","channel":"m","points":[[0,0],[1,1]]})), "no clip");
+        for (ch, short) in [("hue_sat", "hs"), ("hue_hue", "hh"), ("lum_sat", "ls"), ("hue_lum", "hl"), ("sat_sat", "ss"), ("sat_lum", "sl"), ("r", "r")] {
+            let pts = if short.len() == 2 { json!([[0,1],[1,1]]) } else { json!([[0,0],[1,1]]) };
+            let id = dispatch(&mut ss, "set_color_curve", &json!({"clip_id":a,"channel":ch,"points":pts})).unwrap()["effect_id"].as_str().unwrap().to_string();
+            let e = ss.project.find_clip(&a).unwrap().effects.iter().find(|e| e.id == id).unwrap().clone(); assert_eq!(e.kind, "point_curves"); assert_eq!(e.params[&format!("{short}_count")].base, 2.0);
+        }
+    }
+    #[test] fn set_color_wheels_validates_every_input_and_updates_an_existing_effect() {
+        let (mut ss, a, _) = session();
+        let cases = [(json!({"clip_id":a,"lift":1}), "lift must be an array of 4 numbers"), (json!({"clip_id":a,"lift":[0,0,0]}), "lift must have exactly 4 numbers [r,g,b,master], got 3"),
+            (json!({"clip_id":a,"gain":[1,1,"x",1]}), "gain[2] must be a number"), (json!({"clip_id":a,"gamma":[1,1,1,30]}), "gamma[3] must be finite in 0.05..20"),
+            (json!({"clip_id":a,"contrast":"x"}), "contrast must be a number"), (json!({"clip_id":a,"pivot":2}), "pivot must be finite in 0..1"),
+            (json!({"clip_id":a,"space":1}), "space must be a string"), (json!({"clip_id":a,"space":"xyz"}), "unknown space 'xyz'"),
+            (json!({"clip_id":"nope"}), "no clip"), (json!({"clip_id":a,"effect_id":1}), "effect_id must be a string"), (json!({"clip_id":a,"effect_id":"fxX"}), "no effect 'fxX' on clip")];
+        for (args, want) in cases { has(err(&mut ss, "set_color_wheels", args), want); }
+        let exp = add_fx(&mut ss.project, &a, "exposure", &[]).unwrap(); has(err(&mut ss, "set_color_wheels", json!({"clip_id":a,"effect_id":exp})), "is 'exposure', not a primaries effect");
+        let pri = add_fx(&mut ss.project, &a, "primaries", &[("shadows", 0.2)]).unwrap(); has(err(&mut ss, "set_color_wheels", json!({"clip_id":a,"effect_id":pri})), "primaries model 1: shadows/highlights/temperature/tint are model 0 only");
+        ss.project.find_clip_mut(&a).unwrap().effects.last_mut().unwrap().params.remove("shadows");
+        let r = dispatch(&mut ss, "set_color_wheels", &json!({"clip_id":a,"effect_id":pri,"gain":[2,1,1,1],"space":"acescct"})).unwrap();
+        assert_eq!(r["effect_id"], pri.as_str()); assert_eq!(r["space"], "acescct"); assert!(r["cdl"].is_object());
+        let e = ss.project.find_clip(&a).unwrap().effects.last().unwrap().clone(); assert_eq!(e.params["gain_r"].base, 2.0); assert_eq!(e.params["space"].base, 3.0); assert_eq!(e.params["model"].base, 1.0);
+        let r = dispatch(&mut ss, "set_color_wheels", &json!({"clip_id":a,"lift":[0,0,0,0.1],"space":null})).unwrap(); assert!(r["cdl"].is_null()); assert_eq!(r["space"], "as_stored");
+    }
+    #[test] fn render_scope_needs_sdr_rec709_output_in_a_managed_project() {
+        let (mut ss, a, _) = session(); let d = tmp("rscope"); let p = d.join("s.png"); let ps = p.to_str().unwrap();
+        has(err(&mut ss, "render_scope", json!({"scope":"waveform","path":ps})), "missing number 'time'");
+        has(err(&mut ss, "render_scope", json!({"time":0.5,"path":ps})), "missing string 'scope'");
+        has(err(&mut ss, "render_scope", json!({"time":0.5,"scope":"waveform"})), "missing string 'path'");
+        dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":true,"output_gamut":1,"output_transfer":6}})).unwrap();
+        has(err(&mut ss, "render_scope", json!({"time":0.5,"scope":"waveform","path":ps})), "PNG scopes require Rec709 SDR output");
+        dispatch(&mut ss, "set_color_pipeline", &json!({"settings":{"enabled":true,"output_transfer":8}})).unwrap();
+        assert_eq!(dispatch(&mut ss, "render_scope", &json!({"time":0.5,"scope":"parade","path":ps,"clip_id":a})).unwrap()["path"], ps); assert_eq!(png_size(&p), (512, 288));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test] fn auto_color_validates_strength_percentile_flags_and_time() {
+        let (mut ss, a, _) = session();
+        for (args, want) in [(json!({"clip_id":a,"strength":2}), "auto_color: strength must be in 0..1"), (json!({"clip_id":a,"percentile":11}), "auto_color: percentile must be in 0..10"),
+            (json!({"clip_id":a,"stretch":1}), "auto_color: stretch must be a boolean"), (json!({"clip_id":a,"mids":"y"}), "auto_color: mids must be a boolean"),
+            (json!({}), "missing string 'clip_id'"), (json!({"clip_id":"nope"}), "auto_color: no clip 'nope'"), (json!({"clip_id":a,"time":"x"}), "auto_color: time must be a number"),
+            (json!({"clip_id":a,"time":1.0}), "auto_color: time 1 is outside the clip (0..1)")] { has(err(&mut ss, "auto_color", args), want); }
+    }
+    #[test] fn pick_white_balance_adds_gains_that_neutralise_the_sample() {
+        let (mut ss, a, _) = session();
+        has(err(&mut ss, "pick_white_balance", json!({"time":0.5})), "missing string 'clip_id'");
+        has(err(&mut ss, "pick_white_balance", json!({"clip_id":a})), "missing number 'time'");
+        has(err(&mut ss, "pick_white_balance", json!({"clip_id":a,"time":0.5,"w":0})), "sample region must be positive");
+        let r = dispatch(&mut ss, "pick_white_balance", &json!({"clip_id":a,"time":0.5,"x":0,"y":0,"w":1,"h":1})).unwrap();
+        let g: Vec<f64> = r["gains"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect(); let m: Vec<f64> = r["sampled_rgb"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        for j in 0..3 { assert!((g[j] * m[j] - 0.4).abs() < 0.01, "{g:?} {m:?}"); }
+    }
+    #[test] fn pick_key_color_validates_and_sets_the_median_on_a_keyer() {
+        let (mut ss, a, _) = session();
+        has(err(&mut ss, "pick_key_color", json!({"time":0.5})), "missing string 'clip_id'");
+        has(err(&mut ss, "pick_key_color", json!({"clip_id":a})), "missing number 'time'");
+        has(err(&mut ss, "pick_key_color", json!({"clip_id":a,"time":0.5,"x":0.9,"w":0.2})), "pick_key_color: sample region must be positive and within 0..1");
+        has(err(&mut ss, "pick_key_color", json!({"clip_id":"nope","time":0.5})), "pick_key_color: no clip 'nope'");
+        let exp = add_fx(&mut ss.project, &a, "exposure", &[]).unwrap(); has(err(&mut ss, "pick_key_color", json!({"clip_id":a,"time":0.5,"effect_id":exp})), "is not a keyer or chroma_key");
+        has(err(&mut ss, "pick_key_color", json!({"clip_id":a,"time":0.5,"w":0.01,"h":0.01})), "pick_key_color: sample region contains no pixels");
+        let ck = add_fx(&mut ss.project, &a, "chroma_key", &[("tolerance", 1.0)]).unwrap();
+        let r = dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5,"effect_id":ck})).unwrap(); assert_eq!(r["kind"], "chroma_key"); assert_eq!(r["pixels"], 1);
+        let e = ss.project.find_clip(&a).unwrap().effects.iter().find(|e| e.id == ck).unwrap().clone(); assert!((e.params["b"].base - 0.6).abs() < 0.01 && (e.params["r"].base - 0.2).abs() < 0.01);
+        let r = dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5})).unwrap(); assert_eq!(r["kind"], "keyer"); let kid = r["effect_id"].as_str().unwrap().to_string();
+        assert_eq!(dispatch(&mut ss, "pick_key_color", &json!({"clip_id":a,"time":0.5})).unwrap()["effect_id"], kid.as_str());
+    }
+    #[test] fn match_color_validates_and_adds_a_color_transfer() {
+        let (mut ss, a, b) = session();
+        has(err(&mut ss, "match_color", json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5,"strength":-0.1})), "strength0..1 required");
+        has(err(&mut ss, "match_color", json!({"ref_clip_id":b})), "missing string 'clip_id'");
+        has(err(&mut ss, "match_color", json!({"clip_id":a,"ref_clip_id":b,"ref_time":1.5})), "missing number 'time'");
+        let r = dispatch(&mut ss, "match_color", &json!({"clip_id":a,"ref_clip_id":b,"time":0.5,"ref_time":1.5})).unwrap(); let m = r["ref_mean"].as_array().unwrap();
+        assert!((m[0].as_f64().unwrap() - 0.6).abs() < 0.01 && (m[2].as_f64().unwrap() - 0.3).abs() < 0.01);
+        let e = ss.project.find_clip(&a).unwrap().effects.last().unwrap().clone(); assert_eq!(e.kind, "color_transfer"); assert_eq!(e.params["strength"].base, 1.0);
+    }
+    #[test] fn match_shots_validates_targets_mode_and_hero_time() {
+        let (mut ss, a, b) = session();
+        let cases = [(json!({}), "missing string 'hero_clip_id'"), (json!({"hero_clip_id":"nope"}), "match_shots: no clip 'nope'"), (json!({"hero_clip_id":a,"strength":2}), "match_shots: strength must be in 0..1"),
+            (json!({"hero_clip_id":a,"mode":"x"}), "match_shots: mode must be balance or lab"), (json!({"hero_clip_id":a}), "match_shots: no other video clips to match; pass clip_ids"),
+            (json!({"hero_clip_id":a,"clip_ids":"b"}), "match_shots: clip_ids must be an array of clip ids"), (json!({"hero_clip_id":a,"clip_ids":[]}), "match_shots: clip_ids is empty"),
+            (json!({"hero_clip_id":a,"clip_ids":[1]}), "match_shots: clip_ids must be strings"), (json!({"hero_clip_id":a,"clip_ids":[a]}), "cannot be matched to itself"),
+            (json!({"hero_clip_id":a,"clip_ids":["nope"]}), "match_shots: no clip 'nope'"), (json!({"hero_clip_id":a,"clip_ids":[b,b]}), "listed twice"),
+            (json!({"hero_clip_id":a,"clip_ids":[b],"hero_time":"x"}), "match_shots: hero_time must be a number"), (json!({"hero_clip_id":a,"clip_ids":[b],"hero_time":1.0}), "match_shots: hero_time 1 is outside the hero (0..1)")];
+        for (args, want) in cases { has(err(&mut ss, "match_shots", args), want); }
+    }
+    #[test] fn match_shots_lab_mode_tags_one_lab_match_and_a_rerun_replaces_it() {
+        let (mut ss, a, b) = session();
+        for _ in 0..2 { let r = dispatch(&mut ss, "match_shots", &json!({"hero_clip_id":a,"clip_ids":[b],"mode":"lab","hero_time":0.5})).unwrap(); assert_eq!(r["matched"][0]["kind"], "lab_match"); assert_eq!(r["hero_sampled_times"], json!([0.5])); }
+        let fx = &ss.project.find_clip(&b).unwrap().effects; assert_eq!(fx.len(), 1); assert_eq!(fx[0].strings["matched_to"], a.as_str());
+    }
+    #[test] fn luma_levels_needs_sixteen_opaque_pixels_and_tone_fit_maps_levels() {
+        let mut f = Frame::new(4, 4); for (i, p) in f.d.chunks_exact_mut(4).enumerate() { p[0] = i as f32 / 15.0; p[1] = p[0]; p[2] = p[0]; p[3] = 1.0; }
+        let l = luma_levels(&[Frame { w: 4, h: 4, d: f.d.clone() }], [1.0; 3]).unwrap(); assert!((l[0] - 0.0).abs() < 1e-6 && (l[2] - 1.0).abs() < 1e-5 && (l[1] - 8.0 / 15.0).abs() < 1e-5, "{l:?}");
+        f.d[3] = 0.0; assert_eq!(luma_levels(&[f], [1.0; 3]).unwrap_err(), "only 15 opaque pixels");
+        assert_eq!(tone_fit([0.1, 0.5, 0.11], [0.1, 0.5, 0.9]), (0.0, 1.0, 1.0)); assert_eq!(tone_fit([0.1, 0.5, 0.9], [0.0, 0.5, 0.9]), (0.0, 1.0, 1.0));
+        let (lift, slope, g) = tone_fit([0.1, 0.5, 0.9], [0.1, 0.5, 0.9]); assert!(lift.abs() < 1e-6 && (slope - 1.0).abs() < 1e-6 && (g - 1.0).abs() < 1e-6, "{lift} {slope} {g}");
     }
 }
 

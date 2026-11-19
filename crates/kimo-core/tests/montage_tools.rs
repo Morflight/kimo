@@ -231,3 +231,117 @@ fn cool(name: &str, dur: f64) -> String {
     let err = dispatch(&mut ss2, "montage_color_match", &json!({"clip_ids": ["x", "y"], "reference_clip_ids": ["x", "y"]}));
     assert!(err.is_err(), "expected an error when every clip_id is also a reference_clip_id (nothing left to match)");
 }
+
+// ------------------------------------------------------------------------------------------------------------------
+// Fast tiny-media versions (32x24 or 64x48 lossless gray, 10 fps). Textures: CHECK = 2 px checker 40/215 (sharp, fully
+// exposed: nothing crushed or clipped), DARK = the same checker at 1/4 (every pixel crushed), FLAT = mid grey 128 (no
+// detail at all, nothing crushed or clipped).
+// ------------------------------------------------------------------------------------------------------------------
+const CHECK: &str = "40+175*mod(floor(X/2)+floor(Y/2),2)";
+const DARK: &str = "1+3*mod(floor(X/2)+floor(Y/2),2)";
+fn tiny(name: &str, lum: &str, dur: f64, size: &str) -> String {
+    let p = dir().join(name);
+    ffmpeg(&["-f", "lavfi", "-i", &format!("nullsrc=s={size}:r=10:d={dur},format=gray,geq=lum='{lum}'"), "-c:v", "ffv1", p.to_str().unwrap()]);
+    p.to_string_lossy().into_owned()
+}
+fn tiny_proj(w: u32, h: u32) -> Session { let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": w, "height": h, "fps": 10})); ss }
+/// Lays `media` back to back on one new track; returns the clip ids.
+fn lay(ss: &mut Session, media: &[(String, f64)]) -> Vec<String> {
+    let t = sid(&call(ss, "add_track", json!({})), "track_id");
+    let mut at = 0.0; let mut ids = vec![];
+    for (p, d) in media {
+        let a = sid(&call(ss, "import_media", json!({"path": p})), "asset_id");
+        ids.push(sid(&call(ss, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": at, "duration": d, "in_point": 0.0})), "clip_id"));
+        at += d;
+    }
+    ids
+}
+
+#[test] fn tiny_score_windows_names_the_failing_axis_of_each_window() {
+    let mut ss = tiny_proj(32, 24);
+    let ids = lay(&mut ss, &[(tiny("t_check.mkv", CHECK, 0.4, "32x24"), 0.4), (tiny("t_dark.mkv", DARK, 0.4, "32x24"), 0.4), (tiny("t_flat.mkv", "128", 0.4, "32x24"), 0.4)]);
+    let r = call(&mut ss, "score_windows", json!({"clip_ids": ids, "window_s": 0.2}));
+    let w = r["windows"].as_array().unwrap();
+    assert_eq!((r["window_count"].as_u64(), r["kept_count"].as_u64(), r["dropped_count"].as_u64()), (Some(6), Some(2), Some(4)), "{r}");
+    let spans: Vec<(f64, f64)> = w.iter().map(|x| (x["start"].as_f64().unwrap(), x["end"].as_f64().unwrap())).collect();
+    assert_eq!(spans, vec![(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0), (1.0, 1.2)]);
+    for x in &w[0..2] {
+        assert_eq!((x["kept"].clone(), x["score_parts"]["sharpness"].as_f64(), x["score_parts"]["exposure"].as_f64(), x["score_parts"]["motion"].as_f64()), (json!(true), Some(1.0), Some(1.0), Some(0.0)), "{x}");
+        assert!(x["drop_reason"].is_null());
+    }
+    for x in &w[2..4] { assert!(x["drop_reason"].as_str().unwrap().starts_with("exposure 0 under min_exposure 0.25"), "{x}"); assert_eq!(x["crushed_frac"].as_f64(), Some(1.0)); }
+    for x in &w[4..6] { assert!(x["drop_reason"].as_str().unwrap().starts_with("sharpness 0 under min_sharpness 0.12"), "{x}"); assert_eq!(x["score_parts"]["exposure"].as_f64(), Some(1.0)); }
+    // the blended-score floor on its own
+    let r2 = call(&mut ss, "score_windows", json!({"clip_ids": [ids[0]], "window_s": 0.2, "min_score": 0.99}));
+    for x in r2["windows"].as_array().unwrap() { assert!(x["kept"] == json!(false) && x["drop_reason"].as_str().unwrap().contains("under min_score 0.99"), "{x}"); }
+    // a 0.05 s tail under a quarter window is not a window of its own
+    let r3 = call(&mut ss, "score_windows", json!({"clip_ids": [ids[0]], "window_s": 0.35}));
+    assert_eq!((r3["window_count"].clone(), r3["windows"][0]["end"].clone()), (json!(1), json!(0.35)));
+}
+
+#[test] fn tiny_shaky_clip_measures_more_shake_and_is_dropped_by_the_shake_gate() {
+    // stabilize needs at least 64x64: 96x72 blocky hash noise, the second clip jittered by up to 4 px per frame
+    let mut ss = tiny_proj(96, 72);
+    let noise = |dx: &str, dy: &str| format!("255*abs(mod(sin(floor((X+{dx})/2)*12.9898+floor((Y+{dy})/2)*78.233)*43758.5453\\,1))");
+    let tex = noise("0", "0");
+    let jit = noise("trunc(4*sin(N*2.1))", "trunc(4*cos(N*1.3))");
+    let ids = lay(&mut ss, &[(tiny("t_still.mkv", &tex, 1.0, "96x72"), 1.0), (tiny("t_shaky.mkv", &jit, 1.0, "96x72"), 1.0)]);
+    let r = call(&mut ss, "score_windows", json!({"clip_ids": ids, "window_s": 1.0}));
+    let w = r["windows"].as_array().unwrap();
+    let (still, shaky) = (w[0]["shake_px"].as_f64().unwrap(), w[1]["shake_px"].as_f64().unwrap());
+    assert!(shaky > still + 0.5, "jittered {shaky} vs still {still}: {r}");
+    let gate = (still + shaky) / 2.0;
+    let r2 = call(&mut ss, "score_windows", json!({"clip_ids": ids, "window_s": 1.0, "max_shake_px": gate, "min_score": 0.0, "min_sharpness": 0.0}));
+    let w2 = r2["windows"].as_array().unwrap();
+    assert!(w2[1]["drop_reason"].as_str().unwrap().starts_with("shake "), "{r2}");
+    assert_eq!(w2[0]["kept"], json!(true), "{r2}");
+}
+
+#[test] fn tiny_best_segments_splits_mixed_clips_and_deletes_all_junk_ones() {
+    let mut ss = tiny_proj(32, 24);
+    let kdk = tiny("t_kdk.mkv", &format!("if(between(N,2,3),{DARK},{CHECK})"), 0.6, "32x24");
+    let kd = tiny("t_kd.mkv", &format!("if(gte(N,2),{DARK},{CHECK})"), 0.4, "32x24");
+    let ids = lay(&mut ss, &[(tiny("t_check2.mkv", CHECK, 0.4, "32x24"), 0.4), (kdk, 0.6), (kd, 0.4), (tiny("t_dark2.mkv", DARK, 0.4, "32x24"), 0.4)]);
+    let r = call(&mut ss, "best_segments", json!({"clip_ids": ids, "window_s": 0.2}));
+    assert_eq!((r["window_count"].as_u64(), r["dropped_count"].as_u64(), r["kept_count"].as_u64()), (Some(9), Some(3), Some(4)), "{r}");
+    let kept: Vec<(String, f64, f64)> = r["kept_clips"].as_array().unwrap().iter().map(|k| (k["clip_id"].as_str().unwrap().to_string(), k["start"].as_f64().unwrap(), k["end"].as_f64().unwrap())).collect();
+    assert_eq!((kept[0].0.as_str(), kept[0].1, kept[0].2), (ids[0].as_str(), 0.0, 0.4), "an all-good clip stays one piece");
+    assert_eq!((kept[1].0.as_str(), kept[1].1, kept[1].2), (ids[1].as_str(), 0.4, 0.6));
+    assert_eq!((kept[2].1, kept[2].2), (0.8, 1.0));
+    assert_eq!((kept[3].0.as_str(), kept[3].1, kept[3].2), (ids[2].as_str(), 1.0, 1.2));
+    let mut on_track: Vec<(f64, f64)> = ss.project.tracks[0].clips.iter().map(|c| ((c.start * 1e6).round() / 1e6, ((c.start + c.duration) * 1e6).round() / 1e6)).collect();
+    on_track.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(on_track, vec![(0.0, 0.4), (0.4, 0.6), (0.8, 1.0), (1.0, 1.2)], "the dark middle, the dark tail and the all-dark clip are gone");
+    assert!(ss.project.find_clip(&ids[3]).is_none());
+}
+
+fn tiny_clicks(name: &str, period: f64, n: usize, decay: f64, amp: &str, rate: u32) -> String {
+    let p = dir().join(name);
+    let expr = format!("{amp}*exp(-mod(t\\,{period})*{decay})*sin(2*PI*1200*mod(t\\,{period}))");
+    ffmpeg(&["-f", "lavfi", "-i", &format!("aevalsrc='{expr}':s={rate}:d={}", period * n as f64 + 0.5), "-c:a", "pcm_s16le", p.to_str().unwrap()]);
+    p.to_string_lossy().into_owned()
+}
+
+#[test] fn tiny_beat_sync_montage_cuts_on_beats_ends_on_a_phrase_and_fades() {
+    let mut ss = tiny_proj(32, 24);
+    let music = sid(&call(&mut ss, "import_media", json!({"path": tiny_clicks("t_beats.wav", 0.5, 16, 40.0, "(1-0.4*mod(floor(t/0.5)\\,3))", 16000)})), "asset_id");
+    let ids = lay(&mut ss, &[(tiny("t_m1.mkv", CHECK, 4.0, "32x24"), 4.0), (tiny("t_m2.mkv", CHECK, 4.0, "32x24"), 4.0)]);
+    let r = call(&mut ss, "beat_sync_montage", json!({"clip_ids": ids, "music_asset_id": music, "beats_per_phrase": 4, "min_beats_per_shot": 1, "max_beats_per_shot": 3, "target_duration": 5.0, "start": 1.0}));
+    let cuts: Vec<f64> = r["cut_times"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(r["cut_times"], r["beat_times_used"]);
+    assert!(cuts.len() >= 3, "{r}");
+    let beat0 = cuts[0];
+    assert!((beat0 - 1.0).abs() < 1e-9, "the first beat lands on start: {r}");
+    for w in cuts.windows(2) { let gap = w[1] - w[0]; assert!(gap > 0.5 - 0.04 && gap < 1.5 + 0.04, "shots are 1..3 beats: {r}"); }
+    assert!(cuts.last().unwrap() - beat0 <= 5.0 + 1e-9, "target_duration caps the walk: {r}");
+    let end = r["end"].as_f64().unwrap();
+    assert!((((end - beat0) / 2.0).round() * 2.0 - (end - beat0)).abs() < 0.04 && end >= *cuts.last().unwrap(), "ends on a 4-beat phrase: {r}");
+    let d = r["duration"].as_f64().unwrap();
+    assert!((d - (end - 1.0)).abs() < 1e-9);
+    let fade = r["fade_out_s"].as_f64().unwrap();
+    assert!((fade - 1.0).abs() < 0.04, "2 beats of ~0.5 s: {r}");
+    let mc = ss.project.find_clip(r["music_clip_id"].as_str().unwrap()).unwrap();
+    let keys: Vec<(f64, f64)> = mc.audio.volume.keys.iter().map(|k| (k.t, k.v)).collect();
+    assert_eq!(keys.len(), 2);
+    assert!((keys[0].0 - (d - fade)).abs() < 1e-9 && (keys[0].1 - r["music_gain_applied"].as_f64().unwrap()).abs() < 1e-9 && keys[1] == (d, 0.0), "{keys:?}");
+}

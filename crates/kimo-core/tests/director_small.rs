@@ -1317,3 +1317,78 @@ fn pillarboxed_landscape(name: &str, dur: f64, canvas_w: u32, canvas_h: u32, ban
     assert!(r["skipped"].as_array().unwrap().iter().any(|s| s["clip_id"] == json!(c)), "{r}");
     assert!(r["matched"].as_array().unwrap().is_empty(), "{r}");
 }
+
+/// Fast version of review_export_shows_the_exported_file: a 1 s 32x24 export with a tone, read back with expect_project.
+#[test] fn tiny_review_export_reads_the_file_back_and_checks_it_against_the_project() {
+    let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 32, "height": 24, "fps": 10}));
+    let t = sid(&call(&mut ss, "add_track", json!({})), "track_id");
+    call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "solid", "color": [0.2, 0.4, 0.6], "start": 0, "duration": 1.0}));
+    let tone = dir().join("t_rv_tone.wav");
+    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1", tone.to_str().unwrap()]);
+    let a = sid(&call(&mut ss, "import_media", json!({"path": tone})), "asset_id");
+    let t2 = sid(&call(&mut ss, "add_track", json!({})), "track_id");
+    call(&mut ss, "add_clip", json!({"track_id": t2, "source_type": "media", "asset_id": a, "start": 0, "duration": 1.0}));
+    let out = dir().join("t_rv_export.mp4"); call(&mut ss, "export", json!({"path": out, "crf": 40}));
+    let sheet = dir().join("t_rv_sheet.png");
+    let r = call(&mut ss, "review_export", json!({"path": out, "n": 2, "expect_project": true, "sheet_path": sheet}));
+    assert!((r["duration"].as_f64().unwrap() - 1.0).abs() < 0.1, "{r}");
+    assert_eq!((r["width"].clone(), r["height"].clone(), r["video_codec"].clone(), r["audio_codec"].clone(), r["frames"].clone()), (json!(32), json!(24), json!("h264"), json!("aac"), json!(2)), "{r}");
+    let peak = r["sample_peak_dbfs"].as_f64().unwrap();
+    assert!(peak < -15.0 && peak > -25.0 && r["lufs"].as_f64().is_some(), "ffmpeg's sine source peaks at 1/8 (-18 dBFS): {r}");
+    assert_eq!((r["qc"]["checked"].clone(), r["qc"]["duration_match"].clone(), r["qc"]["resolution_match"].clone(), r["qc"]["expected_duration"].clone()), (json!(true), json!(true), json!(true), json!(1.0)), "{r}");
+    assert!(std::fs::metadata(&sheet).map(|m| m.len() > 100).unwrap_or(false));
+    assert_eq!((ss.media.len(), ss.media[0].w, ss.media[0].h), (1, 2 * 184, 184 * 16 / 9), "two tiles in one row");
+    // without expect_project nothing is compared; an empty project has nothing to compare against
+    assert_eq!(call(&mut ss, "review_export", json!({"path": out, "n": 2, "sheet_path": sheet}))["qc"]["checked"], json!(false));
+    let mut empty = Session::new();
+    let q = call(&mut empty, "review_export", json!({"path": out, "n": 2, "expect_project": true, "sheet_path": sheet}))["qc"].clone();
+    assert_eq!((q["checked"].clone(), q["reason"].as_str().unwrap().contains("no clips")), (json!(false), true));
+}
+
+/// 64x36, 10 fps: a picture (`lum`, an ffmpeg geq expression over X, Y, T) with a voice-like tone in the given windows.
+fn tiny_take(name: &str, dur: f64, lum: &str, speech: &[(f64, f64)]) -> String {
+    let p = dir().join(name);
+    let gate: Vec<String> = speech.iter().map(|(s, e)| format!("between(t,{s},{e})")).collect();
+    let a = if speech.is_empty() { format!("anullsrc=r=48000:cl=mono:d={dur}") } else {
+        format!("aevalsrc='({})*0.6*(0.25*sin(2*PI*140*t)+0.15*sin(2*PI*280*t+1)+0.1*sin(2*PI*420*t+2))*(0.55+0.45*sin(2*PI*4.3*t))':s=48000:d={dur}", gate.join("+")) };
+    ffmpeg(&["-f", "lavfi", "-i", &format!("nullsrc=s=64x36:r=10:d={dur},format=gray,geq=lum='{lum}'"), "-f", "lavfi", "-i", &a,
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", p.to_str().unwrap()]);
+    p.to_string_lossy().into_owned()
+}
+const TINY_CHECK: &str = "40+175*mod(floor(X/2)+floor(Y/2)\\,2)";
+
+#[test] fn tiny_auto_rough_cut_drops_by_index_dedupes_identical_takes_and_reuses_a_track() {
+    let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 64, "height": 36, "fps": 10}));
+    let take = tiny_take("t_rc_a.mp4", 4.1, TINY_CHECK, &[(0.3, 1.3), (2.8, 3.8)]);
+    let copy = dir().join("t_rc_b.mp4"); std::fs::copy(&take, &copy).unwrap();
+    let a = sid(&call(&mut ss, "import_media", json!({"path": take})), "asset_id");
+    let b = sid(&call(&mut ss, "import_media", json!({"path": copy})), "asset_id");
+    let r = call(&mut ss, "auto_rough_cut", json!({"asset_ids": [a, b], "dedupe": true, "drop": [{"asset_id": a, "index": 1}], "soft": "flag", "start": 0.5}));
+    let segs = r["segments"].as_array().unwrap();
+    assert_eq!(segs.iter().map(|s| s["dropped"].as_bool().unwrap()).collect::<Vec<_>>(), vec![false, true, true, true], "{r}");
+    for s in &segs[2..] {
+        assert_eq!((s["similar_to"].clone(), s["dropped_reason"].clone()), (json!({"asset_id": a, "index": 0}), json!("looks like a segment already in the cut")), "{r}");
+    }
+    assert!(segs[1].get("dropped_reason").is_none(), "dropped by request, not by a rule");
+    let clips = r["clips"].as_array().unwrap();
+    assert_eq!((clips.len(), clips[0]["start"].clone(), clips[0]["asset_id"].clone()), (1, json!(0.5), json!(a)), "{r}");
+    // again onto the same track from 0, without dedupe: the twins are flagged but kept, and the earlier clip is replaced
+    let tid = r["track_id"].as_str().unwrap().to_string();
+    let r2 = call(&mut ss, "auto_rough_cut", json!({"asset_ids": [a, b], "track_id": tid}));
+    assert_eq!(r2["track_id"], json!(tid));
+    assert_eq!(r2["clips"].as_array().unwrap().len(), 4, "{r2}");
+    assert!(r2["segments"].as_array().unwrap()[2]["similar_to"].is_object() && r2["segments"][2]["dropped"] == json!(false));
+    assert_eq!(ss.project.tracks.iter().find(|t| t.id == tid).unwrap().clips.len(), 4);
+}
+
+#[test] fn remove_transition_takes_the_clips_transition_away() {
+    let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 32, "height": 24, "fps": 10}));
+    let t = sid(&call(&mut ss, "add_track", json!({})), "track_id");
+    call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "solid", "color": [1, 0, 0], "start": 0, "duration": 1.0}));
+    let c2 = sid(&call(&mut ss, "add_clip", json!({"track_id": t, "source_type": "solid", "color": [0, 0, 1], "start": 1.0, "duration": 1.0})), "clip_id");
+    call(&mut ss, "add_transition", json!({"clip_id": c2, "kind": "crossfade", "duration": 0.5}));
+    assert!(ss.project.find_clip(&c2).unwrap().transition_in.is_some());
+    assert_eq!(call(&mut ss, "remove_transition", json!({"clip_id": c2})), json!({"clip_id": c2, "removed": "crossfade"}));
+    assert!(ss.project.find_clip(&c2).unwrap().transition_in.is_none());
+    assert_eq!(call(&mut ss, "remove_transition", json!({"clip_id": c2}))["removed"], Value::Null);
+}

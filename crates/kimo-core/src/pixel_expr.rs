@@ -386,8 +386,8 @@ fn eval(n: &Node, c: &Ctx) -> Val {
                     "min" => a.min(b),
                     "max" => a.max(b),
                     "atan2" => a.atan2(b),
-                    "sqrt" => a.sqrt(),
-                    _ => 0.,
+                    // sqrt: every other FUNCS entry returned above, and compile rejects unknown names
+                    _ => a.sqrt(),
                 }
             }
             o
@@ -421,11 +421,8 @@ pub fn apply(
     {
         return Err("pixel_expr needs valid frame".into());
     }
-    let cost = src
-        .w
-        .checked_mul(src.h)
-        .and_then(|n| n.checked_mul(program.ops))
-        .ok_or("pixel_expr operation count overflow")?;
+    // w*h*4 fits (checked above) and ops is bounded by the 64 KiB source, so this saturates only for absurd frames
+    let cost = (src.w * src.h).saturating_mul(program.ops);
     let limits = crate::resource_limits::current();
     if limits
         .expr_max_pixel_ops
@@ -481,4 +478,49 @@ pub fn apply(
         return Err("invalid_argument: pixel_expr produced nonfinite output".into());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource_limits::{install, Limits};
+    fn frame(w: usize, h: usize) -> Frame { let mut f = Frame::new(w, h); for (i, v) in f.d.iter_mut().enumerate() { *v = (i % 4) as f32 * 0.25; } f }
+    fn run(src: &str, f: &Frame) -> Result<Frame, String> { apply(&compile(src, 512)?, f, None, [0.; 8], 0.) }
+    #[test] fn compile_rejects_oversized_source_and_trailing_tokens() {
+        assert_eq!(compile(&format!("1{}", " ".repeat(65536)), 512).unwrap_err(), "pixel_expr source cap 65536 bytes exceeded");
+        assert_eq!(compile("1 2", 512).unwrap_err(), "pixel_expr compile at byte 2: trailing token");
+    }
+    #[test] fn binary_operator_counts_against_the_op_cap() {
+        // two atoms fit a cap of 2, the '+' node is the third op
+        assert_eq!(compile("1+2", 2).unwrap_err(), "pixel_expr compile at byte 3: expr_max_ops cap 2 exceeded (set_limits expr_max_ops)");
+        assert_eq!(compile("1+2", 3).unwrap().ops, 3);
+    }
+    #[test] fn empty_call_is_checked_for_arity() {
+        assert_eq!(compile("sin()", 512).unwrap_err(), "pixel_expr compile at byte 5: sin needs 1 arguments");
+    }
+    #[test] fn atan2_and_sqrt_evaluate_per_channel() {
+        let f = frame(2, 1);
+        let o = run("atan2(1,1)", &f).unwrap(); assert!((o.d[0] - std::f32::consts::FRAC_PI_4).abs() < 1e-6); assert_eq!(o.d[3], 0.75);
+        let o = run("sqrt(src)", &f).unwrap(); assert_eq!(&o.d[..4], &[0.0, 0.5, 0.5f32.sqrt(), 0.75f32.sqrt()]);
+    }
+    #[test] fn apply_rejects_invalid_frames() {
+        let p = compile("r", 512).unwrap();
+        assert_eq!(apply(&p, &Frame { w: 0, h: 1, d: vec![] }, None, [0.; 8], 0.).err().unwrap(), "pixel_expr needs valid frame");
+        assert_eq!(apply(&p, &Frame { w: 2, h: 1, d: vec![0.; 4] }, None, [0.; 8], 0.).err().unwrap(), "pixel_expr needs valid frame");
+        assert_eq!(apply(&p, &Frame { w: usize::MAX, h: 2, d: vec![] }, None, [0.; 8], 0.).err().unwrap(), "frame overflow");
+    }
+    #[test] fn apply_enforces_session_op_and_pixel_op_caps() {
+        let p = compile("r+g", 512).unwrap(); let f = frame(4, 4);
+        { let _g = install(Limits { expr_max_ops: Some(2), ..Limits::defaults() }); assert_eq!(apply(&p, &f, None, [0.; 8], 0.).err().unwrap(), "expr_max_ops limit exceeded; set_limits expr_max_ops"); }
+        { let _g = install(Limits { expr_max_pixel_ops: Some(47), ..Limits::defaults() }); assert_eq!(apply(&p, &f, None, [0.; 8], 0.).err().unwrap(), "pixel_expr expr_max_pixel_ops cap 47 exceeded (48); set_limits expr_max_pixel_ops"); }
+        let _g = install(Limits { expr_max_pixel_ops: Some(48), ..Limits::defaults() }); assert_eq!(apply(&p, &f, None, [0.; 8], 0.).unwrap().d[0], 0.25);
+    }
+    #[test] fn apply_reports_a_timeout_once_the_budget_is_spent() {
+        let src = vec!["sin(x*y)"; 60].join("+"); let p = compile(&src, 10_000).unwrap(); let f = frame(128, 512);
+        let _g = install(Limits { expr_max_ops: None, expr_max_pixel_ops: None, expr_timeout_ms: Some(0), ..Limits::defaults() });
+        assert_eq!(apply(&p, &f, None, [0.; 8], 0.).err().unwrap(), "expr_timeout_ms exceeded (0 ms); set_limits expr_timeout_ms");
+    }
+    #[test] fn nonfinite_output_is_rejected() {
+        assert_eq!(run("1/0", &frame(2, 2)).err().unwrap(), "invalid_argument: pixel_expr produced nonfinite output");
+    }
 }

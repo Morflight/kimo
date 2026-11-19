@@ -69,3 +69,34 @@ fn roto_propagate_fills_every_intermediate_frame_between_two_keys() {
     assert_eq!(r["keys"].as_u64().unwrap(), 20, "a path key on every frame from 0.0 to 1.9s, got {r}");
     assert!(r["frames_filled"].as_u64().unwrap() >= 18, "nearly all the in-between frames should be newly filled, got {r}");
 }
+
+/// Fast tiny-media checks: ffv1 96x80, 10 fps, 8 frames of a smooth texture translating exactly +1 px in x per frame.
+fn tex_plate(tag: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("kimo-roto-tex-{tag}-{}.mkv", std::process::id()));
+    let t = "128+45*sin(0.55*(X-N))*sin(0.47*Y+0.3)+30*sin(0.21*(X-N)+0.33*Y)+20*cos(0.13*(X-N)-0.29*Y+1)";
+    let g = format!("nullsrc=s=96x80:r=10:d=0.8,format=rgb24,geq=r='{t}':g='{t}':b='{t}'");
+    assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", &g, "-c:v", "ffv1", "-pix_fmt", "bgr0", p.to_str().unwrap()]).status().unwrap().success()); p
+}
+fn tex_session(path: &std::path::Path) -> (Session, String, String) {
+    let mut s = Session::new(); c(&mut s, "project_set", json!({"width": 96, "height": 80, "fps": 10}));
+    let t = id(&c(&mut s, "add_track", json!({})), "track_id"); let a = id(&c(&mut s, "import_media", json!({"path": path.to_str().unwrap()})), "asset_id");
+    let clip = id(&c(&mut s, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0.0, "duration": 0.8})), "clip_id");
+    let m = id(&c(&mut s, "add_mask", json!({"clip_id": clip, "kind": "path", "interp": "linear", "points": rect_pts(0.5, 0.5, 0.3, 0.3)})), "mask_id");
+    c(&mut s, "set_mask_path_key", json!({"clip_id": clip, "mask_id": m, "time": 0.0, "points": rect_pts(0.5, 0.5, 0.3, 0.3)}));
+    c(&mut s, "set_mask_path_key", json!({"clip_id": clip, "mask_id": m, "time": 0.7, "points": rect_pts(0.5 + 7.0 / 96.0, 0.5, 0.3, 0.3)}));
+    (s, clip, m)
+}
+fn keys_of(s: &Session, clip: &str, m: &str) -> Vec<kimo_core::masks::PathKey> { s.project.find_clip(clip).unwrap().mask.as_ref().unwrap().layers.iter().find(|l| l.id == m).unwrap().path_keys.clone() }
+
+#[test]
+fn tiny_roto_propagate_follows_the_footage_between_keys() {
+    let p = tex_plate("follow"); let (mut s, clip, m) = tex_session(&p);
+    let r = c(&mut s, "roto_propagate", json!({"clip_id": clip, "mask_id": m, "snap": 0, "quality": 2}));
+    assert_eq!(r["keys"], 8); assert_eq!(r["frames_filled"], 6); assert_eq!(r["segments"], 1); assert_eq!(r["mean_snap_px"], 0.0);
+    for (i, k) in keys_of(&s, &clip, &m).iter().enumerate() { assert!((k.t - i as f64 / 10.0).abs() < 1e-9);
+        for (j, pt) in k.points.iter().enumerate() { let want = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)][j]; assert!((pt.x * 96.0 - (want.0 * 96.0 + i as f64)).abs() < 1.0 && (pt.y * 80.0 - want.1 * 80.0).abs() < 1.0, "frame {i} point {j}: ({}, {})", pt.x * 96.0, pt.y * 80.0); } }
+    // snapping moves the outline toward the strongest nearby edge, by at most `snap` px
+    let (mut s2, clip2, m2) = tex_session(&p); let r2 = c(&mut s2, "roto_propagate", json!({"clip_id": clip2, "mask_id": m2, "snap": 3}));
+    let ms = r2["mean_snap_px"].as_f64().unwrap(); assert!(ms > 0.0 && ms <= 3.0, "{r2}");
+    std::fs::remove_file(p).unwrap();
+}

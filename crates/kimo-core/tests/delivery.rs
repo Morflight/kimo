@@ -123,3 +123,39 @@ fn load_project_report_lists_missing_files() {
     let r = c(&mut a, "load_project", json!({"path": pr.to_str().unwrap(), "report": true})); assert_eq!(r["dependencies"]["missing"], 1, "{r}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn collect_dry_run_link_mode_and_relink_by_name_or_hash() {
+    let root = std::env::temp_dir().join(format!("kimo_deliv_tiny_{}", std::process::id())); let _ = std::fs::remove_dir_all(&root);
+    for d in ["a", "b", "c"] { std::fs::create_dir_all(root.join(d)).unwrap(); }
+    let p = |x: &Path| x.to_str().unwrap().to_string();
+    let wav = root.join("a/tone.wav");
+    sh(&["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000:duration=0.2", &p(&wav)]);
+    let size = std::fs::metadata(&wav).unwrap().len();
+    let mut ss = Session::new(); c(&mut ss, "import_media", json!({"path": p(&wav)}));
+    let dest = root.join("out");
+    let dry = c(&mut ss, "collect_project", json!({"dest_dir": p(&dest), "dry_run": true}));
+    assert_eq!((dry["dry_run"].clone(), dry["plan"]["files"].clone(), dry["plan"]["bytes"].clone()), (json!(true), json!(1), json!(size)));
+    assert!(!dest.exists(), "a dry run writes nothing");
+    let r = c(&mut ss, "collect_project", json!({"dest_dir": p(&dest), "copy": "link", "project_name": "tiny.kimo", "include_luts": false}));
+    assert_eq!((r["files"].clone(), r["bytes"].clone(), r["missing"].clone()), (json!(1), json!(size), json!(0)));
+    assert!(dest.join("tiny.kimo").is_file() && dest.join("collect_manifest.json").is_file());
+    let media: Vec<_> = std::fs::read_dir(dest.join("media")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(media.len(), 1); assert!(media[0].ends_with("_tone.wav"), "{media:?}");
+    assert!(err(&mut ss, "collect_project", json!({"dest_dir": p(&dest)})).starts_with("dest_exists:"));
+    let again = c(&mut ss, "collect_project", json!({"dest_dir": p(&dest), "overwrite": true, "project_name": "tiny.kimo"}));
+    assert_eq!(again["files"], json!(1));
+    // the source moves away: found by name, ambiguous with two copies, not found by hash without a recorded size
+    std::fs::rename(&wav, root.join("b/tone.wav")).unwrap();
+    std::fs::copy(root.join("b/tone.wav"), root.join("c/tone.wav")).unwrap();
+    let one = c(&mut ss, "relink_media", json!({"search_dirs": [p(&root.join("b"))], "match": "name"}));
+    assert_eq!((one["would_relink"].clone(), one["applied"].clone(), one["no_history"].clone(), one["items"][0]["result"].clone()), (json!(1), json!(false), json!(true), json!("match")), "{one}");
+    let two = c(&mut ss, "relink_media", json!({"search_dirs": [p(&root.join("b")), p(&root.join("c"))], "match": "name"}));
+    assert_eq!((two["ambiguous"].clone(), two["items"][0]["result"].clone()), (json!(1), json!("ambiguous")), "{two}");
+    let by_hash = c(&mut ss, "relink_media", json!({"search_dirs": [p(&root.join("b"))], "match": "hash", "recursive": false}));
+    assert_eq!(by_hash["not_found"], json!(1), "{by_hash}");
+    let applied = c(&mut ss, "relink_media", json!({"search_dirs": [p(&root.join("b"))], "match": "name", "apply": true}));
+    assert_eq!(applied["relinked"], json!(1));
+    assert_eq!(c(&mut ss, "list_dependencies", json!({}))["summary"]["missing"], json!(0));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -194,3 +194,47 @@ fn synth_case(range: Option<f64>, nf: usize) {
         let e = dispatch(&mut s, "stabilize", &a).expect_err(&format!("accepted {a}")); assert!(e.contains(want), "{a}: {e}");
         assert_eq!(before, serde_json::to_string(&s.project).unwrap(), "{a}: a refused call changed the project"); }
 }
+
+// ---------- fast tiny-plate checks of the warp engine through the command (ffv1 96x80, 10 fps, 6 frames) ----------
+// frame k shows the texture shifted by (dx_k, dy_k) = (2 sin 1.3k, 1.5 cos 0.9k - 1.5): exact sub-pixel jitter, no rotation or zoom
+fn tdx(k: usize) -> f64 { 2.0 * (1.3 * k as f64).sin() } fn tdy(k: usize) -> f64 { 1.5 * (0.9 * k as f64).cos() - 1.5 }
+fn tiny_setup(dur: f64) -> (Session, String) {
+    static P: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let path = P.get_or_init(|| { let p = std::env::temp_dir().join(format!("kimo-stab-tiny-{}.mkv", std::process::id())); let (x, y) = ("(X-2*sin(1.3*N))", "(Y-1.5*cos(0.9*N)+1.5)");
+        let t = format!("128+45*sin(0.55*{x})*sin(0.47*{y}+0.3)+30*sin(0.21*{x}+0.33*{y})+20*cos(0.13*{x}-0.29*{y}+1)");
+        let g = format!("nullsrc=s=96x80:r=10:d=0.6,format=rgb24,geq=r='{t}':g='{t}':b='{t}'");
+        assert!(std::process::Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", &g, "-c:v", "ffv1", "-pix_fmt", "bgr0", p.to_str().unwrap()]).status().unwrap().success()); p }).clone();
+    let mut s = Session::new(); c(&mut s, "project_set", json!({"width": 96, "height": 80, "fps": 10}));
+    let a = c(&mut s, "import_media", json!({"path": path}))["asset_id"].clone(); let t = c(&mut s, "add_track", json!({}))["track_id"].clone();
+    let id = c(&mut s, "add_clip", json!({"track_id": t, "source_type": "media", "asset_id": a, "start": 0, "duration": dur}))["clip_id"].as_str().unwrap().to_string(); (s, id)
+}
+#[test] fn tiny_warp_locked_crop_keys_cancel_the_jitter() {
+    let (mut s, id) = tiny_setup(0.6);
+    // an existing enabled mask makes the crop layer intersect with it
+    c(&mut s, "add_mask", json!({"clip_id": id, "kind": "path", "points": [{"x": 0.1, "y": 0.1}, {"x": 0.9, "y": 0.1}, {"x": 0.9, "y": 0.9}, {"x": 0.1, "y": 0.9}]}));
+    let r = c(&mut s, "stabilize", json!({"clip_id": id, "method": "position_scale_rotation", "mode": "no_motion", "framing": "crop", "max_features": 100}));
+    assert_eq!(r["engine"], "warp"); assert_eq!(r["frames"], 6); assert_eq!(r["mode"], "no_motion"); assert_eq!(r["zoom"], 1.0); assert!(r["inlier_fraction_min"].as_f64().unwrap() > 0.9, "{r}");
+    let (x, y, sc, rot) = (keys(&s, &id, "x"), keys(&s, &id, "y"), keys(&s, &id, "scale"), keys(&s, &id, "rotation")); assert_eq!(x.len(), 6);
+    for k in 0..6 { assert!((x[k].1 + tdx(k)).abs() < 0.08 && (y[k].1 + tdy(k)).abs() < 0.08, "frame {k}: ({}, {}) vs ({}, {})", x[k].1, y[k].1, -tdx(k), -tdy(k)); assert!((sc[k].1 - 1.0).abs() < 2e-3 && rot[k].1.abs() < 0.1); }
+    let crop = r["crop"].as_array().unwrap(); let cl = s.project.find_clip(&id).unwrap(); let l = cl.mask.as_ref().unwrap().layers.iter().find(|l| l.name == "stabilize_crop").unwrap();
+    assert_eq!(l.mode, "intersect"); assert_eq!(l.path_keys.len(), 6); assert_eq!(l.strings["interp"], "linear"); assert!(crop[0].as_f64().unwrap() > 1.0, "the jitter needs a crop: {r}");
+    // perspective keys pin corners (pixel-edge coordinates) and turns the pin on; a later similarity run drops the crop layer
+    let rp = c(&mut s, "stabilize", json!({"clip_id": id, "method": "perspective", "mode": "no_motion", "framing": "stabilize_only", "max_features": 100})); assert_eq!(rp["method"], "perspective");
+    let p0 = keys(&s, &id, "pin0x"); assert_eq!(p0.len(), 6); for k in 0..6 { assert!((p0[k].1 + tdx(k)).abs() < 0.1, "pin0x frame {k}: {}", p0[k].1); } assert_eq!(s.project.find_clip(&id).unwrap().props["pin_on"].base, 1.0);
+    assert!(s.project.find_clip(&id).unwrap().mask.as_ref().unwrap().layers.iter().all(|l| l.name != "stabilize_crop"));
+    // a clip without any mask gets a fresh mask stack holding just the crop layer, in the default add mode
+    let (mut s2, id2) = tiny_setup(0.6); c(&mut s2, "stabilize", json!({"clip_id": id2, "method": "position", "mode": "no_motion", "framing": "crop", "max_features": 100}));
+    let m = s2.project.find_clip(&id2).unwrap().mask.as_ref().unwrap(); assert_eq!(m.layers.len(), 1); assert_eq!(m.layers[0].name, "stabilize_crop"); assert_ne!(m.layers[0].mode, "intersect");
+}
+#[test] fn tiny_warp_synthesize_edges_and_rolling_shutter_props() {
+    let (mut s, id) = tiny_setup(0.6);
+    let r = c(&mut s, "stabilize", json!({"clip_id": id, "method": "position", "framing": "synthesize_edges", "synthesis_range": 0.2, "smoothing": "l1", "max_features": 100}));
+    assert_eq!(r["synth_frames"], 2); assert_eq!(s.project.find_clip(&id).unwrap().props["stab_fill"].base, 2.0); for k in ["stab_ss", "stab_sr", "stab_sx", "stab_sy"] { assert_eq!(keys(&s, &id, k).len(), 6, "{k}"); }
+    let rs = c(&mut s, "stabilize", json!({"clip_id": id, "rolling_shutter": 0.4, "max_features": 100})); assert_eq!(rs["rolling_shutter"], 0.4); assert_eq!(rs["mesh"], json!([9, 17]));
+    let cl = s.project.find_clip(&id).unwrap(); assert_eq!(cl.props["mesh_exact"].base, 1.0); assert_eq!(cl.props["stab_rs"].base, 0.4); assert!(cl.props.get("stab_fill").is_none()); assert_eq!(keys(&s, &id, "mx0").len(), 6);
+    // rendering the mesh pin draws the frame (crop_auto_scale fills the centre)
+    let mut cache = kimo_core::render::Cache::new(); kimo_core::render::prepare_at(&s.project, &mut cache, Some(0.2)).unwrap(); let f = kimo_core::render::render_frame_opts(&s.project, 0.2, &cache, true).unwrap(); assert!(f.d[(40 * 96 + 48) * 4 + 3] > 0.99);
+    // a later rigid run removes the mesh pin, its markers and every mx/my key
+    c(&mut s, "stabilize", json!({"clip_id": id, "method": "position", "max_features": 100})); let cl = s.project.find_clip(&id).unwrap();
+    for k in ["mesh_nx", "mesh_ny", "mesh_exact", "stab_rs", "pin_on", "mx0", "my152"] { assert!(cl.props.get(k).is_none(), "{k} left behind"); } assert_eq!(keys(&s, &id, "x").len(), 6);
+}
