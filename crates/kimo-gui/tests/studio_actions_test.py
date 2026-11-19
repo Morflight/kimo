@@ -6,6 +6,7 @@ filesystem writes. The fixture never accesses a real project or exports a file.
 import asyncio
 import functools
 import http.server
+import re
 from pathlib import Path
 import threading
 from playwright.async_api import async_playwright
@@ -39,6 +40,8 @@ async def main():
               __kimoBridge.invoke=async (command,args={})=>{
                 fixture.requests.push({command,args:structuredClone(args)});
                 if(fixture.fail===command)throw Error('fixture failure '+command);
+                if(command==='agent_send')return await new Promise(resolve=>fixture.finishAgent=resolve);
+                if(command==='agent_stop'){fixture.finishAgent({reply:'Stopped fixture turn'});return null;}
                 if(command==='pick')return fixture.pick;
                 if(command==='project_save')return args.path;
                 if(command==='project_open'||command==='project_new'||command==='reveal')return null;
@@ -105,6 +108,13 @@ async def main():
             await page.evaluate('fixture.jobState="failed"')
             await page.click('#ex-go')
             await page.wait_for_function('document.querySelector("#ex-err").textContent.includes("synthetic encoder failure")')
+            for picked, expected in [('/fixture/movie','/fixture/movie.mp4'),('/fixture/UPPER.MP4','/fixture/UPPER.MP4')]:
+                await page.evaluate('(p)=>fixture.pick=[p]', picked)
+                await page.click('#ex-browse')
+                await page.wait_for_function('(v)=>document.querySelector("#ex-path").value===v',arg=expected)
+            await page.evaluate('fixture.pick=[]')
+            await page.click('#ex-browse')
+            assert await page.input_value('#ex-path') == '/fixture/UPPER.MP4'
             await page.click('#ex-close')
             await page.click('#tb-proj')
             assert await page.is_visible('#ctx')
@@ -146,6 +156,14 @@ async def main():
             await page.locator('.thead .tn input').fill(' Renamed track ')
             await page.locator('.thead .tn input').press('Enter')
             await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="set_track"&&r.args.args.args.name==="Renamed track")')
+            await page.locator('.thead .tn').dblclick()
+            await page.locator('.thead .tn input').fill('Blur rename')
+            await page.locator('.thead .tn input').blur()
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="set_track"&&r.args.args.args.name==="Blur rename")')
+            await page.locator('.thead .tn').dblclick()
+            await page.locator('.thead .tn input').fill('Discard rename')
+            await page.locator('.thead .tn input').press('Escape')
+            assert not await page.evaluate('fixture.requests.some(r=>r.args.args?.args?.name==="Discard rename")')
             await page.evaluate('fixture.requests=[]')
             await page.click('.thead [data-tk="muted"]')
             await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="set_track"&&r.args.args.args.muted===true)')
@@ -192,7 +210,53 @@ async def main():
             await page.locator('#ctx').get_by_role('button',name='Close gaps on this track',exact=True).click()
             await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="close_gaps")')
             assert await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="close_gaps").args.args.args') == {'track_ids':['t']}
-            print('PASS zoom slider/wheel, ruler seek, timeline resize and media/track context actions')
+            await page.locator('.thead').click(button='right')
+            await page.locator('#ctx').get_by_role('button',name='Add track',exact=True).click()
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="add_track")')
+            for label, action in [('Split at playhead','split_clip'),('Duplicate','duplicate_clip'),('Delete','delete_clip'),('Ripple delete','ripple_delete')]:
+                await page.evaluate('__kimo.V.t=2;fixture.requests=[]')
+                await page.locator('[data-clip="c"] .cl').click(button='right')
+                await page.locator('#ctx').get_by_role('button',name=re.compile('^'+re.escape(label)+r'(?:\s|$)')).click()
+                await page.wait_for_function('(a)=>fixture.requests.some(r=>r.args.args?.action===a)',arg=action)
+            await page.locator('[data-clip="c"] .cl').click(button='right')
+            await page.locator('#ctx').get_by_role('button',name='Ask the agent about this clip',exact=True).click()
+            assert 'For clip c' in await page.input_value('#chat-in')
+            await page.evaluate("__kimo.show('edit')")
+            await page.click('#vw-loop')
+            assert 'Loop on' in await page.inner_text('#toast')
+            await page.click('#vw-loop')
+            assert 'Loop off' in await page.inner_text('#toast')
+            print('PASS zoom slider/wheel, ruler seek, timeline resize and media/track/clip context actions')
+            await page.evaluate('__kimo.T.z=50;__kimo.loadProject();fixture.requests=[]')
+            await page.locator('#tl-snap').uncheck()
+            await page.locator('#tl-scroll').evaluate('el=>el.scrollLeft=0')
+            asset=await page.locator('.asset').bounding_box()
+            track=await page.locator('.track[data-track="t"]').bounding_box()
+            await page.mouse.move(asset['x']+20,asset['y']+15)
+            await page.mouse.down()
+            await page.mouse.move(asset['x']+22,asset['y']+15)
+            assert await page.locator('.clip.drag').count()==0
+            await page.mouse.move(track['x']+60,track['y']+20,steps=8)
+            assert await page.locator('.clip.drag').count()==1
+            await page.mouse.up()
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="add_clip")')
+            added=await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="add_clip").args.args.args')
+            assert added=={'track_id':'t','source_type':'media','asset_id':'a','start':1,'duration':8},added
+            assert await page.locator('.clip.drag').count()==0
+            await page.mouse.click(track['x']+450,track['y']+20)
+            assert await page.evaluate('__kimo.S.sel') is None
+            await page.keyboard.press('Home')
+            assert await page.evaluate('__kimo.V.t') == 0
+            await page.keyboard.press('End')
+            assert await page.evaluate('__kimo.V.t') == 8
+            old_zoom=await page.evaluate('__kimo.T.z')
+            await page.keyboard.press('=')
+            assert await page.evaluate('__kimo.T.z') > old_zoom
+            await page.keyboard.press('-')
+            assert abs(await page.evaluate('__kimo.T.z')-old_zoom)<1e-9
+            await page.locator('#vw-video').evaluate("el=>el.dispatchEvent(new Event('ended'))")
+            assert await page.locator('#viewer').get_attribute('data-playing') == '0'
+            print('PASS bin drag threshold/drop cleanup, exact insertion time, empty-lane deselection and transport keys')
             # Inspector controls must forward typed values to the appropriate engine action.
             await page.evaluate("fixture.project.tracks[0].clips[0].effects=[{id:'fx',kind:'blur'}];__kimo.show('edit');__kimo.S.sel='c';__kimo.S.transitions=['dissolve'];__kimo.loadProject()")
             await page.wait_for_selector('[data-f="start"]')
@@ -234,6 +298,26 @@ async def main():
             await page.locator('[data-f="text"]').focus()
             await page.keyboard.press('Control+Enter')
             assert await page.locator('[data-f="text"]').evaluate('(el)=>document.activeElement!==el')
+            await page.locator('[data-f="size"]').focus()
+            await page.locator('[data-f="size"]').press('Enter')
+            assert await page.locator('[data-f="size"]').evaluate('(el)=>document.activeElement!==el')
+            await page.fill('#insp-ask input','  Explain this title  ')
+            await page.locator('#insp-ask input').press('Enter')
+            await page.wait_for_function('typeof fixture.finishAgent==="function"')
+            assert await page.input_value('#insp-ask input') == ''
+            sent=await page.evaluate('fixture.requests.find(r=>r.command==="agent_send").args')
+            assert sent['text']=='For clip c (“Title”): Explain this title'
+            await page.evaluate("__kimo.show('agent');__mock.emit('agent-event',{turn:__kimo.S.turn,ev:{kind:'delta',text:'First'}});__mock.emit('agent-event',{turn:__kimo.S.turn,ev:{kind:'delta',text:' second'}})")
+            assert await page.locator('#msgs .body').last.inner_text() == 'First second'
+            await page.evaluate("__mock.emit('agent-event',{turn:__kimo.S.turn,ev:{kind:'text',text:'Replacement'}})")
+            assert await page.locator('#msgs .body').last.inner_text() == 'Replacement'
+            await page.click('#chat-stop')
+            await page.wait_for_function('__kimo.S.busy===false')
+            assert await page.evaluate('fixture.requests.some(r=>r.command==="agent_stop")')
+            assert await page.is_enabled('#chat-send')
+            await page.evaluate("__kimo.show('edit');fixture.requests=[]")
+            await page.click('#i-del')
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="delete_clip")&&__kimo.S.sel===null')
             await page.evaluate('__kimo.S.sel=null;__kimo.loadProject()')
             await page.wait_for_selector('#pj-preset')
             await field('#pj-preset','1080x1920','project_set',{'width':1080,'height':1920})
@@ -246,6 +330,10 @@ async def main():
             await page.click('#cf-yes')
             await page.wait_for_function('fixture.requests.some(r=>r.command==="project_new")')
             assert await page.evaluate('__kimo.S.sel') is None
+            await page.evaluate("__kimo.show('home');__kimo.S.dirty=false;fixture.pick=['/fixture/home.kimo'];fixture.requests=[]")
+            await page.click('#home-open')
+            await page.wait_for_function('fixture.requests.some(r=>r.command==="project_open"&&r.args.path==="/fixture/home.kimo")')
+            await page.wait_for_function('__kimo.S.tab==="edit"')
             assert not errors, errors
             print('PASS inspector values, text/audio/effects, project format and new-project consent')
             print('PASS timeline commands, imports, save/open confirmation, export validation/status and menus')

@@ -27,3 +27,5 @@ The same proof supplies a synthetic Tauri event envelope and checks update conse
 The actions fixture also checks inspector timing/transform/audio/text/effect arguments, clamped numeric values, project format, new-project consent and model selection. Selecting a model with incompatible effort clears that effort; custom model names are trimmed, while choosing the default model preserves a compatible effort. These are synthetic bridge contracts exercised through real Chromium controls.
 
 `studio_recovery_test.py` verifies startup restore/discard, restoration errors and crash-report consent for one or several logs. Its synthetic native adapter records commands; only the newest log may receive send consent, and no browser report or network submission is opened by the fixture.
+
+The inspector preserves focus only while editing the selected clip. Deleting a clip from its focused inspector button must allow the project properties to render; a Chromium regression checks that transition. Context menus, rename-on-blur, export filename normalization, setup pause/skip and both welcome actions have synthetic command assertions.

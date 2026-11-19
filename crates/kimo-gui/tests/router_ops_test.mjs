@@ -229,3 +229,30 @@ grading('add_acescct_primaries');assert.ok(kv.blocks.some(b=>b.k==='Offset'));
 const cacheGrade=event('grade',{},'complete');grade._gradeArgs={[cacheGrade.call_id]:{gamma:1.1}};delete cacheGrade.payload;assert.equal(gradeOps(grade,MODES,cacheGrade),true);assert.equal(wheels._g.gamma.r,1.1);
 for(const plate of ['missing','clip_1234567890abcdef']){grading('add_effect',{kind:'keyer',strings:{ref_clip:plate}});assert.match(kv.blocks.find(b=>b.k==='Keyer').v,new RegExp(plate));}
 console.log('PASS additional grading effect rows, default scope/curve options, cached args and unsupported gain isolation');
+for(const args of [{to:7},{from:3}]) {
+ const minimal=fresh('graphics');delete minimal.session;
+ assert.equal(graphicsOps(minimal,MODES,event('add_counter',args)),true);
+ const o=minimal.views.graphics.viewer.overlay.at(-1);
+ assert.deepEqual(plain(o.at),[.5,.5]);assert.equal(o.text,args.to?'0 → 7':'3 → 0');
+}
+const fallbackGfx=fresh('graphics');
+assert.equal(graphicsOps(fallbackGfx,MODES,{tool_name:'add_hud_frame',phase:'start',call_id:'empty'}),false);
+assert.equal(graphicsOps(fallbackGfx,MODES,{tool_name:'add_hud_frame',phase:'complete',call_id:'uncached'}),true);
+assert.equal(fallbackGfx.views.graphics.viewer.overlay.at(-1).label,'BOXES');
+assert.equal(graphicsOps(fallbackGfx,MODES,event('add_detection_box',{x:0,y:0,w:1,h:1})),true);
+assert.equal(fallbackGfx.views.graphics.viewer.overlay.at(-1).label,'');
+assert.equal(graphicsOps(fallbackGfx,MODES,event('add_prompt_box',{text:'Centered'})),true);
+assert.deepEqual(plain(fallbackGfx.views.graphics.viewer.overlay.at(-1).at),[.5,.5]);
+for(const args of [{clip_id:'named'},{}, {effect_id:'effect'}]) {
+ assert.equal(graphicsOps(fallbackGfx,MODES,event('remove_modifier',args)),true);
+ const kv=Object.values(fallbackGfx.views.graphics).find(v=>v.blocks);
+ assert.equal(kv.blocks.at(-1).v,args.effect_id??args.clip_id??'');
+}
+assert.equal(graphicsOps(fallbackGfx,MODES,event('set_layer_style',{params:{width:4}})),true);
+assert.equal(Object.values(fallbackGfx.views.graphics).find(v=>v.blocks).blocks.find(b=>b.k==='width').v,'4');
+for(const [tool,result,expected] of [['add_hud_frame',{},'hud'],['add_hud_frame',{id:'named'},'named'],['unknown',{},'unknown']]) {
+ const e=event(tool,{track_id:'track1',start:1},'complete',result);
+ graphicsOps(fallbackGfx,MODES,e);
+ assert.equal(e.payload.clip,expected);assert.equal(e.payload.label,expected);assert.equal(e.payload.e,5);
+}
+console.log('PASS graphics missing dimensions, scalar counter defaults, empty telemetry and fallback insertion identity');

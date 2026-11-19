@@ -123,10 +123,13 @@ fn fetch_from(url: &str, part: &Path, p: &Part, mirror: usize, cancel: &AtomicBo
     };
     let resumed = resp.status() == 206;
     let mut f = std::fs::OpenOptions::new().create(true).append(resumed).write(true).truncate(!resumed).open(part).map_err(|e| Failure::Io(e.to_string()))?;
-    let mut done = if resumed { have } else { 0 };
-    let (t0, start_done) = (Instant::now(), done);
+    copy_body(&mut resp.into_reader(), &mut f, p, mirror, cancel, on, if resumed { have } else { 0 })
+}
+
+fn copy_body(r: &mut dyn Read, f: &mut dyn Write, p: &Part, mirror: usize, cancel: &AtomicBool, on: &mut dyn FnMut(Progress), start_done: u64) -> Result<(), Failure> {
+    let mut done = start_done;
+    let t0 = Instant::now();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    let mut r = resp.into_reader();
     let mut buf = vec![0u8; 1 << 16];
     loop {
         if cancel.load(Ordering::SeqCst) { let _ = f.flush(); return Err(Failure::Cancelled); }
@@ -137,7 +140,8 @@ fn fetch_from(url: &str, part: &Path, p: &Part, mirror: usize, cancel: &AtomicBo
             last_emit = Instant::now();
             let el = t0.elapsed().as_secs_f64().max(1e-3);
             let bps = (done - start_done) as f64 / el;
-            let eta = if bps > 0.0 { Some((p.size.saturating_sub(done)) as f64 / bps) } else { None };
+            // This branch follows a nonempty read; elapsed is clamped positive, so bps is positive.
+            let eta = Some((p.size.saturating_sub(done)) as f64 / bps);
             on(Progress { id: p.id.clone(), done, total: p.size, bytes_per_s: bps, eta_s: eta, phase: "downloading", mirror });
         }
     }
@@ -152,6 +156,7 @@ mod tests {
     use crate::testutil::{serve, Resp};
     use std::sync::{atomic::AtomicUsize, Arc};
 
+    fn ignore_progress(_: Progress) {}
     fn body() -> Vec<u8> { (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect() }
     fn hex(b: &[u8]) -> String { Sha512::digest(b).iter().map(|x| format!("{x:02x}")).collect() }
     fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("kimo-dl-{n}-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }
@@ -194,7 +199,7 @@ mod tests {
         assert!(installed(&root, &p));
         // a second run is a no-op
         let before = hits.load(Ordering::SeqCst);
-        fetch(&root, &p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), before);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -204,7 +209,7 @@ mod tests {
         let (fx, _) = fixture(true);
         let root = tmp("tamper");
         let p = part(&fx.base, &["/good"]);
-        let e = fetch(&root, &p, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        let e = fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap_err();
         assert!(matches!(e, Failure::Checksum { .. }), "{e:?}");
         assert!(!root.join("tools/ffmpeg").exists() && !root.join("tools/ffmpeg.part").exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -214,7 +219,7 @@ mod tests {
     fn offline_is_a_plain_error() {
         let root = tmp("offline");
         let p = part("http://127.0.0.1:9", &["/good"]);
-        let e = fetch(&root, &p, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        let e = fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap_err();
         assert!(matches!(e, Failure::Offline(_)), "{e:?}");
         assert!(e.to_string().contains("Retry"));
         let _ = std::fs::remove_dir_all(&root);
@@ -226,7 +231,7 @@ mod tests {
         let root = tmp("cancel");
         let p = part(&fx.base, &["/good"]);
         let cancel = AtomicBool::new(true);
-        assert_eq!(fetch(&root, &p, &cancel, &mut |_| {}).unwrap_err(), Failure::Cancelled);
+        assert_eq!(fetch(&root, &p, &cancel, &mut ignore_progress).unwrap_err(), Failure::Cancelled);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -236,4 +241,124 @@ mod tests {
         let p = load_parts(m).unwrap();
         assert!(p[0].optional && !p[0].executable);
     }
+    #[test]
+    fn manifest_filters_pins_and_failure_messages_are_explicit() {
+        let mut p = part("", &[]);
+        assert!(pinned(&p));
+        p.sha512 = "not-pinned".into(); assert!(!pinned(&p));
+        p.sha512 = hex(&body()); p.size = 0; assert!(!pinned(&p));
+        let mut local = p.clone(); local.os = std::env::consts::OS.into();
+        let mut other = p.clone(); other.os = "different-os".into();
+        assert_eq!(for_this_os(vec![p.clone(), local.clone(), other]), vec![p, local]);
+        assert!(load_parts("invalid").unwrap_err().contains("expected"));
+        assert!(Failure::Checksum { expected: "a".into(), got: "b".into() }.to_string().contains("SHA-512"));
+        assert_eq!(Failure::Http(404, "fixture".into()).to_string(), "The server answered 404 for fixture.");
+        assert_eq!(Failure::Io("blocked".into()).to_string(), "Could not write the file: blocked");
+        assert_eq!(Failure::Cancelled.to_string(), "Paused.");
+    }
+
+    #[test]
+    fn complete_partial_skips_network_and_invalid_ranges_restart() {
+        let root = tmp("partial-boundaries");
+        let fx = serve(|r| if r.header("range").is_some() { Resp::bytes(416, vec![]) } else { Resp::bytes(200, body()) });
+        let p = part(&fx.base, &["/good"]);
+        std::fs::create_dir_all(root.join("tools")).unwrap();
+        let partial = root.join("tools/ffmpeg.part");
+        std::fs::write(&partial, body()).unwrap();
+        assert_eq!(fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap(), root.join(&p.dest));
+        assert!(fx.log.lock().unwrap().is_empty());
+        std::fs::remove_file(root.join(&p.dest)).unwrap();
+        std::fs::write(&partial, b"partial").unwrap();
+        fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap();
+        assert!(installed(&root, &p));
+        assert_eq!(fx.log.lock().unwrap().len(), 2);
+        std::fs::remove_file(root.join(&p.dest)).unwrap();
+        std::fs::write(&partial, vec![0; p.size as usize + 1]).unwrap();
+        fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap();
+        assert!(installed(&root, &p));
+        assert!(fx.log.lock().unwrap().last().unwrap().header("range").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filesystem_failures_preserve_existing_files() {
+        let root = tmp("io-boundaries");
+        let p = part("", &[]);
+        std::fs::write(root.join("tools"), b"keep").unwrap();
+        assert!(matches!(fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress), Err(Failure::Io(_))));
+        assert_eq!(std::fs::read(root.join("tools")).unwrap(), b"keep");
+        std::fs::remove_file(root.join("tools")).unwrap();
+        assert!(matches!(fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress), Err(Failure::Offline(ref m)) if m == "no mirror listed"));
+        let fx = serve(|_| Resp::bytes(200, body()));
+        let p = part(&fx.base, &["/good"]);
+        std::fs::create_dir(root.join("tools/ffmpeg.part")).unwrap();
+        assert!(matches!(fetch_from(&p.urls[0], &root.join("tools/ffmpeg.part"), &p, 0, &AtomicBool::new(false), &mut ignore_progress), Err(Failure::Io(_))));
+        std::fs::remove_dir(root.join("tools/ffmpeg.part")).unwrap();
+        std::fs::create_dir(root.join(&p.dest)).unwrap();
+        assert!(matches!(fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress), Err(Failure::Io(_))));
+        assert_eq!(std::fs::read(root.join("tools/ffmpeg.part")).unwrap(), body());
+        assert!(root.join(&p.dest).is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verification_io_and_short_bodies_never_publish_a_download() {
+        let root = tmp("verification-errors");
+        assert!(sha512_file(&root.join("missing")).is_err());
+        assert!(sha512_file(&root).is_err());
+        let fx = serve(|_| Resp::bytes(200, body()));
+        let mut p = part(&fx.base, &["/good"]);
+        let partial = root.join("tools/ffmpeg.part");
+        let result = fetch(&root, &p, &AtomicBool::new(false), &mut |progress| {
+            if progress.phase == "verifying" { std::fs::remove_file(&partial).unwrap(); }
+        });
+        assert!(matches!(result, Err(Failure::Io(_))));
+        assert!(!root.join(&p.dest).exists());
+        let short = serve(|_| Resp::bytes(200, b"short".to_vec()));
+        let failure = fetch_from(&short.base, &partial, &p, 0, &AtomicBool::new(false), &mut ignore_progress).unwrap_err();
+        assert_eq!(failure, Failure::Offline(format!("connection dropped at 5 of {} bytes", p.size)));
+        assert_eq!(std::fs::read(&partial).unwrap(), b"short");
+        p.executable = false;
+        fetch(&root, &p, &AtomicBool::new(false), &mut ignore_progress).unwrap();
+        assert!(installed(&root, &p));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transfer_write_flush_and_read_errors_keep_their_failure_kind() {
+        struct BrokenWriter { flush_only: bool }
+        impl Write for BrokenWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.flush_only { Ok(bytes.len()) } else { Err(std::io::Error::other("synthetic write failure")) }
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Err(std::io::Error::other("synthetic flush failure")) }
+        }
+        struct BrokenReader;
+        impl Read for BrokenReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Err(std::io::Error::other("synthetic read failure")) }
+        }
+        let p = part("", &[]);
+        for flush_only in [false, true] {
+            let error = copy_body(&mut &body()[..], &mut BrokenWriter { flush_only }, &p, 0, &AtomicBool::new(false), &mut ignore_progress, 0).unwrap_err();
+            assert_eq!(error, Failure::Io(if flush_only { "synthetic flush failure" } else { "synthetic write failure" }.into()));
+        }
+        assert_eq!(copy_body(&mut BrokenReader, &mut Vec::new(), &p, 0, &AtomicBool::new(false), &mut ignore_progress, 0), Err(Failure::Offline("synthetic read failure".into())));
+    }
+
+    #[test]
+    fn empty_destination_and_repeated_full_requests_are_explicit() {
+        let mut p = part("", &[]); p.dest.clear();
+        assert_eq!(fetch(Path::new(""), &p, &AtomicBool::new(false), &mut ignore_progress), Err(Failure::Offline("no mirror listed".into())));
+        let (fx, hits) = fixture(false);
+        for attempt in 0..2 {
+            let response = ureq::get(&format!("{}/good", fx.base)).call().unwrap();
+            assert_eq!(response.status(), 200);
+            let mut bytes = Vec::new();
+            let result = response.into_reader().read_to_end(&mut bytes);
+            if attempt == 0 { assert!(result.is_err()); assert_eq!(bytes.len(), 100_000); }
+            else { result.unwrap(); assert_eq!(bytes, body()); }
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
 }

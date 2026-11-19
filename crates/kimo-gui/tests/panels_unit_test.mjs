@@ -141,3 +141,7 @@ panels.namespace.TL_SMALL.on=true;assert.match(finite(render('timeline',{tracks:
 assert.match(finite(render('keys',{graph:{pts:[0,1],max:1}})),/stroke-width="1.3"/);
 assert.match(finite(render('stack',{nodes:[{name:'Centered'}]},{center:true})),/font-size:12px/);
 console.log('PASS timeline clipping, flashing-run compaction, zoom/scroll defaults and compact track layout');
+const blankThumb=finite(render('profile',{thumbs:[{label:'Missing source'}]}));
+assert.match(blankThumb,/Missing source/);assert.match(blankThumb,/stroke="#2a2a28"/);
+assert.deepEqual(JSON.parse(JSON.stringify(pickedRows({args:'scalar argument'}))),[{sec:'Call'},{k:'Status',v:'ok',ch:false},{sec:'Args'},{k:'args',v:'scalar argument'}]);
+console.log('PASS missing-thumbnail placeholder and scalar call argument summary');

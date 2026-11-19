@@ -91,3 +91,7 @@ System-tool discovery tests use isolated child processes with synthetic PATH exe
 Telemetry socket tests verify blank-line handling, invalid JSON status reporting, termination on invalid UTF-8 and a visible error when all public spectator ports are occupied. They use isolated loopback sockets and retain distinct GUI/external source identities.
 
 Portable native-client tests compile a local fixture and verify JSON argv preservation, output trimming and nonzero exit diagnostics. The real-engine supervisor test terminates only its own child, requires a crashed status, then verifies that the next call restarts a new connection and increments the restart count once.
+
+Download unit contracts use a loopback HTTP fixture and temporary directories to verify complete partial-file reuse, HTTP 416 restart, oversized partial replacement, OS/pin filtering and filesystem failures that preserve existing data. They do not download release assets or certify the release manifest.
+
+The transfer loop accepts reader/writer streams so unit tests can assert that read failures remain offline errors and write/flush failures remain I/O errors. Production downloads use the same loop with the HTTP response and partial file.
