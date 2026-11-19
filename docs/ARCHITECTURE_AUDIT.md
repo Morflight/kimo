@@ -26,7 +26,7 @@ Trade-off, stated plainly: a tool marked read-only that secretly mutates is no l
 Not audited yet: colour pipeline internals (owned by the COLOR agent), export streaming, the timeline model beyond what the benchmark touched.
 
 ## Golden harness and fonts
-The golden text scene depends on which fonts the engine finds. Font lookup tries KIMO_FONTS first, then directories relative to the executable, then ./fonts, ~/kimo/fonts and /usr/share/fonts. The harness (crates/kimo-core/tests/golden_frames.rs) sets KIMO_FONTS to the workspace fonts directory so results do not depend on where the test binary lives. A machine without the workspace fonts directory will produce different text hashes.
+The golden text scene depends on which fonts the engine finds. Font lookup tries KIMO_FONTS first, then directories relative to the executable, then ./fonts, ~/kimo/fonts and /usr/share/fonts. The harness (crates/kimo-core/tests/all/golden_frames.rs) sets KIMO_FONTS to the workspace fonts directory so results do not depend on where the test binary lives. A machine without the workspace fonts directory will produce different text hashes.
 
 ## CI note: tests that need ffmpeg
 `tests/track_diag_proof.py` (needs ffmpeg, numpy, Pillow, a built `target/release/kimo-mcp`; ~60 s, writes only /tmp) and the `#[ignore]`d `auto_duck_leaves_clips_outside_the_dialogue_shared_with_the_undo_snapshot` Rust test (run with `--include-ignored`) need ffmpeg. The default Rust CI stays ffmpeg-free; run these in a job that installs ffmpeg.

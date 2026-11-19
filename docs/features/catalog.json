@@ -10,8 +10,8 @@
         "docs/features/native-test-environment.md"
       ],
       "tests": [
-        "crates/kimo-core/tests/preview_stream.rs",
-        "crates/kimo-core/tests/preview_range.rs",
+        "crates/kimo-core/tests/all/preview_stream.rs",
+        "crates/kimo-core/tests/all/preview_range.rs",
         "crates/kimo-core/src/ext/editorial_tools.rs",
         "crates/kimo-core/src/audio.rs",
         "crates/kimo-core/src/color/adjust_v2_proof.rs",
@@ -19,18 +19,18 @@
         "crates/kimo-core/src/color/mux.rs",
         "crates/kimo-core/src/render.rs",
         "crates/kimo-core/src/color/process.rs",
-        "crates/kimo-core/tests/description_first_sentence.rs",
-        "crates/kimo-core/tests/auto_captions.rs",
-        "crates/kimo-core/tests/caption_confidence.rs",
-        "crates/kimo-core/tests/auto_edit.rs",
-        "crates/kimo-core/tests/overlap_pipeline.rs",
-        "crates/kimo-core/tests/octree_mesh_bench_cp4.rs",
-        "crates/kimo-core/tests/webm_probe.rs",
-        "crates/kimo-core/tests/readme_count.rs",
-        "crates/kimo-core/tests/search_tools.rs",
-        "crates/kimo-core/tests/thread_hygiene.rs",
-        "crates/kimo-core/tests/export_job_errors.rs",
-        "crates/kimo-core/tests/error_table.rs"
+        "crates/kimo-core/tests/all/description_first_sentence.rs",
+        "crates/kimo-core/tests/all/auto_captions.rs",
+        "crates/kimo-core/tests/all/caption_confidence.rs",
+        "crates/kimo-core/tests/all/auto_edit.rs",
+        "crates/kimo-core/tests/all/overlap_pipeline.rs",
+        "crates/kimo-core/tests/all/octree_mesh_bench_cp4.rs",
+        "crates/kimo-core/tests/all/webm_probe.rs",
+        "crates/kimo-core/tests/all/readme_count.rs",
+        "crates/kimo-core/tests/all/search_tools.rs",
+        "crates/kimo-core/tests/all/thread_hygiene.rs",
+        "crates/kimo-core/tests/all/export_job_errors.rs",
+        "crates/kimo-core/tests/all/error_table.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",
@@ -451,9 +451,9 @@
       "tests": [
         "tests/mcp_client_proof.py",
         "crates/kimo-mcp/src/spectator.rs",
-        "crates/kimo-mcp/tests/telemetry_one_to_one.rs",
-        "crates/kimo-mcp/tests/spectator_demo.rs",
-        "crates/kimo-mcp/tests/spectator_default.rs"
+        "crates/kimo-mcp/tests/all/telemetry_one_to_one.rs",
+        "crates/kimo-mcp/tests/all/spectator_demo.rs",
+        "crates/kimo-mcp/tests/all/spectator_default.rs"
       ],
       "sources": [
         "crates/kimo-mcp/src/inline.rs",
@@ -471,7 +471,7 @@
       ],
       "tests": [
         "tests/cli_proof.py",
-        "crates/kimo-cli/tests/commands.rs"
+        "crates/kimo-cli/tests/all/commands.rs"
       ],
       "sources": [
         "crates/kimo-cli/src/main.rs"

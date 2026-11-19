@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 /// flash_series output (MCP tools/call text) from the build of the previous eyes commit, on the 64x36 24 fps timeline built
 /// by `timeline()`: [args, bytes].
-const PRE: &str = include_str!("data/flash_series_pre_rule.json");
+const PRE: &str = include_str!("../data/flash_series_pre_rule.json");
 fn c(s: &mut Session, n: &str, a: Value) -> Value { dispatch(s, n, &a).unwrap_or_else(|e| panic!("{n}: {e}")) }
 fn timeline() -> Session {
     let mut s = Session::new(); c(&mut s, "project_set", json!({"width": 64, "height": 36, "fps": 24}));

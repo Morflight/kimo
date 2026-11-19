@@ -2,7 +2,7 @@
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::ext::export_job::{host_name, start_ticks};
 use serde_json::{json, Value};
-#[path = "support/process_fixture.rs"]
+#[path = "common/process_fixture.rs"]
 mod process_fixture;
 fn c(ss: &mut Session, n: &str, v: Value) -> Value { dispatch(ss, n, &v).unwrap_or_else(|e| panic!("{n}: {e}")) }
 fn tmp(tag: &str) -> std::path::PathBuf { let d = std::env::temp_dir().join(format!("kimo_rv20a_{tag}_{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }

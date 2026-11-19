@@ -1,4 +1,5 @@
 [package]
+autotests = false  # integration tests are declared below: one binary, tests/all
 name = "kimo-core"
 version.workspace = true
 edition.workspace = true
@@ -84,3 +85,13 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl
 name = "flat_sah"
 harness = false
 required-features = ["flat-sah", "mesh-import"]
+
+# One integration test binary for the whole crate (see tests/all/main.rs).
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+# Separate binary: its #[global_allocator] would apply to every test of a shared binary.
+[[test]]
+name = "frame_live_peak"
+path = "tests/frame_live_peak.rs"

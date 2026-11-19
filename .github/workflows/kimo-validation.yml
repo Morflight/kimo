@@ -84,10 +84,11 @@ jobs:
           export RUSTFLAGS='-C debuginfo=0 -C codegen-units=64'
           export CARGO_TARGET_DIR="$ROOT/target-current-tests"
           cd "$ROOT/current"
+          # The integration tests are one binary (`all`); each suite is the module of the same name.
           for target in camera_projection threed_foundation octree_mesh_bench_cp4; do
            preserve "compile-$target"
-           run "compile-$target" cargo test --release --locked -j1 -p kimo-core --test "$target" --no-run --message-format=json
-           binary=$(python3 - "$ROOT/evidence/compile-$target.stdout" "$target" <<'PY'
+           run "compile-$target" cargo test --release --locked -j1 -p kimo-core --test all --no-run --message-format=json
+           binary=$(python3 - "$ROOT/evidence/compile-$target.stdout" all <<'PY'
           import json,sys
           found=[]
           for line in open(sys.argv[1]):
@@ -99,7 +100,7 @@ jobs:
           PY
            )
            preserve "run-$target"
-           run "run-$target" "$binary" --test-threads=1
+           run "run-$target" "$binary" "$target::" --test-threads=1
            done
           # This is the previously NOT RUN gap. Do not omit/rename it or count --no-run as execution.
           preserve lib-tests

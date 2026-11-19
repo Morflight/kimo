@@ -5,7 +5,7 @@
 //! kimo's own already-Hinglish-tuned recognizer (auto_captions's pipeline: beam search, Hinglish prompt, Hindi pass) hears
 //! on that SAME audio, and flags any cue the recognizer genuinely cannot make out - so lint_edit can hand a small model the
 //! exact clip_id and an edit_caption fix, instead of unverified nonsense reaching the screen unflagged.
-#[path="support/whisper_fixture.rs"]
+#[path = "common/whisper_fixture.rs"]
 mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use serde_json::{json, Value};

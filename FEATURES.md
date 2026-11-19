@@ -2137,7 +2137,7 @@ gaps, candidates for this pass:
   asset id is a clean 404, and a missing `asset_id` query param is a clean 400. All 84 prior kimo-cli tests
   stayed green (90 total).
 
-Fork CLI contracts (`crates/kimo-cli/tests/commands.rs`) run the real executable with isolated temporary projects. They assert stdout/stderr separation, identity and catalog output, argument aliases, usage/tool exit codes, atomic saves, `--no-save` preservation, grouped mutations and a five-frame 320×180 export verified by ffprobe. These focused checks do not establish full CLI or workspace coverage.
+Fork CLI contracts (`crates/kimo-cli/tests/all/commands.rs`) run the real executable with isolated temporary projects. They assert stdout/stderr separation, identity and catalog output, argument aliases, usage/tool exit codes, atomic saves, `--no-save` preservation, grouped mutations and a five-frame 320×180 export verified by ffprobe. These focused checks do not establish full CLI or workspace coverage.
 
 CLI parser tests cover JSON aliases, first-flag precedence, required values and object-only arguments. Redaction tests retain image paths while removing payloads recursively and preserve non-image data; repeated redaction is idempotent. Mutation-policy tests resolve grouped calls before deciding whether to save.
 

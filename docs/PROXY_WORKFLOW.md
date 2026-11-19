@@ -163,7 +163,7 @@ new proxy instead. Deep validation is read-only and does not update fingerprints
 
 ## Validation
 
-`crates/kimo-core/tests/proxy_workflow.rs` exercises real FFmpeg generation,
+`crates/kimo-core/tests/all/proxy_workflow.rs` exercises real FFmpeg generation,
 fractional CFR, VFR/high-bit refusal, preview and actual MP4 export isolation,
 frame-cache isolation, range preview overrides, original audio, missing/stale
 and corrupt-file fallback, deep integrity checks, relink, persistence,

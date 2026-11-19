@@ -18,7 +18,7 @@ use kimo_core::ext::flash_series::{field_px, field_rules, field_stats, field_til
 use kimo_core::perception::analysis::Image;
 use serde_json::{json, Value};
 
-const PRE: &str = include_str!("data/flash_series_pre_field.json");
+const PRE: &str = include_str!("../data/flash_series_pre_field.json");
 fn c(s: &mut Session, n: &str, a: Value) -> Value { dispatch(s, n, &a).unwrap_or_else(|e| panic!("{n}: {e}")) }
 /// 64x36 24 fps timeline of 0.125 s solid clips; `col(k)` picks clip k's colour
 fn strobe(n: usize, dur: f64, col: impl Fn(usize) -> [f64; 3]) -> Session {

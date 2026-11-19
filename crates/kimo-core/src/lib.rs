@@ -117,5 +117,5 @@ pub mod threed;
 pub mod vr;
 
 #[cfg(test)]
-#[path = "../tests/support/process_fixture.rs"]
+#[path = "../tests/all/common/process_fixture.rs"]
 mod process_fixture;

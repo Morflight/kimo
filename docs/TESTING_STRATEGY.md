@@ -21,10 +21,17 @@ Both suites run under LLVM coverage on Linux and Windows (`.github/workflows/qua
 
 ## 3. Rules for tests
 
+### Where tests live
+
+- **Unit tests** go in a `#[cfg(test)] mod tests` at the bottom of the source file they test.
+- **Integration tests** of a crate are one test binary, `all`: each `crates/<crate>/tests/all/<name>.rs` is a module declared in `tests/all/main.rs`, and shared fixtures live in `tests/all/common/`. Add a new file there and declare it with `mod <name>;`; do not add top-level `tests/*.rs` files (the crates set `autotests = false`). One binary links once instead of once per file, which keeps local and CI builds fast.
+- nextest names an integration test `<crate>::all` / `<name>::<test>`; the register and filters use those ids (for example `binary_id(kimo-core::all) & test(=auto_edit::some_test)`). nextest still runs every test in its own process, so tests that set environment variables stay isolated.
+- Exceptions, separate binaries: `kimo-core` `frame_live_peak` (its `#[global_allocator]` would apply to every test of a shared binary) and `libav_vfr_conform` (needs the `libav` feature).
+
 ### Fast tests (the default)
 
 - **Every feature behavior MUST be tested by a fast test.** A heavy test is never the only test of a behavior.
-- **Fast tests that process media MUST use tiny media**: the smallest synthetic input that exercises the behavior, typically generated in the test (FFmpeg `lavfi` sources such as `color`, `nullsrc` + `geq`, `sine`, or in-code buffers). Typical sizes are a few dozen pixels per side, a few frames or seconds, and expected values computed by hand. See `crates/kimo-core/tests/time_remap.rs` (32×16, 10 fps, exact pixel expectations).
+- **Fast tests that process media MUST use tiny media**: the smallest synthetic input that exercises the behavior, typically generated in the test (FFmpeg `lavfi` sources such as `color`, `nullsrc` + `geq`, `sine`, or in-code buffers). Typical sizes are a few dozen pixels per side, a few frames or seconds, and expected values computed by hand. See `crates/kimo-core/tests/all/time_remap.rs` (32×16, 10 fps, exact pixel expectations).
 - **A fast test asserts that behavior is unchanged**: exact or tolerance-bounded results that fail when the behavior regresses. Execution-only tests are not tests.
 - A fast test runs in seconds. The `fast` profile kills any test after 30 s, which fails the suite. Under instrumentation, a fast test should stay well below 5 s.
 - **100% coverage is reached by the fast suite alone.** A line reached only by a heavy test is uncovered: add a fast tiny-media test for it. NEVER satisfy coverage through the heavy suite.
@@ -45,7 +52,7 @@ Every heavy test MUST be registered in `.config/heavy-tests.json` with its `cate
 ## 4. Adding or changing a heavy test
 
 1. Write the fast tiny-media test first, covering the behavior.
-2. Add the heavy test to `.config/heavy-tests.json` (sorted by binary, then test), with a category and `fast_test` naming the fast test as `binary::test`.
+2. Add the heavy test to `.config/heavy-tests.json` (sorted by binary, then test), with a category and `fast_test` naming the fast test as `binary::test` (an integration test is `<crate>::all::<name>::<test>`).
 3. Run `python3 tools/quality/check_test_strategy.py`; copy the `default-filter` it prints into `[profile.fast]` of `.config/nextest.toml`.
 4. NEVER mark a test `#[ignore]` to keep it out of the fast suite; use the register. Existing `#[ignore]` proofs remain heavy-only legacy.
 

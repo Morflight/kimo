@@ -2,7 +2,7 @@
 //! Behaviour is checked on rendered frames: words pop in as spoken, the spoken word is coloured, a keyword is coloured,
 //! captions sit in the 9:16 safe band, a fix keeps the timing, and the recognizer path (a stub whisper-cli writing whisper.cpp
 //! JSON) maps words onto the timeline with their starts snapped to the audio.
-#[path="support/whisper_fixture.rs"]
+#[path = "common/whisper_fixture.rs"]
 mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::render::{render_frame, Cache};

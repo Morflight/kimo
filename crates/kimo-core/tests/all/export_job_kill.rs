@@ -25,7 +25,7 @@ fn shim(d: &Path) -> PathBuf {
 fn spawn_child(d: &Path, out: &Path, slow: &str) -> std::process::Child {
     use std::os::unix::process::CommandExt;
     let path = format!("{}:{}", shim(d).display(), std::env::var("PATH").unwrap());
-    std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "child_job_runner", "--test-threads=1", "--nocapture"]).env("KIMO_CHILD_OUT", out).env("KIMO_SLOW", slow).env("PATH", path).process_group(0).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap()
+    std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "export_job_kill::child_job_runner", "--test-threads=1", "--nocapture"]).env("KIMO_CHILD_OUT", out).env("KIMO_SLOW", slow).env("PATH", path).process_group(0).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap()
 }
 fn sigkill_group(ch: &mut std::process::Child) { let pid = ch.id(); let _ = std::process::Command::new("kill").args(["-9", "--", &format!("-{pid}")]).status(); let _ = ch.wait(); }
 fn wait_for(p: &Path) { for _ in 0..600 { if p.exists() { return; } std::thread::sleep(std::time::Duration::from_millis(50)); } panic!("timed out waiting for {}", p.display()); }

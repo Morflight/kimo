@@ -235,7 +235,7 @@ fn process_env_override_child() {
         return;
     }
     let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "process_env_override_child", "--test-threads=1"])
+        .args(["--exact", "pixel_expr::process_env_override_child", "--test-threads=1"])
         .env("KIMO_LIMIT_CHILD", "1")
         .env("KIMO_MEMORY_BUDGET_BYTES", "134217728")
         .status()

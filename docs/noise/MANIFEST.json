@@ -37,11 +37,11 @@
       "sha256": "034f675b7fca2cf1f8866caf61cf3dc11155a977706008217be27edcb4c446c4"
     },
     {
-      "path": "crates/kimo-core/tests/coherent_noise.rs",
+      "path": "crates/kimo-core/tests/all/coherent_noise.rs",
       "sha256": "be1c649fb840124ee66e7177a8f3e27eb25313a7db9f0fcd9506e1dc4b43b9dc"
     },
     {
-      "path": "crates/kimo-core/tests/noise_fields.rs",
+      "path": "crates/kimo-core/tests/all/noise_fields.rs",
       "sha256": "4acf95ae3c6536eba2d8cdedfa7dcb67188f05510424ccc9e27254185d21b1f1"
     },
     {

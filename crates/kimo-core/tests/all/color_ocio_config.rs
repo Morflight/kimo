@@ -2,7 +2,7 @@
 mod native {
 use kimo_core::{color::{ocio_config::{Config,version},effect_domain::{DomainProcessor,WorkingDomain}},effects::{self,Frame,Params},keyframe::Prop};
 use std::collections::BTreeMap;
-const CONFIG:&str=include_str!("data/minimal_aces.ocio");
+const CONFIG:&str=include_str!("../data/minimal_aces.ocio");
 fn config()->Config{Config::from_text(CONFIG).unwrap()}
 fn frame()->Frame{Frame{w:2,h:1,d:vec![-0.01,0.,0.0078125,0.5,0.18,1.,4.,1.]}}
 #[test]fn parse_list_and_unknown_space(){let c=config();assert!(version().starts_with("2."));assert_eq!(c.colorspaces(),vec!["ACEScg","ACEScct","DisplayGamma2"]);let v=c.views();assert_eq!(v.len(),1);assert_eq!(v[0].display,"Test monitor");assert!(c.processor("wrong","ACEScg").is_err());assert!(c.processor("ACEScg","bad\0name").is_err());}

@@ -1,6 +1,6 @@
 //! auto_edit (v7.6Q): raw clips -> one call -> a finished edit. Each test here is a real editorial outcome
 //! the chain must get right, not just "it returns ok".
-#[path="support/whisper_fixture.rs"]
+#[path = "common/whisper_fixture.rs"]
 mod whisper_fixture;
 use kimo_core::commands::{dispatch, Session};
 use kimo_core::model::Source;
@@ -466,7 +466,7 @@ fn proj() -> Session { let mut ss = Session::new(); call(&mut ss, "project_set",
         let response=json!({"result":{"language":"en"},"transcription":[{"offsets":{"from":0,"to":2000},"text":" one two three","tokens":tokens}]}).to_string();
         let binary=whisper_fixture::build(&dir().join("layout-recognizer"),&response,"en",None);
         let model=dir().join("ggml-small-q5_1.bin");std::fs::write(&model,b"fixture model metadata").unwrap();
-        let result=Command::new(std::env::current_exe().unwrap()).args(["--exact","job3_caption_position_defaults_to_auto_and_avoids_a_low_face","--nocapture"])
+        let result=Command::new(std::env::current_exe().unwrap()).args(["--exact","auto_edit::job3_caption_position_defaults_to_auto_and_avoids_a_low_face","--nocapture"])
             .env("KIMO_AUTO_EDIT_LAYOUT_FIXTURE","1").env("KIMO_WHISPER_BIN",binary).env("KIMO_WHISPER_MODEL",model).output().unwrap();
         assert!(result.status.success(),"{}{}",String::from_utf8_lossy(&result.stdout),String::from_utf8_lossy(&result.stderr));
         assert!(String::from_utf8_lossy(&result.stdout).contains("fixture caption placement passed"));
