@@ -374,6 +374,44 @@ async def main():
             assert not errors, errors
             print('PASS inspector values, text/audio/effects, project format and new-project consent')
             print('PASS timeline commands, imports, save/open confirmation, export validation/status and menus')
+            await page.evaluate('''async () => {
+              fixture.fail=null;fixture.fixRefused=false;__kimo.show('edit');
+              __kimo.S.sel='removed-selection';fixture.project={width:640,height:360,fps:0};
+              await __kimo.loadProject();
+            }''')
+            assert await page.evaluate('__kimo.P.fps')==30
+            assert await page.evaluate('__kimo.S.sel') is None
+            assert await page.inner_text('#bin-list')=='No media yet.'
+            assert not await page.locator('#tl-empty').evaluate('(e)=>e.hidden')
+            await page.evaluate('''async () => {
+              fixture.project={width:640,height:360,fps:25,assets:{
+                image:{id:'image',path:'/fixture/still.png',duration:1,width:640,height:360},
+                audio:{id:'audio',path:'/fixture/sound.wav',duration:1},
+                video:{id:'video',path:'/fixture/clip.mp4',duration:2,fps:29.97}
+              },tracks:[{id:'empty',name:'Empty'},{id:'sparse',name:'Sparse',clips:[
+                {id:'text-fallback',start:0,duration:1,source:{type:'text'}},
+                {id:'media-fallback',start:1,duration:1,source:{type:'media'}},
+                {id:'clip-fallback',start:2,duration:1},
+                {id:'custom-fallback',start:3,duration:1,source:{type:'color'}},
+                {id:'unknown-asset',start:4,duration:1,source:{type:'media',asset_id:'missing-asset'}},
+                {id:'named-asset',start:5,duration:1,name:'Custom name',source:{type:'media',asset:'image'}}
+              ]}]};
+              __kimo.T.z=50;await __kimo.loadProject();
+            }''')
+            for clip,label in [('text-fallback','Text'),('media-fallback','Media'),('clip-fallback','Clip'),('custom-fallback','color'),('unknown-asset','missing-asset'),('named-asset','Custom name')]:
+                assert label in await page.inner_text(f'[data-clip="{clip}"]'),(clip,label)
+            assert '640×360' in await page.inner_text('.asset[data-id="image"]')
+            assert '29.97fps' in await page.inner_text('.asset[data-id="video"]')
+            assert '1×' in await page.inner_text('.asset[data-id="image"]')
+            await page.fill('#bin-q','NO SUCH MEDIA')
+            assert await page.inner_text('#bin-list')=='No match.'
+            await page.fill('#bin-q','SOUND')
+            assert await page.locator('#bin-list .asset').count()==1
+            assert 'sound.wav' in await page.inner_text('#bin-list')
+            await page.fill('#bin-q','')
+            assert await page.locator('#bin-list .asset').count()==3
+            assert not errors,errors
+            print('PASS sparse project metadata, missing clip sources, stable labels and case-insensitive media search')
             await page.close()
             native = await browser.new_page(viewport={'width': 1280, 'height': 800})
             native.set_default_timeout(10000)
