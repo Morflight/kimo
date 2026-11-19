@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -383,3 +383,20 @@ assert.equal(sc(fresh('lighting'),'preview_material',{},{}).hit,false);
 assert.equal(sc(fresh('lighting'),'preview_material',{}, {path:'/fixture/material.png'}).view.left,'preview ·');
 assert.equal(sc(fresh('lighting'),'set_relight',{}).hit,false);
 console.log('PASS sparse tracking results, particle defaults, cached geometry and material readouts');
+
+// Engine timelines assign stable human labels and grow their ruler without shrinking it.
+const {ensureTrack,fitRuler}=root.namespace;
+const sparseTimeline={tracks:[{id:'existing',label:'Original',clips:[]}]};
+assert.equal(ensureTrack(sparseTimeline,'existing'),sparseTimeline.tracks[0]);
+assert.equal(ensureTrack(sparseTimeline,null),null);
+for(const [id,hint,label,kind] of [['track2',undefined,'V2','v'],['3','audio','A1','a'],['Music',undefined,'Music','a'],['track4','video','V3','v']]) {
+ const track=ensureTrack(sparseTimeline,id,hint);assert.equal(track.label,label);assert.equal(track.kind,kind);assert.deepEqual(plain(track.clips),[]);
+}
+for(const [end,maximum,step] of [[0,10,2],[20,23,5],[50,58,10],[100,115,30]]) {
+ const tl={_auto:true,tracks:[{}, {clips:[{}, {e:end}]}]};fitRuler(tl);
+ assert.deepEqual(plain(tl.ruler),{t0:0,t1:maximum,step,edge:true});
+ tl.tracks=[];const saved=tl.ruler;fitRuler(tl);assert.equal(tl.ruler,saved,'ruler never shrinks after clip removal');
+}
+const emptyAuto={_auto:true};fitRuler(emptyAuto);assert.equal(emptyAuto.ruler.t1,10);
+const manual={_auto:false,ruler:{t0:10,t1:20,step:1},tracks:[{clips:[{e:200}]}]};fitRuler(manual);assert.deepEqual(manual.ruler,{t0:10,t1:20,step:1});
+console.log('PASS track naming and automatic ruler growth preserve existing tracks and manual ranges');

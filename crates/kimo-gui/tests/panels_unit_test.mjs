@@ -145,3 +145,10 @@ const blankThumb=finite(render('profile',{thumbs:[{label:'Missing source'}]}));
 assert.match(blankThumb,/Missing source/);assert.match(blankThumb,/stroke="#2a2a28"/);
 assert.deepEqual(JSON.parse(JSON.stringify(pickedRows({args:'scalar argument'}))),[{sec:'Call'},{k:'Status',v:'ok',ch:false},{sec:'Args'},{k:'args',v:'scalar argument'}]);
 console.log('PASS missing-thumbnail placeholder and scalar call argument summary');
+for (const args of [null, undefined]) {
+ assert.deepEqual(JSON.parse(JSON.stringify(pickedRows({args}))),[{sec:'Call'},{k:'Status',v:'ok',ch:false}], 'absent arguments must not create empty inspector sections');
+}
+const unselectedSwatch=finite(block({widget:'swatches',items:[{hi:'#fff',mid:'#888',lo:'#000'}]},120,80));
+assert.match(unselectedSwatch,/stroke="#2a2a28" stroke-width="1"/);
+assert.match(unselectedSwatch,/fill="url\(#sw0\)"/);
+assert.doesNotMatch(unselectedSwatch,/<image/);
