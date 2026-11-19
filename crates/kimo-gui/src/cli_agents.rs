@@ -40,8 +40,12 @@ impl Kind {
 
 /// Where each CLI usually lives besides PATH (GUI apps on macOS/Linux often start with a short PATH).
 fn extra_dirs(k: Kind) -> Vec<PathBuf> {
+    extra_dirs_for(k, cfg!(windows), home_dir().as_deref(), |key| std::env::var_os(key).map(PathBuf::from))
+}
+
+fn extra_dirs_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
     let mut v = vec![];
-    if let Some(h) = home_dir() {
+    if let Some(h) = home {
         v.push(h.join(".local").join("bin"));
         v.push(h.join(".npm-global").join("bin"));
         v.push(h.join(".bun").join("bin"));
@@ -49,10 +53,9 @@ fn extra_dirs(k: Kind) -> Vec<PathBuf> {
         if k == Kind::ClaudeCode { v.push(h.join(".claude").join("local")); }
         if k == Kind::Antigravity { v.push(h.join(".antigravity").join("bin")); v.push(h.join(".gemini").join("antigravity-cli").join("bin")); }
     }
-    if cfg!(windows) {
-        if let Some(a) = std::env::var_os("APPDATA") { v.push(PathBuf::from(a).join("npm")); }
-        if let Some(l) = std::env::var_os("LOCALAPPDATA") {
-            let l = PathBuf::from(l);
+    if windows {
+        if let Some(a) = env("APPDATA") { v.push(a.join("npm")); }
+        if let Some(l) = env("LOCALAPPDATA") {
             v.push(l.join("agy").join("bin"));
             v.push(l.join("Programs").join("Antigravity").join("bin"));
             v.push(l.join("Programs").join("claude"));
@@ -66,8 +69,12 @@ fn extra_dirs(k: Kind) -> Vec<PathBuf> {
 /// Copies that other apps install and keep up to date, outside PATH: the Claude desktop app's own Claude Code, npm's
 /// package folder when its `claude`/`codex` shortcut is missing, and the Codex app's CLI. Newest version first.
 fn bundled(k: Kind) -> Vec<PathBuf> {
+    bundled_for(k, cfg!(windows), home_dir().as_deref(), |key| std::env::var_os(key).map(PathBuf::from))
+}
+
+fn bundled_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = vec![];
-    let exe = |n: &str| if cfg!(windows) { format!("{n}.exe") } else { n.to_string() };
+    let exe = |n: &str| if windows { format!("{n}.exe") } else { n.to_string() };
     // <root>/<version>/<build>/<bin> and <root>/<version>/<bin>, newest version first
     let versions = |root: PathBuf, bin: &str| -> Vec<PathBuf> {
         let mut ds: Vec<_> = std::fs::read_dir(&root).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
@@ -80,8 +87,6 @@ fn bundled(k: Kind) -> Vec<PathBuf> {
         }
         out
     };
-    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
-    let home = home_dir();
     match k {
         Kind::ClaudeCode => {
             // Claude desktop app: <LOCALAPPDATA>/Claude-Data/<profile>/claude-code/<version>/<build>/claude.exe (Windows),
@@ -127,15 +132,19 @@ pub fn find(k: Kind) -> Option<PathBuf> {
     let mut cands: Vec<PathBuf> = vec![];
     if let Some(p) = std::env::var_os(format!("KIMO_{}_BIN", k.bin_name().to_ascii_uppercase())).map(PathBuf::from).filter(|p| p.is_file()) { cands.push(p); }
     if let Some(p) = which(k.bin_name()) { cands.push(p); }
-    let dirs: Vec<String> = extra_dirs(k).iter().map(|d| d.display().to_string()).collect();
-    let sep = if cfg!(windows) { ";" } else { ":" };
-    let pathext = if cfg!(windows) { Some(".EXE;.CMD;.BAT") } else { None };
-    if let Some(p) = crate::agents::which_in(k.bin_name(), &dirs.join(sep), pathext) { cands.push(p); }
+    if let Some(p) = extra_candidate(k, &extra_dirs(k), cfg!(windows)) { cands.push(p); }
     cands.extend(bundled(k));
     let mut seen = std::collections::HashSet::new();
     let found = cands.into_iter().filter(|p| seen.insert(p.clone())).find(|p| works(p))?;
     cache.lock().unwrap().insert(k.id(), found.clone());
     Some(found)
+}
+
+fn extra_candidate(k: Kind, dirs: &[PathBuf], windows: bool) -> Option<PathBuf> {
+    let dirs: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+    let sep = if windows { ";" } else { ":" };
+    let pathext = if windows { Some(".EXE;.CMD;.BAT") } else { None };
+    crate::agents::which_in(k.bin_name(), &dirs.join(sep), pathext)
 }
 
 /// A child with no console window on Windows (the app is a GUI; a flashing console would be alarming).
@@ -1044,6 +1053,59 @@ fn main() {
             other => panic!("unknown fixture scenario: {other}"),
         }
         println!("fixture scenario passed");
+    }
+
+    #[test]
+    fn platform_search_layouts_include_bundled_and_extra_candidates() {
+        let root=std::env::temp_dir().join(format!("kimo-cli-layouts-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        for windows in [false,true] {
+            let base=root.join(windows.to_string());let home=base.join("home");let roaming=base.join("roaming");let local=base.join("local");
+            let variables=std::collections::HashMap::from([("APPDATA",roaming.clone()),("LOCALAPPDATA",local.clone())]);
+            let env=|key:&str|variables.get(key).cloned();
+            let write=|path:PathBuf| {std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(&path,b"fixture metadata").unwrap();path};
+            let exe=|name:&str|if windows {format!("{name}.exe")} else {name.to_string()};
+            for k in Kind::all() {
+                assert_eq!(Kind::from_id(k.id()),Some(k));assert_eq!(Kind::from_id("Unknown"),None);
+                let dirs=extra_dirs_for(k,windows,Some(&home),env);
+                if k==Kind::ClaudeCode {assert!(dirs.contains(&home.join(".claude/local")));}
+                if k==Kind::Antigravity {assert!(dirs.contains(&home.join(".antigravity/bin")));assert!(dirs.contains(&home.join(".gemini/antigravity-cli/bin")));}
+                assert!(dirs.contains(&home.join(".local/bin")));assert!(dirs.contains(&home.join(".npm-global/bin")));
+                assert!(dirs.contains(&home.join(".bun/bin")));assert!(dirs.contains(&home.join(".volta/bin")));
+                if windows {assert!(dirs.contains(&roaming.join("npm")));assert!(dirs.contains(&local.join("Programs/Antigravity/bin")));} else {assert!(dirs.contains(&PathBuf::from("/usr/bin")));}
+                let search=base.join(format!("search-{}",k.id()));let file=write(search.join(exe(k.bin_name())));
+                #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&file,std::fs::Permissions::from_mode(0o755)).unwrap();}
+                assert_eq!(extra_candidate(k,&[search.clone()],windows),Some(file.clone()));
+                assert!(extra_candidate(k,&[],windows).is_none());
+                if windows==cfg!(windows) {assert_eq!(extra_candidate(k,&[base.join("absent"),search],windows),Some(file));}
+            }
+            let claude=exe("claude");
+            let expected=[
+                home.join(format!("Library/Application Support/Claude/claude-code/v1/{claude}")),
+                home.join(format!(".config/Claude/claude-code/v1/build/{claude}")),
+                home.join(format!(".config/Claude/claude-code/v2/{claude}")),
+                home.join(format!(".local/share/claude/versions/v3/{claude}")),
+                local.join(format!("Claude-Data/profile/claude-code/v1/build/{claude}")),
+                local.join(format!("AnthropicClaude/claude-code/v1/{claude}")),
+                roaming.join(format!("Claude/claude-code/v1/{claude}")),
+                roaming.join("npm/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-win32-x64/claude.exe"),
+                roaming.join("npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
+            ];
+            for path in &expected {write(path.clone());}
+            write(home.join(".config/Claude/claude-code/not-a-version-file"));
+            let found=bundled_for(Kind::ClaudeCode,windows,Some(&home),env);for path in expected {assert!(found.contains(&path),"{}",path.display());}
+            let codex=exe("codex");
+            let expected=[home.join(format!(".codex/plugins/.plugin-appserver/{codex}")),home.join(format!(".codex/bin/{codex}")),local.join(format!("Programs/Codex/resources/{codex}")),local.join(format!("Programs/codex/resources/{codex}"))];
+            for path in &expected {write(path.clone());}
+            let found=bundled_for(Kind::Codex,windows,Some(&home),env);for path in expected {assert!(found.contains(&path));}
+            let agy=write(home.join(format!(".gemini/antigravity-cli/bin/{}",exe("agy"))));
+            assert_eq!(bundled_for(Kind::Antigravity,windows,Some(&home),env),vec![agy]);
+            for k in Kind::all() {let dirs=extra_dirs_for(k,windows,None,|_|None);assert_eq!(dirs.len(),if windows{0}else{3});}
+            assert!(bundled_for(Kind::ClaudeCode,windows,None,|_|None).is_empty());
+            assert!(bundled_for(Kind::Antigravity,windows,None,|_|None).is_empty());
+            assert!(!bundled_for(Kind::Codex,windows,None,|_|None).contains(&home.join(format!(".codex/bin/{}",exe("codex")))));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
 }
