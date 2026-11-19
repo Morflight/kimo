@@ -2146,3 +2146,5 @@ CLI exit-policy helpers are tested independently of tool availability: unavailab
 Studio inspector regression: a focused delete button no longer blocks the project-properties refresh when the selection becomes empty. Browser contracts also exercise clip context actions, export file extension normalization and setup pause/skip/welcome flows with isolated synthetic commands.
 
 Studio fallback drafts now cross chunk boundaries instead of replaying the same chunk. A two-chunk Chromium regression verifies the next request and final stop. Escape closes overlays first and clears the Edit selection when no overlay or menu is open.
+
+Registered tool descriptions keep their opening sentence under 150 characters. Caption composition, frame inspection, motion review, reference comparison and vision detection retain their full argument and fallback details after that concise summary.

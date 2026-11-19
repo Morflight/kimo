@@ -81,7 +81,7 @@ fn run(ss: &mut Session, a: &Value) -> Result<Value, String> {
 }
 
 pub fn commands() -> Vec<Command> { vec![Command { name: "detect", mutates: false,
-    description: "Find faces, people, objects and the main subject in the composited frame at `time`, with on-device vision models (downloaded once on first use, a few MB each). what: any of faces (box, score, eyes/nose/mouth landmarks), people, objects (COCO classes), subject (salient-subject mask: box, area_frac, centroid), matte (person matte, larger model fetched only when asked); default faces, people, objects, subject. Boxes [x,y,w,h] in canvas px. path writes an annotated png (faces green, people orange, objects blue, subject red). Offline, `fallback` says what could not run and the subject comes from the saliency map.",
+    description: "Find faces, people, objects and the main subject in the composited frame at `time`. On-device vision models download once on first use (a few MB each). what: any of faces (box, score, eyes/nose/mouth landmarks), people, objects (COCO classes), subject (salient-subject mask: box, area_frac, centroid), matte (person matte, larger model fetched only when asked); default faces, people, objects, subject. Boxes [x,y,w,h] in canvas px. path writes an annotated png (faces green, people orange, objects blue, subject red). Offline, `fallback` says what could not run and the subject comes from the saliency map.",
     schema: obj(vec![
         ("time", n("timeline seconds")),
         ("what", json!({"type": "array", "items": {"type": "string", "enum": WHATS}, "description": "what to find, default [faces, people, objects, subject]"})),

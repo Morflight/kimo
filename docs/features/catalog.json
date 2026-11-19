@@ -18,7 +18,8 @@
         "crates/kimo-core/src/color/film_fast_proof.rs",
         "crates/kimo-core/src/color/mux.rs",
         "crates/kimo-core/src/render.rs",
-        "crates/kimo-core/src/color/process.rs"
+        "crates/kimo-core/src/color/process.rs",
+        "crates/kimo-core/tests/description_first_sentence.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",

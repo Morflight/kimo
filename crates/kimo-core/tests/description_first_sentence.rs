@@ -107,3 +107,19 @@ fn first_sentence(d: &str) -> &str {
     let d = registry_ref().iter().find(|c| c.name == "get_scopes").unwrap(); let f = first_sentence(&d.description);
     for w in ["brightness", "colourfulness", "percentiles", "blown-out", "crushed", "zone"] { assert!(f.contains(w), "get_scopes first sentence lacks {w}: {f}"); }
 }
+
+#[test]
+fn concise_review_and_caption_summaries_keep_their_detailed_contracts() {
+    for (name, details) in [
+        ("caption_engine_compose", vec!["word-synced", "composable primitives", "per-word", "overrides"]),
+        ("look", vec!["id/@name", "stack order", "keyframes", "alpha checkerboard", "vectorscope"]),
+        ("watch", vec!["blue slow", "red fast", "white start", "red end", "max acceleration"]),
+        ("compare_reference", vec!["brightness", "motion energy", "SSIM/PSNR", "to_match"]),
+        ("review", vec!["flash clips", "missing glyphs", "clipped highlights", "expect"]),
+        ("detect", vec!["on first use", "landmarks", "saliency map", "Offline"]),
+    ] {
+        let description=&registry_ref().iter().find(|command| command.name==name).unwrap().description;
+        assert!(first_sentence(description).chars().count()<LIMIT);
+        for detail in details { assert!(description.contains(detail),"{name}: missing documented behavior {detail}"); }
+    }
+}
