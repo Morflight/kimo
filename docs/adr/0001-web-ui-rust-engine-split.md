@@ -1,6 +1,6 @@
 # ADR 0001: JavaScript interface, Rust engine, desktop and SaaS delivery
 
-- Status: accepted
+- Status: accepted (desktop interface technology still open, see below)
 - Date: 2026-11-19
 - Decider: repository owner
 
@@ -17,7 +17,15 @@ The question was whether the interface should move to a native Rust UI toolkit (
 3. **Delivery follows the usual pattern of serious web services**: the web UI is the default entry point of a SaaS offering, and editors with capable computers install the desktop application to use their own hardware for better performance.
 4. **When rendering becomes too expensive for the user's machine** (web or desktop), the product can provide compute on remote instances running the same Rust engine.
 
-No native Rust UI rewrite is planned. If preview playback becomes the limiting factor on desktop, the preferred remedy is a native GPU surface for the viewer only (e.g. wgpu), with the webview keeping the rest of the interface.
+### Open question: desktop interface technology (TBD)
+
+Whether the desktop application keeps the JavaScript interface in a webview (current Tauri app) or gets a native Rust interface is **not decided**. This ADR fixes the JavaScript interface for the web/SaaS delivery and the Rust engine for both; the desktop interface will be decided in a later ADR. Options on the table:
+
+- keep the shared JavaScript interface on desktop (one UI codebase for web and desktop);
+- keep it but draw the preview viewer natively on the GPU (e.g. wgpu), where frame transfer to the webview is the main cost;
+- a native Rust desktop interface (egui, iced, Slint, gpui), maximizing local performance at the cost of a second UI codebase.
+
+Until then, the current Tauri desktop app remains the shipped desktop interface and stays under the quality contract.
 
 ## Consequences
 
@@ -29,5 +37,5 @@ No native Rust UI rewrite is planned. If preview playback becomes the limiting f
 
 ## Alternatives considered
 
-- **Native Rust UI (egui, iced, Slint, gpui)**: best preview performance with no frame transfer, but a full rewrite of the interface and its tests, weaker accessibility and UI-testing tooling, and no path to a browser delivery.
+- **Native Rust UI as the only interface (egui, iced, Slint, gpui)**: rejected for the product as a whole, because it gives no path to browser delivery. It remains an option for the desktop application alone (see the open question): best local preview performance with no frame transfer, at the cost of a second UI codebase and its tests, and weaker accessibility and UI-testing tooling.
 - **Electron instead of Tauri**: same web UI with a bundled Chromium (uniform rendering), at the cost of larger downloads and memory use. Not needed while the system webviews are adequate.
