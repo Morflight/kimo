@@ -37,3 +37,13 @@ Graph operations accept only finite key coordinates for display. If the time spa
 The timeline controller normalizes the track list once before synchronization; an empty timeline produces zero moved clips. Complete-source tests in `crates/kimo-gui/tests/cov_a_unit_test.mjs` check sparse arguments, capped markers, pulse/swing/kick/flash curves, all ripple-cut boundaries, multicam span merging, missing tracks and undo alignment without source or counter exclusions.
 
 The Chromium interaction proof checks pointer-anchored timeline zoom, horizontal/shift-wheel pan, line/page wheel deltas, bounded track scrolling, picked-call overflow and Escape dismissal. A synthetic shell-window adapter verifies that minimized/invisible windows suspend renders and resume pending updates when visible; it does not claim a native window-manager integration proof.
+
+Complete-source reducer tests assert nested merges, the 400-call history limit, lost-start recovery, scope-frame isolation, stale-preview rejection and the 2,048-event queue policy (old progress first, then oldest event). Superseded image decoding must not publish a parade. These state tests use inert DOM/timer adapters; the separate Chromium interaction proof exercises real layout and rendering.
+
+Wheel input and deferred panel refresh ignore a stale or incomplete mode definition without throwing. The reducer test exercises both missing modes and missing panels.
+
+Complete-source panel tests verify distortion-grid coordinates, signed 3D orbit arcs, deterministic waveforms, camera-solve point counts, scope image labels, dense timeline seams and compact modelling/light layouts. These assertions supplement the real-browser rendering proofs.
+
+An inspector widget’s `gap` sets its internal label spacing; it does not turn the widget into an empty spacer. A block with only `gap` still produces a spacer. The compressor test supplies `gap: 10` and requires the widget markup and threshold label.
+
+The graphics inspector retains the eight most recent shape-layer names and computes its selection after trimming that list, so the latest layer stays highlighted. Router operation tests assert cached arguments, normalized geometry, style updates, invalid inputs and the selected index after twelve inserted layers.

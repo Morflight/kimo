@@ -515,7 +515,10 @@
         "crates/kimo-gui/tests/fix2_test.mjs",
         "crates/kimo-gui/tests/cov_b_unit_test.mjs",
         "crates/kimo-gui/tests/cov_a_unit_test.mjs",
-        "crates/kimo-gui/tests/app_interaction_test.py"
+        "crates/kimo-gui/tests/app_interaction_test.py",
+        "crates/kimo-gui/tests/app_state_test.mjs",
+        "crates/kimo-gui/tests/panels_unit_test.mjs",
+        "crates/kimo-gui/tests/router_ops_test.mjs"
       ],
       "sources": [
         "crates/kimo-gui/ui/app.js",

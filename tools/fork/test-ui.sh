@@ -12,3 +12,6 @@ node --experimental-vm-modules crates/kimo-gui/tests/project_ops_test.mjs
 node --experimental-vm-modules crates/kimo-gui/tests/fix2_test.mjs
 node --experimental-vm-modules crates/kimo-gui/tests/cov_b_unit_test.mjs
 node --experimental-vm-modules crates/kimo-gui/tests/cov_a_unit_test.mjs
+node --experimental-vm-modules crates/kimo-gui/tests/app_state_test.mjs
+node --experimental-vm-modules crates/kimo-gui/tests/panels_unit_test.mjs
+node --experimental-vm-modules crates/kimo-gui/tests/router_ops_test.mjs

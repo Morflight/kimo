@@ -629,7 +629,7 @@ window.addEventListener('resize', () => { layoutDirty = true; schedule(); });
 // frame redraws just the timeline panel; nothing runs between inputs.
 function onWheel(e) {
   const el = e.target.closest && e.target.closest('[data-panel]'); if (!el) return;
-  const name = el.dataset.panel, spec = (MODES[state.mode] || {}).panels[name]; if (!spec || spec.kind !== 'timeline') return;
+  const name = el.dataset.panel, spec = MODES[state.mode]?.panels?.[name]; if (!spec || spec.kind !== 'timeline') return;
   const data = view(state.mode)[name]; if (!data || !(data.tracks || []).length) return;
   const key = state.mode + ':' + name, P = pans[key] || (pans[key] = { z: 1, t: null, k: 0, acc: 0 });
   const o = spec.opts || {}, x0 = o.x0 ?? 48, wpx = Math.max(1, el.clientWidth - (o.xr ?? 12) - x0);
@@ -654,7 +654,7 @@ function onWheel(e) {
 }
 main.addEventListener('wheel', onWheel, { passive: false });
 function renderPanel(name) {
-  const spec = (MODES[state.mode] || {}).panels[name], el = nodes[name]; if (!spec || !el) return;
+  const spec = MODES[state.mode]?.panels?.[name], el = nodes[name]; if (!spec || !el) return;
   const [w, h] = box(el), V = view(state.mode), args = { spec, data: V[name] || {}, view: V, state, w, h, mode: state.mode, pan: pans[state.mode + ':' + name] };
   if (PRE[spec.kind]) PRE[spec.kind](el, args);
   const wrote = paint(el, KINDS[spec.kind](args));
