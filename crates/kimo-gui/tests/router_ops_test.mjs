@@ -351,3 +351,35 @@ mix('gain',{gain:-100});assert.ok(loud.meters.every(m=>m.hit.lvl===0));assert.eq
 const dryModes={dry:{panels:{inspector:{kind:'kv'}}}},dry=fresh('dry');dry.views.dry={inspector:{blocks:[{widget:'eq'}]}};
 assert.equal(root.namespace.audioOps(dry,dryModes,{tool_name:'eq'}),false);
 console.log('PASS EQ selection, compressor defaults, pan stability, loudness precedence and bounded meter levels');
+
+for(const [tool,args,result,label] of [
+ ['stabilize',{}, {},'stabilize'],['stabilize',{}, {engine:'warp'},'warp stabilize'],
+ ['stabilize',{smoothness:0,rolling_shutter:0},{zoom:1},'warp stabilize · smooth 0%'],
+ ['apply_camera_solve',{}, {},'camera solve → keys'],['apply_camera_solve',{}, {count:0},'camera solve → keys · 0 keys'],
+ ['set_ground_plane',{}, {},'ground plane'],['set_ground_plane',{}, {scale:1},'ground plane'],
+ ['place_at_track',{}, {},'null at track'],['export_st_map',{}, {},'ST map · undistort'],
+ ['export_st_map',{}, {width:100,height:50,clamped_pixels:0},'ST map · undistort · 100×50']
+]) {
+ const resultView=sc(fresh('tracking'),tool,args,result);assert.equal(resultView.hit,true);assert.equal(resultView.view.left,label);
+}
+for(const [args,lens,center,label] of [[{k1:.1},[.1,0],[.5,.5],'undistort · k1 0.1'],[{k2:.2},[0,.2],[.5,.5],'undistort · k2 0.2']]) {
+ const resultView=sc(fresh('tracking'),'undistort_clip',args);assert.deepEqual(plain(resultView.view.overlay[0].lens),lens);assert.deepEqual(plain(resultView.view.overlay[0].c),center);assert.equal(resultView.view.left,label);
+}
+const trackDefaults=sc(fresh('tracking'),'track_mesh',{anchors:[{corners:quad}]});assert.deepEqual(plain(trackDefaults.view.overlay[0].grid),[7,5]);
+const pointDefault=sc(fresh('tracking'),'track_point',{x:0,y:0});assert.deepEqual(plain(pointDefault.view.overlay[0].pt),[0,0]);assert.equal(pointDefault.view.overlay[0].r,.12);
+for(const corners of [[[0,0],[0,0],[0,0],null],[[0,0],[0,0],[0,0],['bad',0]]]) {
+ const bad=sc(fresh('tracking'),'set_corner_pin',{corners});assert.equal(bad.hit,false);assert.equal(bad.view.overlay,undefined);
+}
+const cachedScene=fresh('tracking'),sceneStart=event('track_point',{x:.25,y:.75},'start');sceneOps(cachedScene,MODES,sceneStart);
+sceneOps(cachedScene,MODES,{...sceneStart,phase:'complete',payload:{}});assert.deepEqual(plain(cachedScene.views.tracking.viewer.overlay[0].pt),[.25,.75]);
+for(const [tool,args,name] of [['add_particles3d',{},'point 3D emitter'],['set_particles3d',{emitter:{kind:'box'}},'box 3D emitter'],['add_particles',{shape:'circle'},'circle emitter'],['add_emitter',{preset:'sparks'},'sparks'],['add_shard_burst',{},'shards']]) {
+ const st=fresh('particles');sc(st,tool,{start:1,...args});
+ const listView=Object.values(st.views.particles).find(v=>v.rows),keyView=Object.values(st.views.particles).find(v=>v.lanes);
+ assert.equal(listView.rows[0].k,name);assert.equal(listView.rows[0].v,'');assert.deepEqual(plain(keyView.lanes[0].dots),[24]);
+}
+const materialDefault=fresh('lighting');sc(materialDefault,'set_material',{albedo:[null,.5,'bad']});
+const materialKv=Object.values(materialDefault.views.lighting).find(v=>v.blocks);assert.equal(materialKv.sub,'material');assert.equal(materialKv.blocks.find(b=>b.k==='Albedo').v,'0.00  0.50  0.00');
+assert.equal(sc(fresh('lighting'),'preview_material',{},{}).hit,false);
+assert.equal(sc(fresh('lighting'),'preview_material',{}, {path:'/fixture/material.png'}).view.left,'preview ·');
+assert.equal(sc(fresh('lighting'),'set_relight',{}).hit,false);
+console.log('PASS sparse tracking results, particle defaults, cached geometry and material readouts');
