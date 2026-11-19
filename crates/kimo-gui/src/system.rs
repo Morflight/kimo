@@ -96,6 +96,7 @@ mod tests {
     #[test]
     fn platform_search_paths_include_portable_packages_without_cross_platform_assumptions() {
         assert_eq!(whisper_fallback(true, ffmpeg_dirs), None);
+        assert_eq!(whisper_fallback(false, ffmpeg_dirs), first_file(&ffmpeg_dirs(), "whisper-cli"));
         assert_eq!(exe_for("ffmpeg", true), "ffmpeg.exe");
         assert_eq!(exe_for("ffmpeg", false), "ffmpeg");
         let root = std::env::temp_dir().join(format!("kimo-system-paths-{}", std::process::id()));

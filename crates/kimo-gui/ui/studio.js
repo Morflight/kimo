@@ -312,7 +312,7 @@ function renderTimeline() {
   const width = Math.max(tlScroll.clientWidth, t2x(Math.max(P.dur + 10, 30)));
   tlCanvas.style.width = width + 'px';
   // ruler
-  const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find(s => s * T.z >= 64) || 600;
+  const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find(s => s * T.z >= 64); // setZoom clamps T.z >= 6, so this list always supplies a step.
   const minor = step / (step >= 1 ? 5 : 2);
   const end = width / T.z;
   let r = '';
@@ -348,11 +348,10 @@ function placePlayhead() {
 tlScroll.addEventListener('scroll', () => { $('#tl-heads').scrollTop = tlScroll.scrollTop; });
 function setZoom(z, anchorT) {
   const old = T.z; T.z = clamp(z, 6, 600); $('#tl-zoom').value = T.z;
-  const at = anchorT ?? V.t, sx = t2x(at) * (old ? 1 : 1);
+  const at = anchorT ?? V.t;
   const px = at * old - tlScroll.scrollLeft;
   renderTimeline();
   tlScroll.scrollLeft = at * T.z - px;
-  void sx;
 }
 $('#tl-zoom').oninput = e => setZoom(+e.target.value);
 $('#tl-zin').onclick = () => setZoom(T.z * 1.4); $('#tl-zout').onclick = () => setZoom(T.z / 1.4);
@@ -1192,7 +1191,7 @@ $('#cli-refresh').onclick = refreshCli;
 
 // API keys (optional)
 function renderKeys() {
-  const a = S.app; if (!a) return;
+  const a = S.app; // refresh() has received and displayed this state before calling renderKeys().
   const sel = $('#key-provider');
   if (!sel.options.length) {
     sel.innerHTML = a.providers.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');

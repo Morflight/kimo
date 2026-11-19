@@ -653,7 +653,7 @@ async def main():
               window.mediaBoundary={refuse:false,textRead:false,thumbs:0};
               __kimoBridge.invoke=async(command,args)=>{
                 if(command==='media_thumb'){mediaBoundary.thumbs++;return ownedThumbnail;}
-                if(command==='engine_call'&&args.args.action==='add_track'&&mediaBoundary.refuse)return {ok:false};
+                if(command==='engine_call'&&args.args.action==='add_track'&&mediaBoundary.refuse){mediaBoundary.refusals=(mediaBoundary.refusals||0)+1;return {ok:false};}
                 if(command==='engine_read'&&args.args.action==='get_project'&&mediaBoundary.textRead)return {ok:true,text:'owned non-project response'};
                 return original(command,args);
               };
@@ -671,6 +671,11 @@ async def main():
             await page.evaluate('mediaBoundary.refuse=true')
             await page.click('#ed-track')
             await page.wait_for_function('document.querySelector("#toast").textContent==="add_track failed"')
+            await page.evaluate('''async()=>{fixture.project.tracks=[];await __kimo.loadProject();fixture.requests=[];mediaBoundary.refusals=0;}''')
+            await page.locator('#bin-list .asset .add').first.click()
+            await page.click('#ed-text')
+            assert not await page.evaluate('fixture.requests.some(r=>["add_clip","add_text"].includes(r.args?.args?.action))')
+            assert await page.evaluate('mediaBoundary.refusals')==2
             await page.evaluate('mediaBoundary.refuse=false;mediaBoundary.textRead=true')
             before=await page.evaluate('JSON.stringify(__kimo.P.proj)')
             await page.evaluate('__kimo.loadProject()')
@@ -714,6 +719,150 @@ async def main():
             assert await page.evaluate('turnRace.resets')==2
             assert not errors,errors
             print('PASS new conversation releases cancelled turns and ignores both late success and late failure')
+            await page.evaluate('''()=>{
+              window.streamFailure=__kimo.sendAgent('Owned stream failure');
+              const turn=__kimo.S.turn;
+              __mock.emit('agent-event',{turn,ev:{kind:'text',text:'Owned partial response'}});
+              __mock.emit('agent-event',{turn,ev:{kind:'error',message:'owned transport failure'}});
+            }''')
+            assert await page.locator('#msgs .blocks .body').last.inner_text()=='Owned partial response'
+            await page.evaluate('''async()=>{
+              turnRace.pending.at(-1).reject(Error('owned transport failure'));await streamFailure;
+            }''')
+            assert 'owned transport failure' in await page.locator('#msgs .err').last.inner_text()
+            assert await page.locator('#msgs .err').last.locator('[data-go="connections"]').count()==0
+            assert not await page.evaluate('__kimo.S.busy')
+
+            await page.evaluate('''()=>{
+              __kimo.show('agent');window.savedChangesInvoke=__kimoBridge.invoke;
+              window.changeBoundary={requests:[],undo:'error'};
+              __kimoBridge.invoke=async(command,args)=>{
+                changeBoundary.requests.push({command,args});
+                if(command==='engine_call')return {ok:false};
+                if(command==='change_undo'){
+                  if(changeBoundary.undo==='error')throw Error('owned undo refusal');
+                  return {steps:1};
+                }
+                return savedChangesInvoke(command,args);
+              };
+              __mock.emit('changes',[{id:100,actor:'you',tool:'project',summary:'Owned compound edit',t:0,steps:3,
+                findings:[{severity:'warning',message:'Advice without an automatic fix'},
+                  {severity:'warning',message:'Retryable fix',code:'owned_fix',fix:{tool:'project'}}]}]);
+            }''')
+            assert 'project' in await page.inner_text('#changes .lbl')
+            assert '3 steps' in await page.inner_text('#changes')
+            assert await page.locator('#changes [data-fix]').count()==1
+            await page.click('[data-fix="100:1"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent==="The fix did not apply"')
+            assert await page.is_enabled('[data-fix="100:1"]')
+            assert await page.evaluate('changeBoundary.requests.find(r=>r.command==="engine_call").args')=={'tool':'project','args':{}}
+            await page.click('[data-undo="100"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent.includes("owned undo refusal")')
+            assert await page.is_enabled('[data-undo="100"]')
+            await page.evaluate('changeBoundary.undo="success"')
+            await page.click('[data-undo="100"]')
+            await page.wait_for_function('document.querySelector("#toast").textContent==="Undid 1 step"')
+            await page.evaluate('''async()=>{
+              const before=changeBoundary.requests.length;__kimo.S.changes=[];
+              await document.querySelector('[data-fix="100:1"]').onclick();
+              if(changeBoundary.requests.length!==before)throw Error('stale finding triggered a command');
+            }''')
+            await page.evaluate('__kimoBridge.invoke=savedChangesInvoke;__kimo.show("edit")')
+            await page.keyboard.press('Escape')
+            for shortcut in ['Delete','Control+d']:
+                await page.keyboard.press(shortcut)
+                await page.wait_for_function('document.querySelector("#toast").textContent==="Select a clip first."')
+            await page.evaluate('''async()=>{
+              fixture.project.tracks=[{id:'free-track',name:'Empty track',clips:[]}];
+              fixture.requests=[];__kimo.V.t=0;await __kimo.loadProject();
+            }''')
+            await page.click('#ed-text')
+            await page.wait_for_function('fixture.requests.some(r=>r.args.args?.action==="add_text")')
+            assert await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="add_text").args.args.args.track_id')=='free-track'
+            assert not await page.evaluate('fixture.requests.some(r=>r.args.args?.action==="add_track")')
+            assert not errors,errors
+            print('PASS compound changes, fixes without arguments, retryable undo and empty-selection keyboard guards')
+            await page.evaluate('''async()=>{
+              fixture.project.tracks=[{id:'sparse-track',name:'Sparse metadata',clips:[
+                {id:'missing-source',start:0,duration:1,props:{},audio:{volume:{},mute:true},effects:[{id:'typed',type:'blur'},{id:'unknown'}],transition_in:{}},
+                {id:'empty-text',start:1,duration:1,source:{type:'text',text:''}},
+                {id:'media-with-transition',start:2,duration:1,source:{type:'media',asset_id:'a'},props:{x:{base:12},scale:{base:1.25}},audio:{},transition_in:{kind:'crossfade'}}
+              ]}];
+              __kimo.S.sel=null;await __kimo.loadProject();
+            }''')
+            await page.click('#tl-fit')
+            await page.click('[data-clip="missing-source"] .cl')
+            assert await page.input_value('#insp-body [data-f="volume"]')=='1'
+            assert await page.input_value('#insp-body [data-f="fade_in"]')=='0'
+            assert await page.input_value('#insp-body [data-f="fade_out"]')=='0'
+            assert await page.is_checked('#insp-body [data-f="mute"]')
+            assert await page.input_value('#insp-body [data-f="scale"]')=='1'
+            assert 'blur' in await page.inner_text('#insp-body .ichips')
+            assert 'effect' in await page.inner_text('#insp-body .ichips')
+            assert await page.inner_text('#insp-body [data-f="trans"] option:first-child')=='set'
+            await page.click('[data-clip="media-with-transition"] .cl')
+            assert await page.inner_text('#insp-body [data-f="trans"] option:first-child')=='crossfade'
+            assert await page.input_value('#insp-body [data-f="x"]')=='12'
+            assert await page.input_value('#insp-body [data-f="scale"]')=='1.25'
+            assert not await page.is_checked('#insp-body [data-f="mute"]')
+            await page.click('[data-clip="empty-text"] .cl')
+            assert await page.input_value('#insp-body [data-f="text"]')==''
+            await page.fill('#insp-body [data-f="text"]','Owned unfinished title')
+            await page.evaluate('__kimo.loadProject()')
+            assert await page.input_value('#insp-body [data-f="text"]')=='Owned unfinished title'
+            await page.keyboard.press('Meta+Enter')
+            assert not await page.locator('#insp-body [data-f="text"]').evaluate('(e)=>e===document.activeElement')
+            assert not errors,errors
+            print('PASS sparse inspector metadata, fallback effect/transition labels and text preserved during project refresh')
+            await page.evaluate('''()=>{
+              const before=fixture.requests.length,assets=__kimo.P.assets;
+              __kimo.P.assets=[];
+              const asset=document.querySelector('#bin-list .asset');
+              if(!asset)throw Error('owned asset fixture missing');
+              asset.querySelector('.add').click();
+              asset.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+              __kimo.P.assets=assets;
+              const clip=document.querySelector('[data-clip="missing-source"]'),saved=__kimo.P.clips.get('missing-source');
+              __kimo.P.clips.delete('missing-source');
+              clip.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+              __kimo.P.clips.set('missing-source',saved);
+              if(fixture.requests.length!==before)throw Error('stale visual triggered an edit');
+            }''')
+
+            await page.evaluate('''async()=>{
+              fixture.project.tracks=[{id:'sparse-empty',name:'Empty'}, {id:'locked-empty',name:'Locked',locked:true}];
+              fixture.insertClip=false;fixture.requests=[];__kimo.V.t=0;await __kimo.loadProject();
+            }''')
+            await page.click('#tl-fit')
+            await page.click('#ed-split')
+            assert await page.inner_text('#toast')=='Put the playhead over a clip to split it.'
+            await page.locator('#bin-list .asset .add').first.click()
+            await page.wait_for_function('fixture.requests.some(r=>r.args?.args?.action==="add_clip")')
+            assert await page.evaluate('fixture.requests.find(r=>r.args?.args?.action==="add_clip").args.args.args.track_id')=='sparse-empty'
+            await page.evaluate('''async()=>{
+              fixture.project.tracks=fixture.project.tracks.slice(0,1);fixture.requests=[];await __kimo.loadProject();
+            }''')
+            await page.click('#ed-text')
+            await page.wait_for_function('fixture.requests.some(r=>r.args?.args?.action==="add_text")')
+            assert await page.evaluate('fixture.requests.find(r=>r.args?.args?.action==="add_text").args.args.args.track_id')=='sparse-empty'
+            for count in [0,1,2]:
+                await page.evaluate('''async(count)=>{
+                  fixture.project.tracks=[{id:'owned-delete-track',name:'Owned track',clips:Array.from({length:count},(_,i)=>({id:'owned-'+i,start:i,duration:1,source:{type:'text',text:'Owned'}}))}];
+                  fixture.requests=[];await __kimo.loadProject();
+                }''',count)
+                await page.locator('.thead').click(button='right')
+                label='Delete track'+(f' and its {count} clip'+('s' if count>1 else '') if count else '')
+                delete=page.locator('#ctx [data-i="3"]')
+                assert await delete.evaluate('(e)=>[...e.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join("")')==label
+                await delete.click()
+                if count:
+                    assert await page.inner_text('#cf-body')==f'It has {count} clip(s). You can undo this.'
+                    await page.click('#cf-no')
+                    assert not await page.evaluate('fixture.requests.some(r=>r.args?.args?.action==="delete_track")')
+                else:
+                    await page.wait_for_function('fixture.requests.some(r=>r.args?.args?.action==="delete_track")')
+            assert not errors,errors
+            print('PASS sparse and locked tracks, empty-project fit, safe insertion and exact track-deletion consent')
             await page.close()
             native = await browser.new_page(viewport={'width': 1280, 'height': 800})
             native.set_default_timeout(10000)
@@ -842,7 +991,7 @@ async def main():
                 return invoke(command,args);
               };
             }""")
-            for engine, expected in [({'state':'missing'},'Not found'),({'state':'stopped'},'Starting'),({},'Starting'),({'state':'crashed','error':'fixture crash'},'Stopped')]:
+            for engine, expected in [({'state':'missing'},'Not found'),({'state':'stopped'},'Starting'),({},'Starting'),(None,'Starting'),({'state':'crashed','error':'fixture crash'},'Stopped')]:
                 await native.evaluate('(engine)=>{stateOverride.engine=engine}',engine)
                 await native.evaluate('__kimo.refresh()')
                 assert expected in await native.inner_text('#h-engine')

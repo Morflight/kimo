@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack,insertClip,midPath,shortPath,fmtBytes,curveAt,easeOf,bezOf,cubicY,keyChange,keyGraph,xfOps,summary,railArgs,assetNames,splitName,clipLabel,peek,callSection,COVB_H};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack,insertClip,midPath,shortPath,fmtBytes,curveAt,easeOf,bezOf,cubicY,keyChange,keyGraph,xfOps,summary,railArgs,assetNames,splitName,clipLabel,peek,callSection,COVB_H,hud};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -831,4 +831,60 @@ console.log('PASS sparse lighting, scene/camera records, default mesh names and 
  sceneOps(lights,MODES,event('remove_light',{id:'owned'}));assert.deepEqual(plain(lights.views.lighting[rigEntry].lights),[{name:'kept',_id:'other'}]);
  const unknown=fresh('future-layout');sceneOps(unknown,MODES,event('particle_simulate_raw',{steps:5}));assert.equal(Object.values(unknown.views['future-layout']).some(v=>v.rows),false);
  console.log('PASS human clip names, nearest EQ band, preserved populated timelines, resumed progress and sparse light removal');
+}
+{
+ const material=fresh('lighting');sceneOps(material,MODES,event('set_material',{name:'Rough only',roughness:.37}));
+ const kv=Object.values(material.views.lighting).find(v=>v.blocks);
+ assert.equal(kv.sub,'Rough only');assert.equal(kv.blocks.find(b=>b.k==='Roughness').v,'0.37');
+ assert.equal(kv.blocks.some(b=>b.k==='Albedo'),false,'missing albedo must not fabricate black');
+ const unknown=fresh('future-layout');assert.equal(maskOps(unknown,MODES,event('set_mask_feather',{amount:5})),false);
+ assert.deepEqual(plain(unknown.views['future-layout']),{viewer:{}});
+ const removed=fresh('effects');assert.equal(maskOps(removed,MODES,event('remove_mask_layer',{mask_id:'missing'})),true);
+ assert.deepEqual(plain(removed.views.effects.viewer.overlay),[]);
+ const exported=fresh('export');exportOps(exported,MODES,event('export',{},'start'));
+ exportOps(exported,MODES,event('cancel_job',{},'complete',{completed_ranges:[[0,1]]}));
+ assert.equal(Object.values(exported.views.export).find(v=>v.rows).rows[0][3],'✕ cancelled · 1 chunk kept');
+ const graphics=fresh('graphics'), inserted=event('add_hud_frame',{track_id:'t',start:2},'complete',{clip_id:'clip42'});
+ graphicsOps(graphics,MODES,inserted);assert.equal(inserted.payload.label,'hud');
+ const landed=root.namespace.route({tool_name:'set_keyframe',phase:'complete',payload:{key:{label:'Opacity @1s',from:'0%',to:'50%'}}},fresh('edit'),MODES);
+ assert.deepEqual(plain(landed[0].args),{'Opacity @1s':'0% → 50%'});
+ console.log('PASS sparse material identity, absent mask panels/layers, singular retained chunk and key result without clip ID');
+}
+{
+ const state=fresh('edit'),tl=root.namespace.timelineView(state,MODES);
+ tl.tracks=[{id:'owned-track',label:'Shots',clips:['Opening','Interview','Closing'].map((label,i)=>({id:'owned-'+i,label,s:i*2,e:i*2+2}))}];
+ assert.equal(timelineOps(state,MODES,event('group_clips',{clip_ids:['owned-0','owned-1','owned-2']}),'edit'),true);
+ const inspector=Object.values(state.views.edit).find(v=>v.blocks);
+ assert.equal(inspector.blocks.find(b=>b.k==='Clips')?.v,'Opening +2','group feedback retains the original clip names');
+ assert.equal(tl.tracks[0].clips.length,1);
+ assert.deepEqual(plain(tl.tracks[0].clips[0]._kids.map(k=>k.clip.label)),['Opening','Interview','Closing']);
+ const duplicateTimes=[{t:0,v:10},{t:0,v:20},{t:2,v:40},{t:2,v:50}];
+ for(const [t,v] of [[-1,10],[0,10],[1,30],[2,40],[3,50]])assert.equal(root.namespace.curveAt(duplicateTimes,t),v);
+ console.log('PASS grouped clip labels survive removal and duplicate key times interpolate without zero-width intervals');
+}
+{
+ const keyer=fresh('graphics');assert.equal(gradeOps(keyer,MODES,event('add_effect',{kind:'keyer'})),true);
+ const keyerRows=Object.values(keyer.views.graphics).find(v=>v.blocks).blocks;
+ assert.equal(keyerRows.find(b=>b.k==='Keyer').v,'keyer · model 0');
+ const graphics=fresh('graphics'),style=event('set_layer_style',{clip_id:'clip42',track_id:'t',start:0,style:'outline'},'complete',{clip_id:'clip42'});
+ assert.equal(graphicsOps(graphics,MODES,style),true);assert.equal(style.payload.label,'clip42');
+ const state=fresh('edit'),tl={tracks:[{id:'t',clips:[{id:'kept',label:'Kept',s:0,e:2}]}]};
+ assert.equal(editOps2(state,MODES,tl,{tool_name:'trim_clip',phase:'complete'},{}),false);
+ assert.equal(tl.tracks[0].clips[0].e,2);
+ const freshMask=fresh('effects');assert.equal(maskOps(freshMask,MODES,event('remove_mask')),true);
+ assert.deepEqual(plain(Object.values(freshMask.views.effects).find(v=>v.blocks).blocks),[]);
+ const restored=fresh('roto'),laneKey=Object.entries(MODES.roto.panels).find(([,sp])=>sp.kind==='keys')[0];
+ restored.views.roto={[laneKey]:{lanes:[{_mask:true,label:'restored area',area:[[2,1],[4,1]]}]}};
+ assert.equal(maskOps(restored,MODES,event('set_track_matte',{})),true);
+ assert.ok(restored.views.roto[laneKey].ruler.t0<2);assert.ok(restored.views.roto[laneKey].ruler.t1>4);
+ const noPayload=fresh('edit');assert.equal(timelineOps(noPayload,MODES,{tool_name:'add_track',phase:'complete'},'ingest'),true);
+ assert.equal(noPayload.liveTL.tracks.length,1);
+ assert.equal(root.namespace.COVB_H.gamut(null),'linear');
+ const scope=fresh('grading');root.namespace.route({tool_name:'render_scope',phase:'start',call_id:'no-payload'},scope,MODES);
+ assert.equal(scope._scopeCalls['no-payload'],'scope');
+ const lateScope=fresh('grading');root.namespace.route({tool_name:'render_scope',phase:'complete',call_id:'late-scope'},lateScope,MODES);
+ assert.equal(lateScope._scopeCalls['late-scope'],'scope');
+ const cold={explicitMode:true};root.namespace.hud(cold,{tool_name:'trim_clip',phase:'complete'},'edit','Owned edit');
+ assert.equal(cold.hud.fam,'edit');assert.equal(cold.hud.text,'Owned edit');
+ console.log('PASS explicit keyer screen, raw layer identity, sparse mask history and incomplete telemetry');
 }

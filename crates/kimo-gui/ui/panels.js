@@ -776,7 +776,7 @@ function paintFalseColor(cv, im) {
 // A rail row the person clicked: its own args, latency and result, as rows for the mode's EXISTING
 // inspector (no new panel). Only what the call carried; nested values are summarised, never invented.
 export function pickedRows(c) {
-  const short = v => v == null ? '' : typeof v === 'object' ? (Array.isArray(v) ? `[${v.length}]` : `{${Object.keys(v).slice(0, 3).join(', ')}${Object.keys(v).length > 3 ? ', …' : ''}}`) : typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : String(v);
+  const short = v => typeof v === 'object' ? (Array.isArray(v) ? `[${v.length}]` : `{${Object.keys(v).slice(0, 3).join(', ')}${Object.keys(v).length > 3 ? ', …' : ''}}`) : typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : String(v);
   const rows = [{ sec: 'Call' }, { k: 'Status', v: c.status === 'running' ? 'running' : c.status === 'error' ? 'error' : c.status === 'lost' ? 'no result (feed dropped)' : 'ok', ch: c.status === 'error' }];
   const d = fmtDur(c.dur_ms); if (c.status !== 'running' && d) rows.push({ k: 'Latency', v: d });
   if (c.error) rows.push({ k: 'Error', v: String(c.error).slice(0, 80), ch: true });
@@ -888,7 +888,7 @@ export const PRE = {
           a.textContent = '…'; if (fits()) { best = ['…']; bestT = spare > 0; }
           else { sg.classList.add('bare'); best = ['']; bestT = spare > 0; }   /* even if the name alone still overflows: the least cut */
         }
-        t = best ? best[0] : '…'; tight = bestT;
+        t = best[0]; tight = bestT;
       }
       c._fit = { k: row.dataset.fk, t, tight };
     }
@@ -982,10 +982,10 @@ function cieFill(w, h, ox, oy, scx, scy, dpr, op) {
   const gam = v => v <= .0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - .055;
   for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
     if (!g.isPointInPath(path, i + .5, j + .5)) continue;
-    const x = ((i + .5) / dpr - ox) / scx, y = (oy - (j + .5) / dpr) / scy; if (y <= 1e-4) continue;
+    const x = ((i + .5) / dpr - ox) / scx, y = (oy - (j + .5) / dpr) / scy; // Inside LOCUS, y >= 0.0048.
     const X = x / y, Z = (1 - x - y) / y;
     let r = 3.2406 * X - 1.5372 - .4986 * Z, gg = -.9689 * X + 1.8758 + .0415 * Z, b = .0557 * X - .2040 + 1.0570 * Z;
-    r = Math.max(0, r); gg = Math.max(0, gg); b = Math.max(0, b); const m = Math.max(r, gg, b) || 1;
+    r = Math.max(0, r); gg = Math.max(0, gg); b = Math.max(0, b); const m = Math.max(r, gg, b); // Y=1 guarantees at least one positive RGB component.
     const k = (j * W + i) * 4; p[k] = 255 * DIM * gam((r / m) ** SAT); p[k + 1] = 255 * DIM * gam((gg / m) ** SAT); p[k + 2] = 255 * DIM * gam((b / m) ** SAT); p[k + 3] = 255 * op;
   }
   if (CIEC.size > 4) CIEC.clear(); CIEC.set(key, d); return d;
@@ -1172,7 +1172,7 @@ function lightrig({ spec, data, w, h }) {
     const cell = (x, y, txt, al, cls, f) => `<span class="${cls}" style="position:absolute;${al === 'l' ? `left:${x}px;` : ''}${al === 'r' ? `right:${w - x}px;` : al === 'c' ? `left:${x - 60}px;width:120px;text-align:center;` : ''}top:${px(y - 12)}px;line-height:24px;font-size:${f}px;font-family:var(--sans);white-space:nowrap">${E(txt)}</span>`;
     html += cell(C[0], hy, 'LIGHT', 'l', 'dim', o.hfs ?? 14) + cell(C[1], hy, 'TEMP', 'c', 'dim', o.hfs ?? 14) + cell(C[2], hy, 'INTENSITY', 'c', 'dim', o.hfs ?? 14) + cell(C[3], hy, 'FALLOFF', 'r', 'dim', o.hfs ?? 14);
     html += `<i style="position:absolute;left:${C[0]}px;right:${w - C[3]}px;top:${px(hy + 19)}px;height:1px;background:var(--line)"></i>`;
-    (data.rows || []).forEach((r, i) => {
+    (data.rows || []).forEach((r, i, rows) => {
       const y = ry + i * rh;
       html += cell(C[0], y, r[0], 'l', 'cream', fs) + (r[1] ? cell(C[1], y, r[1], 'c', r[4] ? 'cream' : 'dim', fs) : '');
       if (r[2] != null && r[2] !== '') {
@@ -1181,7 +1181,7 @@ function lightrig({ spec, data, w, h }) {
           `<i style="position:absolute;left:${px(vx + 20)}px;width:${px(Math.max(0, b1 - vx - 20))}px;top:${px(y)}px;height:2px;background:${o.barDim ?? '#3a3935'}"></i>` + cell(vx, y, r[2], 'c', 'cream', fs);
       }
       if (r[5] != null && r[5] !== '') html += cell(C[3], y, r[5], 'r', 'cream', fs);
-      if (i < (data.rows || []).length - 1) html += `<i style="position:absolute;left:${C[0]}px;right:${w - C[3]}px;top:${px(y + rh / 2)}px;height:1px;background:var(--line2)"></i>`;
+      if (i < rows.length - 1) html += `<i style="position:absolute;left:${C[0]}px;right:${w - C[3]}px;top:${px(y + rh / 2)}px;height:1px;background:var(--line2)"></i>`;
     });
     const T = o.thumbs; (data.thumbs || []).forEach((t, i) => {
       const x = T.x + (i % 2) * (T.w + T.gx), y = T.y + Math.floor(i / 2) * (T.h + T.gy);

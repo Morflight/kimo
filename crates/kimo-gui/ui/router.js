@@ -218,7 +218,7 @@ function gradeOps(state, MODES, ev) {
     }
     // grade graph (m15 Nodes): node ids/kinds from the call, the output selected; plus rows for CDL / curve / scopes
     if (kvKey) {
-      const KV = V[kvKey[0]]; KV.blocks = KV.blocks || [];
+      const KV = V[kvKey[0]]; // The inspector block above has already initialized blocks.
       const setRow = (k, v) => { let b = KV.blocks.find(x => x.k === k); if (!b) { b = { k, _grade: true }; KV.blocks.push(b); } b.v = v; b.ch = true; b._flash = now(); for (const x of KV.blocks) if (x !== b) x.ch = false; };
       const nodes = KV._nodes || (KV._nodes = []);
       const nid = A.node_id ?? (A.node && (A.node.id ?? A.node.node_id)) ?? A.id;
@@ -275,7 +275,7 @@ function gradeOps(state, MODES, ev) {
   if ((tn === 'match_grade' || tn === 'match_color' || tn === 'pick_white_balance' || tn === 'pick_key_color' || tn === 'auto_color' || tn === 'match_shots') && !regs.length) { vw.wipe = 1; hit = true; }
   // GUI-FIX-1: what the pick / match computed, in the Grade list of the screen it lands on and the Color scopes' stats line
   if (tn === 'match_grade' || tn === 'match_color' || tn === 'pick_white_balance' || tn === 'pick_key_color') {
-    const tl = timelineView(state, MODES), nm = id => { if (id == null) return null; const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null, -1]; const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : (RAW_ID.test(String(id)) ? null : String(id)); };
+    const tl = timelineView(state, MODES), nm = id => { if (id == null) return null; const [t, i] = findClip(tl, { clip_id: id }); const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : (RAW_ID.test(String(id)) ? null : String(id)); };
     const rows = colourRows(tn, A, R, nm(A.ref_clip_id));
     const K = (MODES[mode] && Object.entries(MODES[mode].panels).find(([, sp]) => sp.kind === 'kv')) || null;
     if (rows.length && K) { const KV = V2[K[0]] || (V2[K[0]] = {}); KV.blocks = (KV.blocks || []).filter(b => !b._cread); for (const b of KV.blocks) b.ch = false; const t = now(); KV.blocks.push({ sec: tn, _grade: true, _cread: true }, ...rows.map(([k, v]) => ({ k, v, ch: true, _grade: true, _cread: true, _flash: t }))); hit = true; }
@@ -284,7 +284,7 @@ function gradeOps(state, MODES, ev) {
   // keyer: one row with the matte model, clean plate, garbage/core mattes, despill mode and the non-result view
   if (tn === 'add_effect' && kind === 'keyer') {
     const pr = A.params || {}, st = A.strings || {}, mm = numOf(pr.matte_model) ?? 0, kv = numOf(pr.view) ?? 0, dm = numOf(pr.despill_mode);
-    const tl = timelineView(state, MODES), nm = id => { const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null, -1]; const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : String(id); };
+    const tl = timelineView(state, MODES), nm = id => { const [t, i] = findClip(tl, { clip_id: id }); const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : String(id); };
     const plate = st.ref_clip ? `clean plate ${nm(st.ref_clip)}` : st.aux_path ? `clean plate ${String(st.aux_path).split(/[\\/]/).pop()}` : null;
     const mattes = [st.garbage_mask ? 'garbage' : null, st.core_mask ? 'core' : null].filter(Boolean).join('/');
     const txt = ['keyer', `model ${mm}`, plate, mattes || null, dm != null ? `despill ${['average', 'double', 'limit', 'min'][dm] ?? dm}` : null, kv ? `${['result', 'matte', 'despilled', 'status', 'raw screen'][kv] ?? kv} view` : null].filter(Boolean).join(' · ');
@@ -433,7 +433,7 @@ function callDiff(state, ev) {
   const P = ev.payload || {}, T = ev.target || {}, C = P.changed && typeof P.changed === 'object' ? P.changed : null, out = [];
   const tl = state.liveTL, cap = s => s.replace(/_/g, ' ').replace(/^./, x => x.toUpperCase());
   const push = (k, from, to) => { if (from === to || (!from && !to)) return; out.push({ k, from: from || DASH, v: to || DASH }); };
-  const clipName = id => { if (id == null) return null; if (!RAW_ID.test(String(id))) return String(id); const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null, -1]; const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? String(lb) : null; };
+  const clipName = id => { if (id == null) return null; if (!RAW_ID.test(String(id))) return String(id); const [t, i] = findClip(tl, { clip_id: id }); const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? String(lb) : null; };
   const trackName = id => { if (id == null) return null; if (!RAW_ID.test(String(id))) return String(id); const t = tl ? findTrack(tl, id) : null; return t && t.label && !RAW_ID.test(String(t.label)) ? String(t.label) : null; };
   const keyStr = (k, p) => k && typeof k === 'object' && k.t != null ? `${secs(k.t)} ${fmtVal(k.v, p)}`.trim() : '';
   const keysDiff = (label, p, a, b) => {
@@ -683,21 +683,28 @@ function maskOps(state, MODES, ev) {
     const tl = state.liveTL, [ct, ci] = tl && A.clip_id != null ? findClip(tl, { clip_id: A.clip_id }) : [null, -1], c = ct ? ct.clips[ci] : null;
     const lo = c ? fr(c.s) : KK.ruler ? KK.ruler.t0 + (KK.ruler.t1 - KK.ruler.t0) * .06 : null, hi = c ? fr(c.e) : KK.ruler ? KK.ruler.t1 - (KK.ruler.t1 - KK.ruler.t0) * .06 : null;
     lane(`track matte${A.mode ? ' ' + String(A.mode) : ''}${A.luma_space ? ' ' + String(A.luma_space) : ''}`, null, lo != null && hi != null && hi > lo ? { area: [[lo, 1], [hi, 1]], color: '#6f6c66', stroke: '#e8e0cc' } : {});
-    if (lo != null && hi != null) { const L = KK.lanes.find(l => l.label.startsWith('track matte')); if (L && L.keys.length === 0 && KK.ruler && (lo < KK.ruler.t0 || hi > KK.ruler.t1)) lane(L.label, null); }   // refit the ruler to include the span
+    // lane() already refits the ruler around every key and area with positive padding.
   }
   if (tn === 'remove_track_matte') { const cnt = () => ((K && K.blocks) || []).length + ((KK && KK.lanes) || []).length, n0 = cnt(); if (K) K.blocks = (K.blocks || []).filter(b => b.sec !== 'Key' && b._sec !== 'Key'); if (KK) KK.lanes = (KK.lanes || []).filter(l => !l.label.startsWith('track matte')); hit = cnt() !== n0; }   /* nothing drawn to take away: the Inspector says it (router callSection) */
   if (tn === 'reorder_mask' && numOf(A.index) != null && KK && KK.lanes) {   // the mask's lanes move to its new place in the stack order
     const mine = KK.lanes.filter(l => l.label.startsWith(mid + ' ')), rest = KK.lanes.filter(l => !l.label.startsWith(mid + ' ')); if (mine.length) { const at = Math.max(0, Math.min(rest.length, Math.round(numOf(A.index)))); KK.lanes = [...rest.slice(0, at), ...mine, ...rest.slice(at)]; for (const l of mine) l._flash = now(); hit = true; } }
-  if (tn === 'remove_mask' || tn === 'remove_mask_layer') { ov(); if (tn === 'remove_mask') vw.overlay = (vw.overlay || []).filter(o => !String(o._kind || '').startsWith('mask:'));
+  if (tn === 'remove_mask' || tn === 'remove_mask_layer') { ov(); if (tn === 'remove_mask') vw.overlay = vw.overlay.filter(o => !String(o._kind || '').startsWith('mask:'));
     if (KK) KK.lanes = (KK.lanes || []).filter(l => !(tn === 'remove_mask' || l.label.startsWith(mid + ' '))); if (K && (tn === 'remove_mask' || String(K.sub || '').startsWith(mid))) { K.blocks = (K.blocks || []).filter(b => !b._mask); K.sub = ''; } hit = true; }
   if (hit) ev._kvDone = true;
   return hit;
 }
 
 function timelineOps(state, MODES, ev, fam) {
-  const tl = timelineView(state, MODES); if (!tl) return false;
+  const tl = timelineView(state, MODES);
   const A = (ev.payload || {}).args || (state._editArgs && state._editArgs[ev.call_id]) || {};
   if (fam === 'edit') delete (state._editArgs || {})[ev.call_id];
+  // Resolve names before destructive edits remove the source clips (group/delete).
+  let names = [];
+  if (fam === 'edit') {
+    const nameOf = id => { const [tt, ii] = findClip(tl, { clip_id: id }); const lb = tt ? tt.clips[ii].label : null; return lb && !RAW_ID.test(String(lb)) ? String(lb) : null; };
+    const ids = [A.clip_id, A.clip_a, A.clip_b, ...(Array.isArray(A.clip_ids) ? A.clip_ids : [])].filter(x => x != null);
+    names = [...new Set(ids.map(nameOf).filter(Boolean))];
+  }
   if (fam === 'edit' && editOps2(state, MODES, tl, ev, A)) {
     fitRuler(tl);
     // the m16 inspector heads with the touched clip's name (its rows fill only from args that carry them)
@@ -706,9 +713,6 @@ function timelineOps(state, MODES, ev, fam) {
     if (kv) {
       // the op's own rows in the existing Inspector: what it touched (clip names, track) and its values
       kv.blocks = kv.blocks || []; const j = kv.blocks.findIndex(b => b._live); if (j >= 0) kv.blocks.splice(j);
-      const nameOf = id => { const [tt, ii] = findClip(tl, { clip_id: id }); const lb = tt ? tt.clips[ii].label : null; return lb && !RAW_ID.test(String(lb)) ? String(lb) : null; };
-      const ids = [A.clip_id, A.clip_a, A.clip_b, ...(Array.isArray(A.clip_ids) ? A.clip_ids : [])].filter(x => x != null);
-      const names = [...new Set(ids.map(nameOf).filter(Boolean))];
       const trk = A.track_id != null ? findTrack(tl, A.track_id) : null;
       const s = v => `${fmtVal(numOf(v))} s`, rows = [];
       if (names.length) rows.push([names.length > 1 ? 'Clips' : 'Clip', names.length > 2 ? `${names[0]} +${names.length - 1}` : names.join(', ')]);
@@ -956,7 +960,7 @@ function exportOps(state, MODES, ev) {
 // events the reducer should apply (the rail), having already mutated views.
 const COV_H = { now, flashing, fmtVal, RAW_ID, findClip, findTrack, ensureTrack, fitRuler, timelineView, modeViews, cRestore };
 // what cov_b.js needs from here (passed in, not imported back: no import cycle)
-const COVB_H = { now: () => now(), fmtVal, gamut: g => space(g, 0) || null, modeViews: (s, M, e) => modeViews(s, M, e),
+const COVB_H = { now: () => now(), fmtVal, gamut: g => space(g, 0), modeViews: (s, M, e) => modeViews(s, M, e),
   clipName: (s, M, id) => { const tl = s.liveTL || panels(s, M, ['timeline'])[0]; const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null]; const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? String(lb) : null; },
   clipObj: (s, id) => { const tl = s.liveTL; const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null]; return t ? t.clips[i] : null; } };
 /* A keyframe call's payload carries the whole key list before and after ({t, v, ease, bez} each), so a plain
@@ -968,7 +972,7 @@ const keyAt = (keys, t) => keys.find(k => Math.abs(numOf(k.t) - t) < 1e-6);
 function curveAt(keys, t) {
   const ks = keys.filter(k => numOf(k.v) != null).sort((a, b) => numOf(a.t) - numOf(b.t)); if (!ks.length) return null;
   if (t <= numOf(ks[0].t)) return numOf(ks[0].v);
-  for (let i = 1; i < ks.length; i++) { const a = ks[i - 1], b = ks[i], ta = numOf(a.t), tb = numOf(b.t); if (t <= tb) return tb > ta ? numOf(a.v) + (numOf(b.v) - numOf(a.v)) * (t - ta) / (tb - ta) : numOf(b.v); }
+  for (let i = 1; i < ks.length; i++) { const a = ks[i - 1], b = ks[i], ta = numOf(a.t), tb = numOf(b.t); if (t <= tb) return numOf(a.v) + (numOf(b.v) - numOf(a.v)) * (t - ta) / (tb - ta); }
   return numOf(ks[ks.length - 1].v);
 }
 const CSS_EASE = { '0.25 0.1 0.25 1': 'ease', '0.42 0 1 1': 'ease-in', '0 0 0.58 1': 'ease-out', '0.42 0 0.58 1': 'ease-in-out' };
@@ -1036,7 +1040,7 @@ function keyGraph(state, MODES, ev) {
   const G = V[e[0]] || (V[e[0]] = {});
   const cur = evalKeys(P.to_keys), prev = evalKeys(P.from_keys || []);
   const ts = [...cur.pts, ...prev.pts].map(p => p[0]); let t0 = ts.length ? Math.min(...ts) : 0, t1 = ts.length ? Math.max(...ts) : 1; if (t1 - t0 < 1e-6) { t0 -= .5; t1 += .5; }
-  const raw = (t1 - t0) / 6, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= raw) || raw, pad = (t1 - t0) * .04;
+  const raw = (t1 - t0) / 6, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= raw), pad = (t1 - t0) * .04;
   const vs = [...cur.pts, ...prev.pts, ...cur.handles.flat()].map(p => p[1]); let lo = Math.min(...vs), hi = Math.max(...vs); if (!(hi - lo > 1e-9)) { lo -= 1; hi += 1; }
   const N = v => .12 + (v - lo) / (hi - lo) * .76, nn = q => [q[0], N(q[1])];
   const kt = P.key && P.key.t;
@@ -1169,7 +1173,7 @@ function readCard(state, MODES, tool, rows, title) {   /* title: the card's labe
 function callSection(state, MODES, ev) {
   const A = (state._callArgs && state._callArgs[ev.call_id]) || (ev.payload || {}).args || {}, T = ev.target || {};
   const tl = timelineView(state, MODES);
-  const name = id => { if (id == null) return null; if (!RAW_ID.test(String(id))) return String(id); const [t, i] = tl ? findClip(tl, { clip_id: id }) : [null, -1]; const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : null; };
+  const name = id => { if (id == null) return null; if (!RAW_ID.test(String(id))) return String(id); const [t, i] = findClip(tl, { clip_id: id }); const lb = t ? t.clips[i].label : null; return lb && !RAW_ID.test(String(lb)) ? lb : null; };
   const rows = callRows(String(ev.tool_name), A, (ev.payload || {}).result, (ev.payload || {}).changed, name(T.clip_id ?? A.clip_id));
   if (!rows.length) return false;
   const [, V] = modeViews(state, MODES, ev), m = (state.explicitMode ? null : inferMode(String(ev.tool_name))) || state.mode;

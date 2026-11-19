@@ -56,7 +56,10 @@ impl std::fmt::Display for Failure {
 }
 
 pub fn sha512_file(p: &Path) -> std::io::Result<String> {
-    let mut f = std::fs::File::open(p)?;
+    sha512_reader(&mut std::fs::File::open(p)?)
+}
+
+fn sha512_reader(f: &mut dyn Read) -> std::io::Result<String> {
     let mut h = Sha512::new();
     let mut buf = vec![0u8; 1 << 16];
     loop { let n = f.read(&mut buf)?; if n == 0 { break; } h.update(&buf[..n]); }
@@ -303,6 +306,17 @@ mod tests {
 
     #[test]
     fn verification_io_and_short_bodies_never_publish_a_download() {
+        struct InterruptedDownload(std::io::Cursor<Vec<u8>>);
+        impl Read for InterruptedDownload {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.position() == self.0.get_ref().len() as u64 {
+                    Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "owned download interrupted"))
+                } else { self.0.read(buf) }
+            }
+        }
+        let error = sha512_reader(&mut InterruptedDownload(std::io::Cursor::new(body()))).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "owned download interrupted");
         let root = tmp("verification-errors");
         assert!(sha512_file(&root.join("missing")).is_err());
         assert!(sha512_file(&root).is_err());

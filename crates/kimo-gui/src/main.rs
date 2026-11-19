@@ -59,6 +59,22 @@ struct AppState {
     updating: AtomicBool,
 }
 
+/// Preserve the executable path verbatim; PATH lookup remains the last resort.
+fn launch_from_executable(exe: std::io::Result<PathBuf>) -> KimoLaunch {
+    let command = exe.map(|p| p.display().to_string()).unwrap_or_else(|_| "kimo-gui".into());
+    KimoLaunch { command, env: vec![] }
+}
+
+fn resolve_data_dir(overridden: Option<PathBuf>, platform: Option<PathBuf>) -> PathBuf {
+    overridden.or(platform).unwrap_or_else(|| std::env::temp_dir().join("kimo"))
+}
+
+fn resolve_app_dirs(overridden: Option<PathBuf>, platform_data: Option<PathBuf>, platform_config: Option<PathBuf>) -> (PathBuf, PathBuf) {
+    let data = resolve_data_dir(overridden, platform_data);
+    let config = platform_config.unwrap_or_else(|| data.clone());
+    (data, config)
+}
+
 impl AppState {
     fn launch(&self) -> Option<Launch> {
         let bin = self.sup.bin.clone()?;
@@ -66,8 +82,7 @@ impl AppState {
     }
     /// What agents launch for kimo: this very app binary in `mcp` mode (joins this app's engine).
     fn kimo_launch(&self) -> KimoLaunch {
-        let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "kimo-gui".into());
-        KimoLaunch { command: exe, env: vec![] }
+        launch_from_executable(std::env::current_exe())
     }
     fn save(&self) { let _ = self.settings.lock().unwrap().save(&self.settings_path); }
     fn provider_cfg(&self, id: &str) -> Option<(&'static keys::Provider, String, String)> {
@@ -291,10 +306,14 @@ async fn cli_status<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<c
 /// Opens a terminal running the CLI's own login (the user signs in there; kimo never sees the credentials).
 #[tauri::command]
 fn cli_signin(id: String) -> Result<String, String> {
-    let k = Kind::from_id(&id).ok_or("unknown agent")?;
-    let bin = cli_agents::find(k).ok_or_else(|| format!("{} is not installed yet.", k.name()))?;
+    signin_with(&id, &cli_agents::find, &cli_agents::open_terminal)
+}
+
+fn signin_with(id: &str, find: &dyn Fn(Kind) -> Option<PathBuf>, terminal: &dyn Fn(&str) -> Result<(), String>) -> Result<String, String> {
+    let k = Kind::from_id(id).ok_or("unknown agent")?;
+    let bin = find(k).ok_or_else(|| format!("{} is not installed yet.", k.name()))?;
     let cmd = match k { Kind::ClaudeCode => format!("\"{}\"", bin.display()), Kind::Codex => format!("\"{}\" login", bin.display()), Kind::Antigravity => format!("\"{}\"", bin.display()) };
-    cli_agents::open_terminal(&cmd)?;
+    terminal(&cmd)?;
     Ok(match k {
         Kind::ClaudeCode => "A terminal opened with Claude Code. Type /login, pick your Claude subscription and finish in the browser, then close the terminal.".into(),
         Kind::Codex => "A terminal opened with `codex login`. Choose “Sign in with ChatGPT”, finish in the browser, then close the terminal.".into(),
@@ -305,10 +324,14 @@ fn cli_signin(id: String) -> Result<String, String> {
 /// Opens a terminal running the npm install (visible to the user), or the download page.
 #[tauri::command]
 fn cli_install(id: String) -> Result<String, String> {
-    let k = Kind::from_id(&id).ok_or("unknown agent")?;
+    install_with(&id, &agents::which, &cli_agents::open_terminal, &cli_agents::open_url)
+}
+
+fn install_with(id: &str, npm: &dyn Fn(&str) -> Option<PathBuf>, terminal: &dyn Fn(&str) -> Result<(), String>, url: &dyn Fn(&str) -> Result<(), String>) -> Result<String, String> {
+    let k = Kind::from_id(id).ok_or("unknown agent")?;
     match k.install_cmd() {
-        Some(c) if agents::which("npm").is_some() => { cli_agents::open_terminal(c)?; Ok(format!("Installing {} in a terminal window. When it finishes, press Check again.", k.name())) }
-        _ => { cli_agents::open_url(k.install_url())?; Ok(format!("Opened the {} download page in your browser.", k.name())) }
+        Some(c) if npm("npm").is_some() => { terminal(c)?; Ok(format!("Installing {} in a terminal window. When it finishes, press Check again.", k.name())) }
+        _ => { url(k.install_url())?; Ok(format!("Opened the {} download page in your browser.", k.name())) }
     }
 }
 
@@ -585,6 +608,15 @@ async fn check_update<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Value {
     v
 }
 
+fn schedule_startup_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool, delay: std::time::Duration) -> Option<tauri::async_runtime::JoinHandle<()>> {
+    if !enabled { return None; }
+    Some(tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(delay)).await;
+        let value = check_update(&app).await;
+        if value["state"] == "error" { eprintln!("kimo: update check failed: {}", value["error"]); }
+    }))
+}
+
 #[tauri::command]
 async fn update_check<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> { Ok(check_update(&app).await) }
 
@@ -810,12 +842,102 @@ fn handle_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: tauri::
     }
 }
 
+fn initialize_app<R: tauri::Runtime>(app: &mut tauri::App<R>, argv: &[String], data_dir: PathBuf, config_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = app.handle().clone();
+    let _ = std::fs::create_dir_all(&data_dir);
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let res_dir = app.path().resource_dir().ok();
+    let bin = engine::find_engine(exe_dir.as_deref(), res_dir.as_deref());
+    let fonts = find_fonts(exe_dir.as_deref(), res_dir.as_deref(), bin.as_deref());
+    let parts = download::for_this_os(download::load_parts(PARTS_JSON).unwrap_or_default());
+    let settings_path = config_dir.join("settings.json");
+    let settings = Settings::load(&settings_path);
+
+    // the app's own engine streams telemetry to a private loopback port (for the live-graph window)
+    let h2 = handle.clone();
+    let private = telemetry::listen_private(Arc::new(move |src, ev| forward(&h2, src, ev)))?;
+    let mut env = engine_env(fonts.as_deref(), &data_dir, &parts);
+    env.push(("KIMO_SPECTATOR".into(), format!("tcp://127.0.0.1:{private}")));
+    env.push(("KIMO_INLINE_IMAGES".into(), "0".into()));
+    // background proxies for heavy imports live in the app's data folder, so they survive restarts and project saves
+    env.push(("KIMO_PROXY_CACHE".into(), data_dir.join("proxy-cache").join("edit").display().to_string()));
+    env.push(("KIMO_ANALYSIS_PROXY_CACHE".into(), data_dir.join("proxy-cache").join("analysis").display().to_string()));
+    let sup = Arc::new(Supervisor::new(bin, env, Some(data_dir.join("engine.log"))));
+    let h3 = handle.clone();
+    let ledger = Arc::new(Ledger::new(sup.clone(), Arc::new(move |kind, v| { let _ = h3.emit(kind, v); })));
+
+    let keyring = KeyRing::new(Box::new(keys::OsKeychain));
+    for p in &settings.remembered { let _ = keyring.restore(p); }
+    let mcp_on = settings.mcp_enabled;
+    let vdir = data_dir.join("viewer-cache");
+    let _ = std::fs::remove_dir_all(&vdir);
+    let viewer = Arc::new(Viewer::new(vdir).with_ffmpeg(viewer::find_ffmpeg(&data_dir)));
+    // what the previous session left (offered once the window is up), then start this session's record
+    let prev = recovery::load(&data_dir);
+    let offer = recovery::offer(&prev);
+    // an offer not yet answered stays on record (a second crash before Restore/Discard must not lose it)
+    let rec_now = if offer.is_some() { recovery::State { clean: false, pid: std::process::id(), ..prev } } else { recovery::State { clean: false, pid: std::process::id(), ..Default::default() } };
+    recovery::store(&data_dir, &rec_now);
+    app.manage(AppState {
+        sup: sup.clone(), ledger, keys: keyring, settings: Mutex::new(settings), settings_path,
+        chat: Mutex::new(Chat::default()), external: Mutex::new(None), data_dir: data_dir.clone(), fonts, parts,
+        cancel_dl: Arc::new(AtomicBool::new(false)), viewer, bridge: Mutex::new(None),
+        turn: Arc::new(Mutex::new(None)), busy: AtomicBool::new(false), sessions: Mutex::new(HashMap::new()),
+        attached: Mutex::new(HashMap::new()), project_path: Mutex::new(None),
+        rec: Mutex::new(rec_now), offer: Mutex::new(offer),
+        update: Mutex::new(json!({"state": "unchecked"})), updating: AtomicBool::new(false),
+    });
+    // updates: release builds ask GitHub releases once, shortly after start (the person installs with a click)
+    let auto_update = !cfg!(debug_assertions) && app.state::<AppState>().settings.lock().unwrap().update_check;
+    schedule_startup_update(handle.clone(), auto_update, std::time::Duration::from_secs(8));
+    // autosave (with undo history): every minute after an edit, or after 20 edits, straight to the engine (not an edit itself)
+    let h6 = handle.clone();
+    std::thread::spawn(move || {
+        let (mut last_rev, mut last_t) = (0u64, std::time::Instant::now());
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let st = h6.state::<AppState>();
+            let rev = st.ledger.revision();
+            if !recovery::due(rev, last_rev, last_t.elapsed().as_secs_f64(), 60.0, 20) { continue; }
+            if !matches!(st.sup.status(), Status::Running { .. }) { continue; }
+            let ok = st.autosave_now();
+            last_t = std::time::Instant::now();
+            if !ok { continue; }
+            last_rev = rev;
+            let r = st.rec.lock().unwrap().clone();
+            let _ = h6.emit("autosaved", json!({"at": r.autosaved_at, "path": r.autosave}));
+        }
+    });
+    // the bridge: agents launched with `kimo-gui mcp` join this engine
+    let h4 = handle.clone();
+    let on_conn: bridge::OnConn = Arc::new(move |label, up| bridge_connection(&h4, label, up));
+    match bridge::serve(Some(&data_dir), bridge_handler(handle.clone()), on_conn) {
+        Ok(s) => *app.state::<AppState>().bridge.lock().unwrap() = Some(s),
+        Err(e) => eprintln!("kimo: bridge not started: {e}"),
+    }
+    if mcp_on { if let Err(e) = start_external(&handle) { eprintln!("kimo: {e}"); } }
+    let h5 = handle.clone();
+    // started by double-clicking a .kimo file: open it once the engine is up
+    let open_file = argv.iter().find(|a| a.to_ascii_lowercase().ends_with(".kimo") && Path::new(a).is_file()).cloned();
+    std::thread::spawn(move || {
+        let s = sup.start();
+        if let (Some(f), Status::Running { .. }) = (&open_file, &s) {
+            let st = h5.state::<AppState>();
+            if let Ok(r) = st.ledger.call("you", "project", &json!({"action": "load_project", "args": {"path": f}})) {
+                if !engine::is_error(&r) { st.ledger.reset(); st.remember_project(f); }
+            }
+        }
+        let _ = h5.emit("engine-status", &s);
+    });
+    Ok(())
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "mcp").unwrap_or(false) { run_mcp(&argv[1..]); }
     if argv.first().map(|a| a == "--version").unwrap_or(false) { println!("kimo-gui {}", env!("CARGO_PKG_VERSION")); return; }
     // a panic anywhere in the app leaves a local crash log; the next launch asks whether to send a report (never automatic)
-    let data_dir_early = bridge::data_dir().unwrap_or_else(|| std::env::temp_dir().join("kimo"));
+    let data_dir_early = resolve_data_dir(bridge::data_dir(), None);
     crash::install(crash::dir(&data_dir_early), env!("CARGO_PKG_VERSION"));
     // `kimo-gui --crash-test`: a deliberate panic, to check the crash log and the next launch's prompt end to end
     if argv.first().map(|a| a == "--crash-test").unwrap_or(false) { panic!("kimo --crash-test: a deliberate crash to check crash reports"); }
@@ -828,102 +950,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
-            let handle = app.handle().clone();
-            let data_dir = bridge::data_dir().or_else(|| app.path().app_data_dir().ok()).unwrap_or_else(|| std::env::temp_dir().join("kimo"));
-            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| data_dir.clone());
-            let _ = std::fs::create_dir_all(&data_dir);
-            let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
-            let res_dir = app.path().resource_dir().ok();
-            let bin = engine::find_engine(exe_dir.as_deref(), res_dir.as_deref());
-            let fonts = find_fonts(exe_dir.as_deref(), res_dir.as_deref(), bin.as_deref());
-            let parts = download::for_this_os(download::load_parts(PARTS_JSON).unwrap_or_default());
-            let settings_path = config_dir.join("settings.json");
-            let settings = Settings::load(&settings_path);
-
-            // the app's own engine streams telemetry to a private loopback port (for the live-graph window)
-            let h2 = handle.clone();
-            let private = telemetry::listen_private(Arc::new(move |src, ev| forward(&h2, src, ev)))?;
-            let mut env = engine_env(fonts.as_deref(), &data_dir, &parts);
-            env.push(("KIMO_SPECTATOR".into(), format!("tcp://127.0.0.1:{private}")));
-            env.push(("KIMO_INLINE_IMAGES".into(), "0".into()));
-            // background proxies for heavy imports live in the app's data folder, so they survive restarts and project saves
-            env.push(("KIMO_PROXY_CACHE".into(), data_dir.join("proxy-cache").join("edit").display().to_string()));
-            env.push(("KIMO_ANALYSIS_PROXY_CACHE".into(), data_dir.join("proxy-cache").join("analysis").display().to_string()));
-            let sup = Arc::new(Supervisor::new(bin, env, Some(data_dir.join("engine.log"))));
-            let h3 = handle.clone();
-            let ledger = Arc::new(Ledger::new(sup.clone(), Arc::new(move |kind, v| { let _ = h3.emit(kind, v); })));
-
-            let keyring = KeyRing::new(Box::new(keys::OsKeychain));
-            for p in &settings.remembered { let _ = keyring.restore(p); }
-            let mcp_on = settings.mcp_enabled;
-            let vdir = data_dir.join("viewer-cache");
-            let _ = std::fs::remove_dir_all(&vdir);
-            let viewer = Arc::new(Viewer::new(vdir).with_ffmpeg(viewer::find_ffmpeg(&data_dir)));
-            // what the previous session left (offered once the window is up), then start this session's record
-            let prev = recovery::load(&data_dir);
-            let offer = recovery::offer(&prev);
-            // an offer not yet answered stays on record (a second crash before Restore/Discard must not lose it)
-            let rec_now = if offer.is_some() { recovery::State { clean: false, pid: std::process::id(), ..prev } } else { recovery::State { clean: false, pid: std::process::id(), ..Default::default() } };
-            recovery::store(&data_dir, &rec_now);
-            app.manage(AppState {
-                sup: sup.clone(), ledger, keys: keyring, settings: Mutex::new(settings), settings_path,
-                chat: Mutex::new(Chat::default()), external: Mutex::new(None), data_dir: data_dir.clone(), fonts, parts,
-                cancel_dl: Arc::new(AtomicBool::new(false)), viewer, bridge: Mutex::new(None),
-                turn: Arc::new(Mutex::new(None)), busy: AtomicBool::new(false), sessions: Mutex::new(HashMap::new()),
-                attached: Mutex::new(HashMap::new()), project_path: Mutex::new(None),
-                rec: Mutex::new(rec_now), offer: Mutex::new(offer),
-                update: Mutex::new(json!({"state": "unchecked"})), updating: AtomicBool::new(false),
-            });
-            // updates: release builds ask GitHub releases once, shortly after start (the person installs with a click)
-            if !cfg!(debug_assertions) && app.state::<AppState>().settings.lock().unwrap().update_check {
-                let h7 = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(8))).await;
-                    let v = check_update(&h7).await;
-                    if v["state"] == "error" { eprintln!("kimo: update check failed: {}", v["error"]); }
-                });
-            }
-            // autosave (with undo history): every minute after an edit, or after 20 edits, straight to the engine (not an edit itself)
-            let h6 = handle.clone();
-            std::thread::spawn(move || {
-                let (mut last_rev, mut last_t) = (0u64, std::time::Instant::now());
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    let st = h6.state::<AppState>();
-                    let rev = st.ledger.revision();
-                    if !recovery::due(rev, last_rev, last_t.elapsed().as_secs_f64(), 60.0, 20) { continue; }
-                    if !matches!(st.sup.status(), Status::Running { .. }) { continue; }
-                    let ok = st.autosave_now();
-                    last_t = std::time::Instant::now();
-                    if !ok { continue; }
-                    last_rev = rev;
-                    let r = st.rec.lock().unwrap().clone();
-                    let _ = h6.emit("autosaved", json!({"at": r.autosaved_at, "path": r.autosave}));
-                }
-            });
-            // the bridge: agents launched with `kimo-gui mcp` join this engine
-            let h4 = handle.clone();
-            let on_conn: bridge::OnConn = Arc::new(move |label, up| bridge_connection(&h4, label, up));
-            match bridge::serve(Some(&data_dir), bridge_handler(handle.clone()), on_conn) {
-                Ok(s) => *app.state::<AppState>().bridge.lock().unwrap() = Some(s),
-                Err(e) => eprintln!("kimo: bridge not started: {e}"),
-            }
-            if mcp_on { if let Err(e) = start_external(&handle) { eprintln!("kimo: {e}"); } }
-            let h5 = handle.clone();
-            // started by double-clicking a .kimo file: open it once the engine is up
-            let open_file = std::env::args().skip(1).find(|a| a.to_ascii_lowercase().ends_with(".kimo") && Path::new(a).is_file());
-            std::thread::spawn(move || {
-                let s = sup.start();
-                if let (Some(f), Status::Running { .. }) = (&open_file, &s) {
-                    let st = h5.state::<AppState>();
-                    if let Ok(r) = st.ledger.call("you", "project", &json!({"action": "load_project", "args": {"path": f}})) {
-                        if !engine::is_error(&r) { st.ledger.reset(); st.remember_project(f); }
-                    }
-                }
-                let _ = h5.emit("engine-status", &s);
-            });
-            Ok(())
+        .setup(move |app| {
+            let (data_dir, config_dir) = resolve_app_dirs(bridge::data_dir(), app.path().app_data_dir().ok(), app.path().app_config_dir().ok());
+            initialize_app(app, &argv, data_dir, config_dir)
         })
         // kimo://localhost/<hex>.png|mp4 (http://kimo.localhost on Windows): the viewer cache, nothing else
         .register_uri_scheme_protocol("kimo", |ctx, req| {
@@ -943,6 +972,118 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_fixture_child() {
+        use tauri::Listener;
+        let Ok(root) = std::env::var("KIMO_TEST_STARTUP_ROOT") else { return; };
+        let root = PathBuf::from(root);
+        let case = std::env::var("KIMO_TEST_STARTUP_CASE").unwrap();
+        let data = root.join("data"); let config = root.join("config");
+        std::fs::create_dir_all(data.join("viewer-cache")).unwrap();
+        std::fs::write(data.join("viewer-cache/obsolete"), b"owned cache").unwrap();
+        let mut settings = Settings::default(); settings.onboarded = true;
+        settings.save(&config.join("settings.json")).unwrap();
+        let project = root.join("startup.kimo");
+        if case == "open" {
+            let bin = PathBuf::from(std::env::var_os("KIMO_MCP_BIN").unwrap());
+            let seed = Arc::new(Supervisor::new(Some(bin), vec![("KIMO_SPECTATOR".into(), "off".into())], None));
+            assert!(matches!(seed.start(), Status::Running { .. }));
+            let saved = seed.call("project", &json!({"action":"save_project","args":{"path":project}})).unwrap();
+            assert!(!engine::is_error(&saved)); seed.stop();
+        } else if case == "bad-project" {
+            std::fs::write(&project, b"owned malformed project").unwrap();
+        }
+        if case == "recovery" {
+            let snapshot = data.join("previous.kimo"); std::fs::write(&snapshot, b"owned pending snapshot").unwrap();
+            recovery::store(&data, &recovery::State { autosave: Some(snapshot.display().to_string()), autosaved_at: 42,
+                autosaved_rev: 7, saved_rev: 2, clean: false, ..Default::default() });
+        }
+        let mut app = tauri::test::mock_app();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        app.listen("engine-status", move |event| { let _ = ready_tx.send(event.payload().to_owned()); });
+        let (saved_tx, saved_rx) = std::sync::mpsc::channel();
+        app.listen("autosaved", move |event| { let _ = saved_tx.send(event.payload().to_owned()); });
+        let (error_tx, error_rx) = std::sync::mpsc::channel();
+        app.listen("engine-event", move |event| {
+            let value: Value = serde_json::from_str(event.payload()).unwrap();
+            if value["tool_name"] == "save_project" && value["phase"] == "error" { let _ = error_tx.send(value); }
+        });
+        let args = vec!["--owned-unused-option".into(), project.display().to_string()];
+        initialize_app(&mut app, &args, data.clone(), config.clone()).unwrap();
+        struct Exit(tauri::AppHandle<tauri::test::MockRuntime>);
+        impl Drop for Exit { fn drop(&mut self) { handle_run_event(&self.0, tauri::RunEvent::Exit); } }
+        let exit = Exit(app.handle().clone());
+        let status: Value = serde_json::from_str(&ready_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap()).unwrap();
+        let st = app.state::<AppState>();
+        assert_eq!(st.data_dir, data); assert_eq!(st.settings_path, config.join("settings.json"));
+        assert!(st.settings.lock().unwrap().onboarded);
+        assert!(!data.join("viewer-cache/obsolete").exists());
+        assert_eq!(recovery::load(&data).pid, std::process::id());
+        assert!(!recovery::load(&data).clean);
+        assert_eq!(st.offer.lock().unwrap().is_some(), case == "recovery");
+        if case == "recovery" { assert_eq!(recovery::load(&data).autosaved_rev, 7); }
+        assert_eq!(st.project_path.lock().unwrap().as_deref(), if case == "open" { project.to_str() } else { None });
+        assert_eq!(status["state"], if case == "unavailable" { "crashed" } else { "running" });
+        let info: bridge::Info = serde_json::from_slice(&std::fs::read(bridge::info_path(&data)).unwrap()).unwrap();
+        assert_eq!(info.pid, std::process::id()); assert!(!info.token.is_empty());
+        if case == "empty" {
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.listen("agent-connection", move |event| { tx.send(serde_json::from_str::<Value>(event.payload()).unwrap()).unwrap(); });
+            let client = bridge::connect(&data, "owned-startup-client").unwrap();
+            let connected = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(connected["client"], "owned-startup-client"); assert_eq!(connected["up"], true);
+            assert_eq!(st.attached.lock().unwrap().get("owned-startup-client"), Some(&1));
+            drop(client);
+            let disconnected = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(disconnected["up"], false); assert!(st.attached.lock().unwrap().is_empty());
+        }
+        if case == "empty" || case == "autosave-error" {
+            if case == "autosave-error" { std::fs::write(data.join("autosave"), b"owned obstruction").unwrap(); }
+            for _ in 0..20 {
+                let reply = st.ledger.call("you", "timeline", &json!({"action":"add_track","args":{}})).unwrap();
+                assert!(!engine::is_error(&reply));
+            }
+            if case == "empty" {
+                let saved: Value = serde_json::from_str(&saved_rx.recv_timeout(std::time::Duration::from_secs(15)).unwrap()).unwrap();
+                let snapshot = PathBuf::from(saved["path"].as_str().unwrap());
+                assert!(snapshot.starts_with(&data)); assert!(snapshot.is_file());
+                assert_eq!(recovery::load(&data).autosaved_rev, st.ledger.revision());
+                assert!(saved["at"].as_u64().unwrap() > 0);
+            } else {
+                error_rx.recv_timeout(std::time::Duration::from_secs(15)).unwrap();
+                assert_eq!(std::fs::read(data.join("autosave")).unwrap(), b"owned obstruction");
+                assert_eq!(recovery::load(&data).autosaved_rev, 0);
+                assert!(saved_rx.try_recv().is_err());
+            }
+        }
+        drop(exit);
+        assert!(recovery::load(&data).clean);
+        assert!(!bridge::info_path(&data).exists());
+        assert!(!matches!(st.sup.status(), Status::Running { .. }));
+    }
+
+    #[test]
+    fn application_initialization_owns_state_restores_offers_and_handles_engine_failures() {
+        let base = std::env::temp_dir().join(format!("kimo-startup-proof-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        for case in ["empty", "open", "bad-project", "recovery", "unavailable", "autosave-error"] {
+            let root = base.join(case); std::fs::create_dir(&root).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "tests::startup_fixture_child", "--nocapture"])
+                .env("KIMO_TEST_STARTUP_ROOT", &root).env("KIMO_TEST_STARTUP_CASE", case);
+            if case == "unavailable" {
+                let invalid = root.join("owned-invalid-engine"); std::fs::write(&invalid, b"not an executable").unwrap();
+                command.env("KIMO_MCP_BIN", invalid);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{case}: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(recovery::load(&root.join("data")).clean);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        std::fs::remove_dir(base).unwrap();
+    }
+
 
     #[test]
     fn mcp_entry_child() {
@@ -1086,6 +1227,125 @@ mod tests {
     }
 
     #[test]
+    fn updater_checks_owned_feeds_and_rejects_unsigned_download_before_installation() {
+        use std::io::{BufRead, Write};
+        use tauri::Listener;
+        let root = std::env::temp_dir().join(format!("kimo-update-feed-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for case in ["empty-endpoints", "none", "malformed", "available", "dated"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let quit = Arc::new(AtomicBool::new(false));
+            let stopped = quit.clone(); let base = url.clone();
+            let worker = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                while !stopped.load(Ordering::SeqCst) {
+                    let (mut socket, _) = match listener.accept() {
+                        Ok(pair) => pair,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => { std::thread::sleep(std::time::Duration::from_millis(5)); continue; },
+                        Err(e) => panic!("owned update listener: {e}"),
+                    };
+                    socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                    let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+                    let mut line = String::new(); reader.read_line(&mut line).unwrap();
+                    let path = line.split_whitespace().nth(1).unwrap().to_owned();
+                    loop { let mut header = String::new(); reader.read_line(&mut header).unwrap(); if header == "\r\n" || header.is_empty() { break; } }
+                    requests.push(path.clone());
+                    let (status, body) = if path == "/artifact" { (200, "owned unsigned archive".to_owned()) }
+                    else if case == "none" { (204, String::new()) }
+                    else if case == "malformed" { (200, "{owned invalid response".to_owned()) }
+                    else {
+                        let mut response = json!({"version":"999.0.0","notes":"Owned release notes", "url":format!("{base}/artifact"),"signature":"owned-invalid-signature"});
+                        if case == "dated" { response["pub_date"] = json!("2026-01-02T03:04:05Z"); }
+                        (200, response.to_string())
+                    };
+                    write!(socket,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                }
+                requests
+            });
+            struct Stop(Arc<AtomicBool>);
+            impl Drop for Stop { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
+            let stop = Stop(quit);
+            let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+            context.config_mut().plugins.0.insert("updater".into(), json!({"pubkey":"owned-invalid-public-key", "dangerousInsecureTransportProtocol":true,
+                "endpoints":if case == "empty-endpoints" { vec![] } else { vec![format!("{url}/release")] }}));
+            let app = tauri::test::mock_builder().plugin(tauri_plugin_updater::Builder::new().build()).build(context).unwrap();
+            app.manage(state(&root));
+            let events = Arc::new(Mutex::new(Vec::new())); let captured = events.clone();
+            app.listen("update-available", move |event| captured.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+            let progress = Arc::new(Mutex::new(Vec::new())); let captured = progress.clone();
+            app.listen("update-progress", move |event| captured.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+            tauri::async_runtime::block_on(async {
+                assert!(schedule_startup_update(app.handle().clone(), false, std::time::Duration::ZERO).is_none());
+                assert!(events.lock().unwrap().is_empty());
+                schedule_startup_update(app.handle().clone(), true, std::time::Duration::ZERO).unwrap().await.unwrap();
+                let result = app.state::<AppState>().update.lock().unwrap().clone();
+                assert!(result["checked_at"].as_u64().unwrap() > 0);
+                assert_eq!(*app.state::<AppState>().update.lock().unwrap(), result);
+                match case {
+                    "none" => { assert_eq!(result["state"], "none"); assert_eq!(result["current"], env!("CARGO_PKG_VERSION")); },
+                    "empty-endpoints" | "malformed" => { assert_eq!(result["state"], "error"); assert!(!result["error"].as_str().unwrap().is_empty()); },
+                    _ => {
+                        assert_eq!(result["state"], "available"); assert_eq!(result["version"], "999.0.0"); assert_eq!(result["notes"], "Owned release notes");
+                        assert_eq!(result["date"].is_null(), case != "dated");
+                        assert_eq!(*events.lock().unwrap(), vec![result.clone()]);
+                    }
+                }
+                let error = update_install(app.handle().clone()).await.unwrap_err();
+                assert!(!error.is_empty());
+                if case == "none" { assert_eq!(error, "kimo is already up to date."); }
+                assert!(!app.state::<AppState>().updating.load(Ordering::SeqCst));
+                assert!(matches!(app.state::<AppState>().sup.status(), Status::Stopped | Status::Missing { .. }));
+                assert!(recovery::load(&root).autosave.is_none());
+            });
+            drop(stop);
+            let requests = worker.join().unwrap();
+            if case == "empty-endpoints" { assert!(requests.is_empty()); }
+            else { assert_eq!(requests.iter().filter(|p| *p == "/release").count(), 2); }
+            if matches!(case, "available" | "dated") {
+                assert_eq!(requests.iter().filter(|p| *p == "/artifact").count(), 1);
+                assert_eq!(progress.lock().unwrap().last().unwrap()["done"], "owned unsigned archive".len());
+            } else { assert!(events.lock().unwrap().is_empty()); assert!(progress.lock().unwrap().is_empty()); }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subscription_launch_commands_preserve_paths_and_report_launch_failures() {
+        use std::cell::RefCell;
+        let commands = RefCell::new(Vec::new());
+        let links = RefCell::new(Vec::new());
+        let terminal = |command: &str| { commands.borrow_mut().push(command.to_owned()); Ok(()) };
+        let browser = |url: &str| { links.borrow_mut().push(url.to_owned()); Ok(()) };
+        let npm = |name: &str| { assert_eq!(name, "npm"); Some(PathBuf::from("owned npm")) };
+        let missing = |_: &str| None;
+        let launch_error = |_: &str| Err("owned launcher refusal".to_owned());
+        for (kind, suffix, note) in [(Kind::ClaudeCode,"","/login"),(Kind::Codex," login","Sign in with ChatGPT"),(Kind::Antigravity,"","Google account")] {
+            let path = PathBuf::from("owned folder").join(kind.bin_name());
+            let found = |_: Kind| Some(path.clone());
+            let reply = signin_with(kind.id(), &found, &terminal).unwrap();
+            assert!(reply.contains(note), "{reply}");
+            assert_eq!(commands.borrow().last().unwrap(), &format!("\"{}\"{suffix}", path.display()));
+            assert!(signin_with(kind.id(), &|_| None, &terminal).unwrap_err().contains("is not installed yet"));
+            assert_eq!(signin_with(kind.id(), &found, &launch_error).unwrap_err(), "owned launcher refusal");
+        }
+        assert_eq!(signin_with("unknown", &|_| None, &terminal).unwrap_err(), "unknown agent");
+        for (id, command) in [("claude-code","npm install -g @anthropic-ai/claude-code"),("codex","npm install -g @openai/codex")] {
+            assert!(install_with(id, &npm, &terminal, &browser).unwrap().starts_with("Installing "));
+            assert_eq!(commands.borrow().last().unwrap(), command);
+            assert_eq!(install_with(id, &npm, &launch_error, &browser).unwrap_err(), "owned launcher refusal");
+            assert!(install_with(id, &missing, &terminal, &browser).unwrap().contains("download page"));
+            assert_eq!(install_with(id, &missing, &terminal, &launch_error).unwrap_err(), "owned launcher refusal");
+        }
+        let count = commands.borrow().len();
+        assert!(install_with("antigravity", &npm, &terminal, &browser).unwrap().contains("download page"));
+        assert_eq!(commands.borrow().len(), count);
+        assert_eq!(*links.borrow(), vec!["https://docs.claude.com/en/docs/claude-code/setup", "https://developers.openai.com/codex/cli", "https://antigravity.google/download"]);
+        assert_eq!(install_with("unknown", &npm, &terminal, &browser).unwrap_err(), "unknown agent");
+    }
+
+    #[test]
     fn updater_key_configuration_requires_nonempty_text() {
         for (config,expected) in [(Value::Null,None),(json!({}),None),(json!({"pubkey":false}),None),(json!({"pubkey":""}),None),(json!({"pubkey":"   "}),None),(json!({"pubkey":" fixture-public-key "}),Some("fixture-public-key"))] {
             let mut context=tauri::test::mock_context(tauri::test::noop_assets());
@@ -1110,12 +1370,54 @@ mod tests {
         for command in ["engine_call","engine_read","change_undo","project_open","project_save","pick","media_thumb","open_url","reveal","cli_signin","cli_install","cli_register","cli_models","agent_select","agent_send","mcp_set","key_set","key_clear","key_test","settings_set","crash_answer","viewer_frame","viewer_draft","preview_start","preview_update","preview_frame","setup_start"] {
             let error=request(command,json!({})).unwrap_err();assert!(error.to_string().contains("invalid args"),"{command}: {error}");
         }
+        // Each typed field is rejected independently, including optional fields;
+        // a valid earlier argument must never allow a later malformed one through.
+        for (command, valid) in [
+            ("engine_call", json!({"tool":"project","args":{}})),
+            ("engine_read", json!({"tool":"project","args":{}})),
+            ("change_undo", json!({"id":1})),
+            ("project_open", json!({"path":"owned.kimo"})),
+            ("project_save", json!({"path":"owned.kimo"})),
+            ("pick", json!({"kind":"media","suggest":"owned.mp4"})),
+            ("media_thumb", json!({"path":"owned.mp4"})),
+            ("open_url", json!({"url":"https://example.invalid/owned"})),
+            ("reveal", json!({"path":"owned.mp4"})),
+            ("cli_signin", json!({"id":"codex"})),
+            ("cli_install", json!({"id":"codex"})),
+            ("cli_register", json!({"id":"codex"})),
+            ("cli_models", json!({"id":"codex"})),
+            ("agent_select", json!({"agent":"api","model":"owned","effort":"high","select":true})),
+            ("agent_send", json!({"text":"owned request","turn":1})),
+            ("mcp_set", json!({"enabled":true})),
+            ("key_set", json!({"provider":"openai","key":"owned-key","remember":false})),
+            ("key_clear", json!({"provider":"openai"})),
+            ("key_test", json!({"provider":"openai","key":"owned-key"})),
+            ("settings_set", json!({"provider":"openai","model":"owned","baseUrl":"http://127.0.0.1/owned"})),
+            ("crash_answer", json!({"file":"owned.log","send":false})),
+            ("viewer_frame", json!({"time":0})),
+            ("viewer_draft", json!({"start":0,"seconds":1})),
+            ("preview_start", json!({"time":0,"scale":0.5,"rate":1,"playing":false,"warming":false})),
+            ("preview_update", json!({"time":0,"playing":false,"rate":1,"seek":false})),
+            ("preview_frame", json!({"time":0})),
+            ("setup_start", json!({"skipOptional":false})),
+        ] {
+            for field in valid.as_object().unwrap().keys().filter(|field| field.as_str() != "args") {
+                let mut malformed = valid.clone(); malformed[field] = json!({"owned-invalid-type":true});
+                let error = request(command, malformed).unwrap_err();
+                assert!(error.to_string().contains("invalid args"), "{command}.{field}: {error}");
+            }
+        }
         assert_eq!(request("app_state",json!({})).unwrap(),before);
         assert!(request("unknown-command",json!({})).unwrap_err().to_string().contains("not found"));
         assert_eq!(request("agent_select",json!({"agent":"unknown"})).unwrap_err(),json!("unknown agent"));
         request("agent_select",json!({"agent":"api","select":true})).unwrap();
         request("key_set",json!({"provider":"openai","key":"ipc-fixture-secret","remember":false})).unwrap();
         let after=request("app_state",json!({})).unwrap();assert_eq!(after["settings"]["agent"],"api");assert!(!after.to_string().contains("ipc-fixture-secret"));
+        app.state::<AppState>().settings.lock().unwrap().remembered=vec!["openai".into(),"anthropic".into()];
+        assert_eq!(request("key_clear",json!({"provider":"openai"})).unwrap()["set"],false);
+        let cleared=request("app_state",json!({})).unwrap();
+        assert_eq!(cleared["settings"]["remembered"],json!(["anthropic"]));
+        assert!(!cleared.to_string().contains("ipc-fixture-secret"));
         assert_eq!(request("changes_list",json!({})).unwrap(),json!([]));
         assert_eq!(request("recovery_status",json!({})).unwrap(),Value::Null);
         assert_eq!(request("crash_pending",json!({})).unwrap(),json!([]));
@@ -1130,7 +1432,89 @@ mod tests {
         assert!(request("recovery_restore",json!({})).is_err());
         assert!(request("mcp_probe",json!({})).is_err());assert!(request("preview_stop",json!({})).is_err());
         request("recovery_discard",json!({})).unwrap();
+        // Correctly typed requests must reach command validation as well as the
+        // argument decoder. This isolated app has no engine or installed agents.
+        assert_eq!(request("engine_restart",json!({})).unwrap()["state"],"missing");
+        assert_eq!(request("project_new",json!({})).unwrap()["state"],"missing");
+        for (command,body) in [
+            ("engine_call",json!({"tool":"timeline","args":{"action":"add_track","args":{}}})),
+            ("engine_read",json!({"tool":"project","args":{"action":"get_project","args":{}}})),
+            ("change_undo",json!({"id":9999})),
+            ("project_open",json!({"path":root.join("missing.kimo").display().to_string()})),
+            ("project_save",json!({"path":root.join("owned.kimo").display().to_string()})),
+            ("cli_signin",json!({"id":"unknown"})),
+            ("cli_install",json!({"id":"unknown"})),
+            ("cli_register",json!({"id":"unknown"})),
+            ("cli_models",json!({"id":"unknown"})),
+            ("agent_send",json!({"text":"  ","turn":1})),
+            ("key_test",json!({"provider":"unknown"})),
+            ("viewer_frame",json!({"time":0})),
+            ("viewer_draft",json!({"start":0,"seconds":1})),
+            ("preview_start",json!({"time":0})),
+            ("preview_update",json!({"time":0})),
+            ("preview_frame",json!({"time":0})),
+        ] {
+            let error=request(command,body).unwrap_err();
+            assert!(!error.to_string().contains("invalid args"),"{command}: {error}");
+            assert!(!error.as_str().unwrap().is_empty(),"{command}");
+        }
+        assert_eq!(request("mcp_set",json!({"enabled":false})).unwrap(),json!({"enabled":false}));
+        assert!(request("mcp_set",json!({"enabled":true})).is_err());
+        assert!(!root.join("owned.kimo").exists());
         drop(webview);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_path_precedence_and_executable_fallback_preserve_owned_locations() {
+        let root=std::env::temp_dir().join("owned startup paths");
+        let override_path=root.join("override");let data=root.join("platform data");let config=root.join("platform config");
+        for (overridden,platform,expected) in [
+            (Some(override_path.clone()),Some(data.clone()),override_path.clone()),
+            (Some(override_path.clone()),None,override_path),
+            (None,Some(data.clone()),data),
+            (None,None,std::env::temp_dir().join("kimo")),
+        ] {
+            assert_eq!(resolve_app_dirs(overridden.clone(),platform.clone(),Some(config.clone())),(expected.clone(),config.clone()));
+            assert_eq!(resolve_app_dirs(overridden,platform,None),(expected.clone(),expected));
+        }
+        let exe=root.join("owned app binary");let launch=launch_from_executable(Ok(exe.clone()));
+        assert_eq!(launch.command,exe.display().to_string());assert!(launch.env.is_empty());
+        let fallback=launch_from_executable(Err(std::io::Error::new(std::io::ErrorKind::NotFound,"owned executable unavailable")));
+        assert_eq!(fallback.command,"kimo-gui");assert!(fallback.env.is_empty());
+    }
+
+    #[test]
+    fn external_listener_forwards_owned_events_and_reports_bad_json() {
+        use std::io::{Read, Write};
+        use tauri::Listener;
+        let root=std::env::temp_dir().join(format!("kimo-main-external-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut owned=state(&root);owned.fonts=Some(root.join("fonts"));
+        let app=tauri::test::mock_app();assert!(app.manage(owned));
+        let (tx,rx)=std::sync::mpsc::channel();
+        for name in ["external-event","spectator-status"] {
+            let tx=tx.clone();app.listen(name,move|event|{tx.send((name,serde_json::from_str::<Value>(event.payload()).unwrap())).unwrap();});
+        }
+        let port=start_external(app.handle()).unwrap();
+        let snapshot=app_state(app.state());
+        assert_eq!(snapshot["external_port"],port);
+        assert_eq!(snapshot["fonts"],root.join("fonts").display().to_string());
+        let mut client=std::net::TcpStream::connect(("127.0.0.1",port)).unwrap();
+        client.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut hello=[0;17];client.read_exact(&mut hello).unwrap();assert_eq!(&hello,b"KIMO-SPECTATOR/1\n");
+        client.write_all(b"not json\n{\"type\":\"project_changed\",\"rev\":73}\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut statuses=Vec::new();let mut received=None;
+        for _ in 0..4 {
+            let (name,value)=rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            if name=="external-event" { received=Some(value); } else { statuses.push(value.as_str().unwrap().to_owned()); }
+        }
+        let event=received.unwrap();assert_eq!(event["conn"],1);assert_eq!(event["ev"],json!({"type":"project_changed","rev":73}));
+        assert!(statuses.iter().any(|s|s=="live"));assert!(statuses.iter().any(|s|s.starts_with("bad json:")));
+        assert!(statuses.iter().any(|s|s==&format!("listening 127.0.0.1:{port}")));
+        app.state::<AppState>().external.lock().unwrap().take().unwrap().stop();
+        assert!(app_state(app.state())["external_port"].is_null());
+        drop(client);drop(app);std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1518,6 +1902,18 @@ mod tests {
         assert!(captured.iter().all(|event|event["agent"]=="codex"));
         assert!(captured.iter().any(|event|event["turn"]==1&&event["ev"]["kind"]=="status"&&event["ev"]["text"].as_str().unwrap().contains("owned-model · high effort")));
         assert!(captured.iter().any(|event|event["turn"]==2&&event["ev"]["kind"]=="status"&&event["ev"]["text"]=="turn complete"));
+        drop(captured);
+        tauri::async_runtime::block_on(async {
+            let statuses = cli_status(app.handle().clone()).await.unwrap();
+            assert_eq!(statuses.len(), 3);
+            for status in statuses { assert!(status.installed); assert_eq!(status.version.as_deref(), Some("owned fixture 1.0")); }
+            assert!(cli_register(app.handle().clone(), "claude-code".into()).await.unwrap_err().contains("owned fixture refusal"));
+            std::fs::write(root.join("mode"), "success").unwrap();
+            assert!(cli_register(app.handle().clone(), "claude-code".into()).await.is_ok());
+            let models = cli_models(app.handle().clone(), "codex".into()).await.unwrap();
+            assert_eq!(models.models.len(), 1);
+            assert_eq!(models.models[0].id, "owned-model");
+        });
     }
 
     #[test]
@@ -1530,6 +1926,7 @@ use std::io::{Read,Write};
 fn main(){
  let root=std::env::current_exe().unwrap().parent().unwrap().to_owned();let args:Vec<_>=std::env::args().skip(1).collect();
  if args.iter().any(|a|a=="--version"){println!("owned fixture 1.0");return;}
+ if args==["debug","models"]{println!("{{\"models\":[{{\"slug\":\"owned-model\",\"display_name\":\"Owned model\",\"visibility\":\"list\",\"supported_reasoning_levels\":[{{\"effort\":\"high\"}}]}}]}}");return;}
  let mut log=std::fs::OpenOptions::new().create(true).append(true).open(root.join("calls")).unwrap();writeln!(log,"{:?}",args).unwrap();
  let mut input=String::new();std::io::stdin().read_to_string(&mut input).unwrap();
  let mode=std::fs::read_to_string(root.join("mode")).unwrap();
@@ -1543,7 +1940,7 @@ fn main(){
         let built=Command::new("rustc").args(["--edition=2021","--crate-name","owned_cli_turn"]).arg(&source).arg("-o").arg(&binary).output().unwrap();
         assert!(built.status.success(),"{}",String::from_utf8_lossy(&built.stderr));
         let output=Command::new(std::env::current_exe().unwrap()).args(["--exact","tests::subscription_command_fixture_child","--nocapture"])
-            .env("KIMO_MAIN_TURN_FIXTURE",&root).env("KIMO_CODEX_BIN",&binary).output().unwrap();
+            .env("KIMO_MAIN_TURN_FIXTURE",&root).env("KIMO_CODEX_BIN",&binary).env("KIMO_CLAUDE_BIN",&binary).env("KIMO_AGY_BIN",&binary).output().unwrap();
         assert!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
         std::fs::remove_dir_all(root).unwrap();
     }

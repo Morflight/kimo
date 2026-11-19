@@ -1,5 +1,6 @@
 """Startup recovery and crash-report consent against a synthetic native adapter."""
 import asyncio
+import json
 from playwright.async_api import async_playwright
 from studio_actions_test import serve
 
@@ -93,6 +94,109 @@ async def main():
                 assert not errors,errors
                 await page.close()
             print('PASS setup pause/missing dependency/skip and welcome connection/import actions with synthetic commands')
+            variants=[(['crossfade',{'kind':'wipe'},{'name':'iris'},{}],['crossfade','wipe','iris']),
+                      ({'transitions':['dissolve']},['dissolve']),({'kinds':['dip']},['dip']),
+                      (None,[]),('refused',[])]
+            for index,(transition_reply,expected) in enumerate(variants):
+                page=await browser.new_page()
+                errors=[]
+                page.on('pageerror',lambda error:errors.append(str(error)))
+                config=json.dumps({'index':index,'transitions':transition_reply})
+                await page.add_init_script('window.startupFixture='+config+';'+'''window.startupRequests=[];
+                  window.__TAURI__={core:{invoke:async(command,args)=>{
+                    startupRequests.push({command,args});
+                    const {bridge}=await import('/ui/dev/mock-bridge.js');
+                    if(command==='engine_read'&&args.args.action==='list_transitions')return startupFixture.transitions==='refused'
+                      ?{ok:false,text:'owned transition lookup failure'}:{ok:true,data:startupFixture.transitions};
+                    if(command==='project_open')return null;
+                    if(command==='update_install')return null;
+                    if(command==='cli_register')throw Error('owned registration failure');
+                    if(command==='cli_models'&&startupFixture.index===3)throw Error('owned model lookup failure');
+                    if(command==='cli_status')return startupFixture.index===2?[]:[{id:'codex',name:'Codex',plan:'owned fixture',installed:true,signed_in:null,sign_in_note:'Status unavailable',registered:false}];
+                    const answer=await bridge.invoke(command,args);
+                    if(command==='app_state'){
+                      answer.settings.onboarded=true;
+                      if(startupFixture.index===4&&startupRequests.filter(r=>r.command==='app_state').length===1)answer.engine={state:'stopped'};
+                      answer.settings.recent=['/fixture/recent.kimo'];
+                      answer.settings.agent='codex';answer.settings.agent_models={codex:'owned-custom-model'};
+                      answer.settings.agent_efforts={codex:'high'};
+                      if(startupFixture.index===2){
+                        answer.settings.agent='api';answer.settings.provider='anthropic';answer.settings.models={anthropic:''};
+                        answer.providers=answer.providers.map(p=>p.id==='anthropic'?{...p,default_model:''}:p);
+                        answer.keys=answer.keys.map(k=>k.provider==='anthropic'?{...k,set:true,hint:'owned fixture'}:k);
+                      }
+                    }
+                    return answer;
+                  }},event:{listen:async(name,callback)=>{const {bridge}=await import('/ui/dev/mock-bridge.js');return bridge.listen(name,payload=>callback({payload}));}}};''')
+                await page.goto(f'http://127.0.0.1:{server.server_address[1]}/ui/studio.html')
+                await page.wait_for_selector('body[data-ready="1"]')
+                assert await page.evaluate('__kimo.S.transitions')==expected
+                if index==4:
+                    await page.wait_for_function('startupRequests.filter(r=>r.command==="app_state").length>=2&&__kimo.S.app.engine.state==="running"')
+                assert await page.inner_text('#home-recent .n')=='recent'
+                await page.click('#home-recent [data-open]')
+                await page.wait_for_function('startupRequests.some(r=>r.command==="project_open")')
+                assert await page.evaluate('startupRequests.find(r=>r.command==="project_open").args.path')=='/fixture/recent.kimo'
+                await page.click('#nav a[data-tab="home"]')
+                await page.locator('#tab-home [data-go="agent"]').first.click()
+                await page.wait_for_function('__kimo.S.tab==="agent"')
+                if index==2:
+                    assert 'not set' in await page.inner_text('#model-bar')
+                    assert not await page.locator('#nav-conn').is_visible()
+                else:
+                    await page.wait_for_selector('#model-other:not([hidden])')
+                    assert await page.input_value('#model-other')=='owned-custom-model'
+                    assert await page.input_value('#model-sel')=='__other'
+                    if index==3:
+                        assert 'owned model lookup failure' in await page.inner_text('#model-src')
+                    else:
+                        await page.select_option('#model-sel','test-model')
+                        await page.wait_for_function('__kimo.S.app.settings.agent_models.codex==="test-model"')
+                        assert await page.evaluate('__kimo.S.app.settings.agent_efforts.codex')=='high'
+                    await page.click('#nav a[data-tab="connections"]')
+                    assert 'Status unavailable' in await page.inner_text('#cli-cards #cli-codex')
+                    assert await page.locator('#cli-cards #cli-codex [data-cli="signin"]').is_visible()
+                    assert 'high effort' in await page.inner_text('#cli-cards #cli-codex')
+                if index==0:
+                    # A failed external registration must remain visible and re-enable retry.
+                    await page.click('#cli-cards #cli-codex [data-cli="register"]')
+                    await page.wait_for_function('document.querySelector("#cli-msg").textContent.includes("owned registration failure")')
+                    assert await page.locator('#cli-cards #cli-codex [data-cli="register"]').is_enabled()
+                    await page.evaluate("__kimo.S.app.settings.agent='api'")
+                    await page.click('#cli-refresh')
+                    await page.click('#cli-cards #cli-codex [data-cli="use"]')
+                    await page.wait_for_function('startupRequests.some(r=>r.command==="agent_select"&&r.args.agent==="codex")&&__kimo.S.app.settings.agent==="codex"')
+                    assert await page.evaluate('__kimo.S.app.settings.agent')=='codex'
+                    # A clean project does not claim an autosave; an owned native adapter
+                    # acknowledges installation without downloading or restarting anything.
+                    await page.evaluate("async()=>{__kimo.S.update=null;await document.querySelector('#tb-update').onclick();}")
+                    assert not await page.locator('#confirm').is_visible()
+                    await page.evaluate("()=>{__kimo.S.dirty=false;__mock.emit('update-available',{state:'available',version:'99.0.0'});}")
+                    await page.click('#tb-update')
+                    assert 'autosaved' not in await page.inner_text('#cf-body')
+                    assert await page.inner_text('#cf-title')=='Install kimo 99.0.0?'
+                    await page.click('#cf-yes')
+                    await page.wait_for_function('startupRequests.some(r=>r.command==="update_install")')
+                    assert await page.locator('#tb-update').is_disabled()
+                    assert await page.inner_text('#tb-update')=='Downloading…'
+                    await page.evaluate("__mock.emit('update-installing')")
+                    assert await page.inner_text('#tb-update')=='Installing…'
+                    await page.click('#brand')
+                    await page.locator('#about').click(position={'x':5,'y':5})
+                    assert not await page.locator('#about').is_visible()
+                    await page.evaluate("document.querySelector('#tb-proj').dispatchEvent(new Event('click',{bubbles:true,cancelable:true}))")
+                    assert await page.locator('#ctx').is_visible()
+                    assert await page.evaluate('Math.abs(document.querySelector("#ctx").getBoundingClientRect().left-Math.min(document.querySelector("#tb-proj").getBoundingClientRect().left,innerWidth-230))<1')
+                    await page.locator('#ctx hr').click()
+                    assert await page.locator('#ctx').is_visible()
+                    await page.keyboard.press('Escape')
+                    await page.evaluate("__mock.emit('tauri://drag-drop')")
+                    assert await page.evaluate('__kimo.S.tab')=='edit'
+                    await page.evaluate("__mock.emit('tauri://drag-drop',{paths:['/fixture/drag.kimo']})")
+                    await page.wait_for_function('startupRequests.some(r=>r.command==="project_open"&&r.args.path==="/fixture/drag.kimo")')
+                assert not errors,errors
+                await page.close()
+            print('PASS transition reply variants, recent projects, home links, unknown sign-in state and model fallbacks')
             await browser.close()
     finally:
         server.shutdown()

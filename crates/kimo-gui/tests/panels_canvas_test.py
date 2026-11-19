@@ -18,6 +18,34 @@ async def main():
               const pixel=(cv,x,y)=>[...cv.getContext('2d').getImageData(x,y,1,1).data];
               const draw=(kind,data={},opts)=>{const args={spec:{title:'Fixture',...(opts?{opts}:{})},data,w:kind==='scopes'?1024:160,h:kind==='scopes'?300:120,state:{calls:[],session:{still:true}}};el.innerHTML=KINDS[kind](args);POST[kind]?.(el,args);return args;};
               POST.cie(el,{spec:{},w:160,h:120});POST.viewer(el);POST.scopes(el,{spec:{},data:{},w:160,h:120});
+              // A late webfont changes glyph widths without changing the computed
+              // font-family cache key. The last-resort DOM fit must still retain
+              // the whole call in its title when the old ellipsis estimate is wider.
+              const fontStyle=document.createElement('style');
+              fontStyle.textContent='#panel .call, #panel .call * {font-family: "Owned late mono", serif !important}';
+              document.head.appendChild(fontStyle);
+              const rail=(id,width)=>{
+                el.style.cssText=`position:relative;width:${width}px;height:300px`;
+                const call={id,name:'look',args:'frame quality assessment, threshold: 0.5',status:'ok',dur_ms:300};
+                const args={spec:{title:'Fixture'},state:{mode:'edit',session:{still:true},calls:[call]},data:{},w:width,h:300};
+                return {call,args};
+              };
+              const warm=rail('font-warm',80);PRE.agent(el,warm.args);
+              const font=await new FontFace('Owned late mono','url(/ui/fonts/GeistMono-Variable.woff2)').load();
+              document.fonts.add(font);
+              let ellipsis=0;
+              for(let quarters=96;quarters<=960;quarters++){
+                const {call,args}=rail('font-'+quarters,quarters/4);
+                PRE.agent(el,args);el.innerHTML=KINDS.agent(args);
+                const sig=el.querySelector('.sig');
+                check(sig.title==='look(frame quality assessment, threshold: 0.5)','late font preserves the complete accessible call');
+                if(call._fit.t==='…'){
+                  ellipsis++;
+                  check(!sig.classList.contains('bare'),'fitting ellipsis does not hide all arguments');
+                }
+              }
+              check(ellipsis>0,'late font retains ellipsis at narrow usable widths');
+              document.fonts.delete(font);fontStyle.remove();
               const snapshots=[];
               for(let i=0;i<7;i++){
                 const opts={scx:110+i,scy:110+i,ox:20,oy:110,fillOp:.5};
