@@ -1,6 +1,6 @@
 # Native test environment
 
-The complete native suite executes on Linux and Windows, including explicitly ignored proofs: the per-push `ci` nextest profile runs every non-heavy test, the required `nightly` profile runs everything (see `docs/QUALITY.md`). Missing inputs, failed subprocesses and unmeasured files remain failures. Native tests mutate process-wide environment; nextest isolates each test in its own process so they run in parallel without changing their assertions or thresholds.
+The complete native suite executes on Linux and Windows, including explicitly ignored proofs: the `fast` nextest profile (every push) runs every test outside the heavy register, the `heavy` profile (pull requests and pushes to `main`) runs everything (see `docs/TESTING_STRATEGY.md`). Missing inputs, failed subprocesses and unmeasured files remain failures. Native tests mutate process-wide environment; nextest isolates each test in its own process so they run in parallel without changing their assertions or thresholds.
 
 Editorial audio, caption and synchronization fixtures use the operating system's temporary directory instead of a hard-coded `/tmp` prefix. The same ffmpeg generators, media contents and assertions execute on both platforms. Fixture filenames retain a process identifier and case name. This changes only test path portability, not production media behavior.
 

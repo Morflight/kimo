@@ -1,20 +1,18 @@
-# cargo-nextest configuration. Every test runs in its own process, so tests that
-# change process-wide environment (model, cache, resource paths) cannot leak into
-# one another; this replaces the former `--test-threads=1` serialization.
+# cargo-nextest configuration of the engine workspace. Rules: docs/TESTING_STRATEGY.md.
+# Every test runs in its own process, so tests that change process-wide environment cannot
+# leak into one another and the suite runs in parallel.
 #
-# Two required profiles split ONE suite by cost; no test is removed:
-# - `ci`      every push: all non-ignored tests except the heavy set below.
-# - `nightly` scheduled + required before any release: every test, including
-#             `#[ignore]` proofs (`--run-ignored all`) and the heavy set.
-# The heavy set is every test that took >= 5 s under LLVM coverage instrumentation
-# (nextest, 3 threads, Linux, 2026-11-19 run of 59ee16b). The `ci` profile kills a
-# test after 30 s, so a new slow test fails per-push CI until it is made faster or
-# deliberately added here. See docs/QUALITY.md "Per-push and nightly suites".
+# - `fast`  every push on every branch: all non-ignored tests except the registered heavy tests.
+#           A test running longer than 30 s fails.
+# - `heavy` pull requests to main and pushes to main: every test, including #[ignore] proofs
+#           (`--run-ignored all`); the last safeguard before main changes.
+# The fast default-filter is generated from .config/heavy-tests.json and must match it exactly;
+# tools/quality/check_test_strategy.py fails CI otherwise and prints the expected filter.
 
 # Tests that bind kimo's fixed default spectator ports (127.0.0.1:7421-7430) share a real system
-# resource. Their in-process mutex only serialized them within one test process; nextest runs each
-# test in its own process, so this group runs them one at a time across processes. The desktop crate
-# is a separate workspace with its own crates/kimo-gui/.config/nextest.toml.
+# resource. Their in-process mutex only serialized them within one test process; this group runs
+# them one at a time across processes. The desktop crate is a separate workspace with its own
+# crates/kimo-gui/.config/nextest.toml.
 [test-groups]
 spectator-ports = { max-threads = 1 }
 
@@ -22,7 +20,7 @@ spectator-ports = { max-threads = 1 }
 filter = "binary_id(kimo-mcp::spectator_default)"
 test-group = "spectator-ports"
 
-[profile.ci]
+[profile.fast]
 fail-fast = false
 status-level = "fail"
 final-status-level = "slow"
@@ -183,16 +181,16 @@ not (
 )
 """
 
-[profile.ci.junit]
+[profile.fast.junit]
 path = "junit.xml"
 store-failure-output = true
 
-[profile.nightly]
+[profile.heavy]
 fail-fast = false
 status-level = "fail"
 final-status-level = "slow"
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-[profile.nightly.junit]
+[profile.heavy.junit]
 path = "junit.xml"
 store-failure-output = true

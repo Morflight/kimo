@@ -1,20 +1,19 @@
 name: quality
+# Test strategy (docs/TESTING_STRATEGY.md): every push on every branch runs the fast suite;
+# pull requests to main and pushes to main run the heavy suite (every test, including
+# #[ignore] proofs) as the last safeguard before main changes.
 on:
   push:
     branches: ["**"]
   pull_request:
     branches: [main]
-  # Nightly: the complete Rust suite, including heavy tests and #[ignore] proofs.
-  # A passing nightly run on the release commit is required before any release.
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       suite:
-        description: "Rust nextest profile: ci (per-push) or nightly (complete)"
+        description: "Rust nextest profile: fast or heavy"
         type: choice
-        options: [ci, nightly]
-        default: nightly
+        options: [fast, heavy]
+        default: heavy
 permissions:
   contents: read
 concurrency:
@@ -41,6 +40,7 @@ jobs:
             python3 tools/quality/check_contracts.py
           fi
           python3 tests/gate_check.py
+          python3 tools/quality/check_test_strategy.py
           python3 -m unittest discover -s tools/quality -p 'test_*.py'
           git diff --exit-code
   javascript:
@@ -130,8 +130,8 @@ jobs:
         os: [ubuntu-24.04, windows-latest]
         scope: [workspace, desktop]
     env:
-      # .config/nextest.toml: `ci` excludes the measured heavy set, `nightly` runs all.
-      SUITE: ${{ github.event_name == 'schedule' && 'nightly' || inputs.suite || 'ci' }}
+      # .config/nextest.toml: `fast` excludes the registered heavy tests, `heavy` runs all.
+      SUITE: ${{ inputs.suite || ((github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && 'heavy' || 'fast') }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
@@ -237,8 +237,8 @@ jobs:
           set -euo pipefail
           # nextest runs each test in its own process, so tests that mutate
           # process-wide model/cache/resource environment cannot interfere while
-          # running in parallel. Nightly also runs every #[ignore] proof.
-          ignored=default; [[ "$SUITE" == nightly ]] && ignored=all
+          # running in parallel. The heavy suite also runs every #[ignore] proof.
+          ignored=default; [[ "$SUITE" == heavy ]] && ignored=all
           cargo llvm-cov nextest --locked --workspace --all-targets --no-report --profile "$SUITE" --run-ignored "$ignored"
       - name: Report workspace coverage even when a test fails
         if: always() && matrix.scope == 'workspace'
@@ -269,7 +269,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ignored=default; [[ "$SUITE" == nightly ]] && ignored=all
+          ignored=default; [[ "$SUITE" == heavy ]] && ignored=all
           cargo llvm-cov nextest --locked --manifest-path crates/kimo-gui/Cargo.toml --all-targets --no-report --profile "$SUITE" --run-ignored "$ignored"
       - name: Report desktop coverage even when a test fails
         if: always() && matrix.scope == 'desktop'

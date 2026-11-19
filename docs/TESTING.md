@@ -1,4 +1,9 @@
-# Standard gate
+# Standard gate (inherited)
+
+> The required test strategy, suites and development lifecycle are defined in
+> [TESTING_STRATEGY.md](TESTING_STRATEGY.md), which takes precedence over this page.
+> The gate scripts below are inherited local runners; CI runs the nextest `fast` and
+> `heavy` suites instead.
 
 `tests/gate_fast.sh` (every push) and `tests/gate_full.sh` (phase boundaries) wrap
 `tests/gate_run.py`. The rust legs of both tiers are:
