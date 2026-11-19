@@ -37,7 +37,11 @@ struct Opts { json_out: bool, quiet: bool }
 /// Runs one tool exactly as the MCP server does: group resolution, worker thread with cancel token, wall-clock limit, same ToolError.
 pub(crate) fn run_tool(ss: &Arc<Mutex<Session>>, name: &str, args: &Value) -> Result<Value, kimo_core::errors::ToolError> {
     let (name, args) = if toolgroups::is_group(name) { toolgroups::resolve_group_call(name, args).map_err(kimo_core::errors::ToolError::from)? } else { (name.to_string(), args.clone()) };
-    match kimo_core::guard::run_tool_guarded(ss, &name, &args) {
+    guarded_result(&name, kimo_core::guard::run_tool_guarded(ss, &name, &args))
+}
+
+fn guarded_result(name: &str, result: kimo_core::guard::Guarded) -> Result<Value, kimo_core::errors::ToolError> {
+    match result {
         kimo_core::guard::Guarded::Done(r) => r,
         kimo_core::guard::Guarded::Hung { limit } => { eprintln!("{}", json!({"error":{"code":"timeout","message":format!("tool '{name}' hung past {limit}s and could not be cancelled; exiting (exit code 124)")}})); std::process::exit(124); }
     }
@@ -113,6 +117,24 @@ fn call(ss: &Arc<Mutex<Session>>, tool: &str, args: Value, project: Option<&str>
     Ok(r)
 }
 
+// Availability and exit classification stay separate: unavailable commands never load a project.
+fn available_call(ss: &Arc<Mutex<Session>>, tool: &str, args: Value, project: Option<&str>, save_after: bool, o: &Opts) -> Result<Value, Fail> {
+    if !exists(tool) { return Err(Fail { code: EXIT_TOOL, body: json!({"code":"tool_unavailable","message":format!("tool '{tool}' is not available in this build yet"),"param":"tool"}) }); }
+    call(ss, tool, args, project, save_after, o)
+}
+
+fn checked_result(cmd: &str, result: Result<Value, Fail>, o: &Opts) -> Result<(i32, Value), Fail> {
+    match result {
+        Ok(v) => {
+            let failed = (cmd == "preflight" && v.get("ok") == Some(&json!(false))) || (cmd == "validate" && v.get("status").and_then(|x| x.as_str()) == Some("fail"));
+            if failed && cmd == "validate" { progress(o, "delivery check failed"); }
+            Ok((if failed { EXIT_PREFLIGHT } else { EXIT_OK }, v))
+        }
+        Err(f) if cmd == "preflight" && f.body.get("code") == Some(&json!("preflight_failed")) => Err(Fail { code: EXIT_PREFLIGHT, body: f.body }),
+        Err(f) => Err(f),
+    }
+}
+
 fn run(p: Parsed, o: &Opts) -> Result<(i32, Value), Fail> {
     let ss = Arc::new(Mutex::new(Session::new()));
     let cmd = p.pos.first().map(|s| s.as_str()).ok_or_else(|| usage_err("missing command"))?;
@@ -143,15 +165,9 @@ fn run(p: Parsed, o: &Opts) -> Result<(i32, Value), Fail> {
                 "validate" => ("validate_export".to_string(), p.args_json()?),
                 _ => { let sub = p.pos.get(1).ok_or_else(|| usage_err("render-job needs a subcommand"))?; (format!("render_job_{}", sub.replace('-', "_")), p.args_json()?) }
             };
-            if !exists(&tool) { return Err(Fail { code: EXIT_TOOL, body: json!({"code":"tool_unavailable","message":format!("tool '{tool}' is not available in this build yet"),"param":"tool"}) }); }
-            match call(&ss, &tool, args, project.as_deref(), save_after, o) {
-                Ok(v) => { let failed = (cmd == "preflight" && v.get("ok") == Some(&json!(false))) || (cmd == "validate" && v.get("status").and_then(|x| x.as_str()) == Some("fail"));
-                    if failed && cmd == "validate" { progress(o, "delivery check failed"); } Ok((if failed { EXIT_PREFLIGHT } else { EXIT_OK }, v)) }
-                Err(f) if cmd == "preflight" && f.body.get("code") == Some(&json!("preflight_failed")) => Err(Fail { code: EXIT_PREFLIGHT, body: f.body }),
-                Err(f) => Err(f),
-            }
+            checked_result(cmd, available_call(&ss, &tool, args, project.as_deref(), save_after, o), o)
         }
-        "info" => Ok((EXIT_OK, call(&ss, "kimo_info", json!({}), None, false, o)?)),
+        "info" => call(&ss, "kimo_info", json!({}), None, false, o).map(|value| (EXIT_OK, value)),
         "tools" => match p.pos.get(1).map(|s| s.as_str()) {
             None => Ok((EXIT_OK, json!({"tools": registry_ref().iter().map(|c| c.name).collect::<Vec<_>>()}))),
             Some("search") => { let q = p.pos[2..].join(" "); if q.is_empty() { return Err(usage_err("tools search needs a query")); }
@@ -159,10 +175,14 @@ fn run(p: Parsed, o: &Opts) -> Result<(i32, Value), Fail> {
             Some("describe") => { let a = p.pos.get(2).ok_or_else(|| usage_err("tools describe needs a tool name"))?; toolgroups::describe(&json!({"action":a})).map(|v| (EXIT_OK, v)).map_err(|e| tool_err(e.into())) }
             Some(x) => Err(usage_err(format!("unknown tools subcommand '{x}'"))),
         },
-        "--version" => { let i = call(&ss, "kimo_info", json!({}), None, false, &Opts { json_out: o.json_out, quiet: true })?; let (v, c) = (i["version"].as_str().unwrap_or("?"), i["commit"].as_str().unwrap_or("?")); Ok((EXIT_OK, json!({"version":v,"commit":c}))) }
+        "--version" => call(&ss, "kimo_info", json!({}), None, false, &Opts { json_out: o.json_out, quiet: true }).map(|info| (EXIT_OK, version_fields(&info))),
         "help" | "-h" | "--help" => Err(usage_err("")),
         x => Err(usage_err(format!("unknown command '{x}'"))),
     }
+}
+
+fn version_fields(info: &Value) -> Value {
+    json!({"version":info["version"].as_str().unwrap_or("?"),"commit":info["commit"].as_str().unwrap_or("?")})
 }
 
 fn main() {
@@ -245,6 +265,54 @@ mod tests {
         assert!(!mutates("project", &json!({"action":"unknown-action"})));
         assert!(!mutates("unknown-tool", &json!({})));
         assert!(!mutates("kimo_info", &json!({})));
+    }
+
+    #[test]
+    fn hung_worker_exits_124_with_structured_stderr() {
+        const CHILD: &str = "KIMO_CLI_HUNG_RESULT_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            let _ = guarded_result("fixture-tool", kimo_core::guard::Guarded::Hung { limit: 7 });
+        } else {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::hung_worker_exits_124_with_structured_stderr", "--nocapture"])
+            .env(CHILD, "1").output().unwrap();
+        assert_eq!(output.status.code(), Some(124));
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "timeout");
+        assert!(error["error"]["message"].as_str().unwrap().contains("fixture-tool' hung past 7s"));
+        }
+    }
+
+    #[test]
+    fn checked_exit_policy_preserves_results_and_classifies_delivery_failures() {
+        let opts = Opts { json_out: true, quiet: true };
+        for (cmd, value, code) in [
+            ("preflight", json!({"ok":false}), EXIT_PREFLIGHT), ("preflight", json!({"ok":true}), EXIT_OK),
+            ("preflight", json!({}), EXIT_OK), ("validate", json!({"status":"fail"}), EXIT_PREFLIGHT),
+            ("validate", json!({"status":"pass"}), EXIT_OK), ("validate", json!({"status":4}), EXIT_OK),
+            ("render-job", json!({"ok":false,"status":"fail"}), EXIT_OK),
+        ] {
+            let (actual, body) = checked_result(cmd, Ok(value.clone()), &opts).ok().unwrap();
+            assert_eq!(actual, code); assert_eq!(body, value);
+        }
+        let failure = checked_result("preflight", Err(Fail { code:1, body:json!({"code":"preflight_failed"}) }), &opts).err().unwrap();
+        assert_eq!(failure.code, EXIT_PREFLIGHT);
+        for cmd in ["preflight", "validate"] {
+            let failure = checked_result(cmd, Err(usage_err("bad input")), &opts).err().unwrap();
+            assert_eq!(failure.code, EXIT_USAGE); assert_eq!(failure.body["message"], "bad input");
+        }
+        let ss = Arc::new(Mutex::new(Session::new()));
+        let result = available_call(&ss, "add_track", json!({}), None, false, &opts).ok().unwrap();
+        assert!(result["track_id"].is_string());
+        let failure = available_call(&ss, "unavailable", json!({}), Some("missing-project"), true, &opts).err().unwrap();
+        assert_eq!(failure.body["code"], "tool_unavailable");
+    }
+
+    #[test]
+    fn version_fields_have_explicit_missing_metadata_fallbacks() {
+        assert_eq!(version_fields(&json!({"version":"9","commit":"abc","extra":true})), json!({"version":"9","commit":"abc"}));
+        assert_eq!(version_fields(&json!({})), json!({"version":"?","commit":"?"}));
+        assert_eq!(version_fields(&json!({"version":9,"commit":null})), json!({"version":"?","commit":"?"}));
     }
 
 }

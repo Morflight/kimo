@@ -109,3 +109,35 @@ const trackDefaults=finite(render('timeline',{tracks:[{label:'Music',chip:true,m
 console.log('PASS missing viewer defaults, refusal states, selected-call diagnostics and timeline metadata');
 
 assert.match(finite(render('diffbatch',{diff:[['+','partial']]},{col:{},txt:{}})),/color:var\(--text\)/);
+const wheelData={wheels:[{name:'Lift',vals:['0','0','0'],em:true,ring:45}]};
+const firstRing=finite(render('wheels',wheelData,{conic:true,r:30}));assert.equal((firstRing.match(/stroke="rgb\(/g)||[]).length,72);
+for(let radius=31;radius<100;radius++)assert.match(finite(render('wheels',wheelData,{conic:true,r:radius})),new RegExp(`A${radius} ${radius} `));
+assert.equal(render('wheels',wheelData,{conic:true,r:30}),firstRing,'eviction cannot change the wheel palette or geometry');
+assert.match(finite(render('wheels',wheelData)),/url\(#ringE\)/);
+const rigDefaultOptions={cx:100,cy:100,R:50,cols:[10,200,350,580],hy:170,ry:200,rh:30,bar:[280,420],thumbs:{x:10,y:260,w:60,h:30,gx:10,gy:5,ly:8}};
+const rigDefaults=finite(render('lightrig',{lights:[{name:'Top',a:90},{name:'Right',a:0,em:true},{name:'Left',a:180}],rows:[['A','5000K','1',0,false,'2'],['B','','',.5,true,'']],thumbs:[{label:'Missing'}]},rigDefaultOptions));assert.match(rigDefaults,/Top/);assert.match(rigDefaults,/font-size:17px/);assert.match(rigDefaults,/border-radius:6px/);
+console.log('PASS conic-ring cache eviction preserves exact markup and measured light-rig defaults remain finite');
+assert.equal(wave(100,40,-49297/9301),wave(100,40,(1-49297)/9301),'zero RNG state uses the deterministic seed-one fallback');
+state.calls=[{name:'progress',status:'running',t:900,progress:{done:1,total:4}}];
+const railDefaults=finite(render('agent',{}, {progress:true,curH:50}));assert.match(railDefaults,/padding-top:9px/);assert.match(railDefaults,/width:25.0%/);assert.doesNotMatch(railDefaults,/data-call=/);state.calls=[];
+assert.match(finite(KINDS.viewer({spec:{},data:{},state:{gizmo:{t:1000,prev:{},next:{},read:[]}},w:600,h:300})),/class="ov gz"/);
+assert.match(finite(render('loudness',{meters:[{l:'L'}]})),/background:#8d887e/);
+for(const opts of [undefined,{colW:[100,100,100,100,100],footLine:200}]){
+ const data={head:['name','preset','duration','status','time'],rows:['✕ failed','✓ done','queued','● running'].map(status=>['Name','preset','-',status,'-']),foot:'4 jobs'};
+ let html=finite(render('renders',data,opts));assert.match(html,/failed/);assert.match(html,/queued/);assert.match(html,/4 jobs/);
+ data.footEm='absent';assert.match(finite(render('renders',data,opts)),/4 jobs/);data.footEm='4';assert.match(finite(render('renders',data,opts)),/<span class="cream">4<\/span>/);
+}
+assert.match(finite(render('lightrig',{rows:[['Fill','','1',.3,false,'']],thumbs:[{label:'Empty'}]})),/#bdb8ae/);
+assert.match(finite(render('scopes',{wave:{bins:2,cols:['zz']},img:{kind:'waveform',src:'fixture://wave'}})),/fixture:\/\/wave/);
+const selected=pickedRows({status:'ok',args:[null,{a:1},'text'],result:{small:{a:1},flag:false}});assert.ok(selected.every(r=>r.k!=='#1'));assert.ok(selected.some(r=>r.k==='#2'&&r.v==='{a}')); assert.ok(selected.some(r=>r.k==='small'&&r.v==='{a}'));
+console.log('PASS deterministic RNG fallback, rail progress defaults, render statuses/footers and sparse diagnostic values');
+const detailedTimeline=finite(render('timeline',{ruler:{t0:0,t1:20,step:5,align:'right'},playhead:2,razor:{at:2,t:1000},tracks:[{label:'Solo',solo:true,lane:'#333',area:{},wave:{env:[[0,.2],[20,.8]],beats:[1,2]},clips:[{s:-5,e:-1,label:'Off left'},{s:25,e:30,label:'Off right'}]}]}));assert.match(detailedTimeline,/translateX\(-100%\)/);assert.match(detailedTimeline,/stroke-width="1.5"/);assert.match(detailedTimeline,/class="razor"/);assert.doesNotMatch(detailedTimeline,/Off left|Off right/);
+const flashingClips=Array.from({length:35},(_,i)=>({s:i*.1+(i>20?3:0),e:i*.1+.1+(i>20?3:0),_flash:1000}));
+const mergedFlash=finite(render('timeline',{tracks:[{clips:flashingClips}]}));assert.equal((mergedFlash.match(/class="clip crun flash"/g)||[]).length,2);
+const panelArgs={spec:{title:'Fixture'},state,data:{ruler:{t0:0,t1:20000,step:5000},playhead:100,tracks:Array.from({length:15},(_,i)=>({clips:[{s:0,e:1,label:'Clip'+i}]}))},w:600,h:150,pan:{z:2,k:0}};
+const zoomed=finite(KINDS.timeline(panelArgs));assert.equal(panelArgs.pan.t,0);assert.match(zoomed,/class="tlbar"/);assert.match(zoomed,/class="tlbar v"/);assert.doesNotMatch(zoomed,/Clip14/);
+const plainPan=finite(KINDS.timeline({...panelArgs,pan:{z:1,k:1}}));assert.match(plainPan,/class="playhead"/);
+panels.namespace.TL_SMALL.on=true;assert.match(finite(render('timeline',{tracks:[{}]},{trackY:40})),/top:34px;height:30px/);panels.namespace.TL_SMALL.on=false;
+assert.match(finite(render('keys',{graph:{pts:[0,1],max:1}})),/stroke-width="1.3"/);
+assert.match(finite(render('stack',{nodes:[{name:'Centered'}]},{center:true})),/font-size:12px/);
+console.log('PASS timeline clipping, flashing-run compaction, zoom/scroll defaults and compact track layout');

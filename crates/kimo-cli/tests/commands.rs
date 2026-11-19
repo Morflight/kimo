@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn cli(args: &[&str], input: Option<&str>) -> Output {
+    cli_bytes(args, input.map(str::as_bytes))
+}
+fn cli_bytes(args: &[&str], input: Option<&[u8]>) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_kimo"))
         .args(args).env("KIMO_SPECTATOR", "off").env("KIMO_OBSERVE", "off")
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    if let Some(input) = input { child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap(); }
+    if let Some(input) = input { child.stdin.take().unwrap().write_all(input).unwrap(); }
     child.wait_with_output().unwrap()
 }
 fn success(args: &[&str]) -> Value {
@@ -61,6 +64,7 @@ fn usage_errors_are_not_tool_successes() {
         &["export", "a", "b", "--range", "bad:1"], &["export", "a", "b", "--range", "0:bad"],
         &["export", "a", "b", "--start", "bad"], &["export", "a", "b", "--end", "bad"], &["export", "a", "b", "--crf", "bad"],
         &["export", "a", "b", "--preset", "x", "--crf", "20"], &["render-job"], &["tools", "search"],
+        &["preflight", "--args", "[]"], &["validate", "--args", "[]"], &["render-job", "start", "--args", "[]"],
         &["tools", "search", "blur", "--limit", "bad"], &["tools", "describe"], &["tools", "unexpected"],
     ];
     for args in cases {
@@ -102,6 +106,12 @@ fn mutating_calls_save_atomically_and_no_save_preserves_bytes() {
     assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(),1,"atomic save leaves no temporary file");
     let invalid=temp.0.join("invalid.kimo");std::fs::write(&invalid,"not json").unwrap();
     assert_eq!(cli(&["call","kimo_info","--project",invalid.to_str().unwrap()],None).status.code(),Some(1));
+    assert_eq!(cli(&["export",invalid.to_str().unwrap(),temp.0.join("out.mp4").to_str().unwrap()],None).status.code(),Some(1));
+    let blocked=invalid.join("project.kimo");
+    let failed=cli(&["--json","-q","call","add_track","--project",blocked.to_str().unwrap()],None);
+    assert_eq!(failed.status.code(),Some(1));assert!(failed.stdout.is_empty());
+    assert_eq!(std::fs::read_to_string(&invalid).unwrap(),"not json");
+
 }
 
 #[test]
@@ -115,4 +125,42 @@ fn export_uses_the_requested_range_and_produces_a_real_file() {
     let probe=Command::new("ffprobe").args(["-v","error","-count_frames","-select_streams","v:0","-show_entries","stream=nb_read_frames,width,height","-of","json"]).arg(&output).output().unwrap();
     assert!(probe.status.success());let probe:Value=serde_json::from_slice(&probe.stdout).unwrap();
     assert_eq!(probe["streams"][0]["nb_read_frames"],"5");assert_eq!(probe["streams"][0]["width"],320);assert_eq!(probe["streams"][0]["height"],180);
+}
+
+#[test]
+fn reserved_commands_invalid_utf8_and_group_errors_are_explicit() {
+    for command in ["preflight", "validate"] {
+        let output=cli(&["--json",command],None);
+        assert_eq!(output.status.code(),Some(1));
+        let error:Value=serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"],"tool_unavailable");
+        assert_eq!(error["error"]["param"],"tool");
+    }
+    let invalid=cli_bytes(&["--json","call","kimo_info","--args","-"],Some(&[0xff]));
+    assert_eq!(invalid.status.code(),Some(2));
+    let error:Value=serde_json::from_slice(&invalid.stderr).unwrap();
+    assert_eq!(error["error"]["code"],"usage");
+    let group=cli(&["--json","-q","call","project","--args",r#"{"action":"does-not-exist"}"#],None);
+    assert_eq!(group.status.code(),Some(1));
+    let error:Value=serde_json::from_slice(&group.stderr).unwrap();
+    assert!(error["error"]["message"].as_str().unwrap().contains("unknown action"));
+    let hint=cli(&["-q","call","add_trak"],None);
+    assert_eq!(hint.status.code(),Some(1));
+    assert!(String::from_utf8_lossy(&hint.stderr).contains("hint:"));
+}
+
+#[test]
+fn memory_limit_failure_is_diagnosed_without_a_success_result() {
+    let temp=Temp::new("memory");let path=temp.0.join("frame.png");
+    let args=json!({"time":0,"path":path}).to_string();
+    let output=Command::new(env!("CARGO_BIN_EXE_kimo"))
+        .args(["--json","-q","call","render_frame","--args",args.as_str()])
+        .env("KIMO_MEMORY_BUDGET_BYTES","1").env("KIMO_SPECTATOR","off").env("KIMO_OBSERVE","off")
+        .output().unwrap();
+    assert_eq!(output.status.code(),Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr=String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("memory budget exceeded"),"{stderr}");
+    assert!(stderr.contains("kimo:"),"the CLI panic hook reports the guarded failure: {stderr}");
+    assert!(!path.exists(),"memory refusal must precede image writes");
 }

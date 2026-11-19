@@ -25,3 +25,5 @@ Frame stepping retains the paused clock's full numeric precision. Seeking clamps
 The same proof supplies a synthetic Tauri event envelope and checks update consent, install-error recovery, progress labels and clipboard fallback. It neither installs an update nor uses a native shell.
 
 The actions fixture also checks inspector timing/transform/audio/text/effect arguments, clamped numeric values, project format, new-project consent and model selection. Selecting a model with incompatible effort clears that effort; custom model names are trimmed, while choosing the default model preserves a compatible effort. These are synthetic bridge contracts exercised through real Chromium controls.
+
+`studio_recovery_test.py` verifies startup restore/discard, restoration errors and crash-report consent for one or several logs. Its synthetic native adapter records commands; only the newest log may receive send consent, and no browser report or network submission is opened by the fixture.

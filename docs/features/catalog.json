@@ -600,7 +600,8 @@
         "crates/kimo-gui/tests/mock_bridge_test.mjs",
         "crates/kimo-gui/tests/studio_ui_test.py",
         "crates/kimo-gui/tests/studio_actions_test.py",
-        "crates/kimo-gui/tests/frame_step_precision_test.py"
+        "crates/kimo-gui/tests/frame_step_precision_test.py",
+        "crates/kimo-gui/tests/studio_recovery_test.py"
       ],
       "sources": [
         "crates/kimo-gui/ui/dev/mock-bridge.js",
