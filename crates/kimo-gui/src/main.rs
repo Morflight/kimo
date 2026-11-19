@@ -769,6 +769,18 @@ fn bridge_handler<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bridge::Handle
     })
 }
 
+fn command_handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+            app_state, engine_restart, engine_call, engine_read, changes_list, change_undo,
+            project_open, project_save, project_new, pick, media_thumb, open_url, reveal,
+            cli_status, cli_signin, cli_install, cli_register, cli_models, agent_select, agent_send, agent_stop, agent_reset,
+            mcp_set, mcp_probe, key_set, key_clear, key_test, settings_set, onboarded_set,
+            recovery_status, recovery_restore, recovery_discard, crash_pending, crash_answer, update_check, update_install,
+            open_spectator, setup_status, setup_start, setup_pause, setup_skip, viewer_frame, viewer_draft,
+            preview_start, preview_update, preview_frame, preview_stop
+        ]
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "mcp").unwrap_or(false) { run_mcp(&argv[1..]); }
@@ -902,15 +914,7 @@ fn main() {
             for (k, v) in headers { b = b.header(k, v); }
             b.body(body).unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
         })
-        .invoke_handler(tauri::generate_handler![
-            app_state, engine_restart, engine_call, engine_read, changes_list, change_undo,
-            project_open, project_save, project_new, pick, media_thumb, open_url, reveal,
-            cli_status, cli_signin, cli_install, cli_register, cli_models, agent_select, agent_send, agent_stop, agent_reset,
-            mcp_set, mcp_probe, key_set, key_clear, key_test, settings_set, onboarded_set,
-            recovery_status, recovery_restore, recovery_discard, crash_pending, crash_answer, update_check, update_install,
-            open_spectator, setup_status, setup_start, setup_pause, setup_skip, viewer_frame, viewer_draft,
-            preview_start, preview_update, preview_frame, preview_stop
-        ])
+        .invoke_handler(command_handler())
         .build(tauri::generate_context!())
         .expect("kimo failed to start")
         .run(|app, ev| {
@@ -990,6 +994,94 @@ mod tests {
         assert!(st.ledger.call("you","timeline",&json!({"action":"add_track","args":{}})).is_err());
         let _=st.app_tools();
         drop(st);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn updater_key_configuration_requires_nonempty_text() {
+        for (config,expected) in [(Value::Null,None),(json!({}),None),(json!({"pubkey":false}),None),(json!({"pubkey":""}),None),(json!({"pubkey":"   "}),None),(json!({"pubkey":" fixture-public-key "}),Some("fixture-public-key"))] {
+            let mut context=tauri::test::mock_context(tauri::test::noop_assets());
+            context.config_mut().plugins.0.insert("updater".into(),config);
+            let app=tauri::test::mock_builder().build(context).unwrap();
+            assert_eq!(updater_pubkey(app.handle()).as_deref(),expected);
+        }
+    }
+
+    #[test]
+    fn ipc_rejects_missing_arguments_before_mutating_state_and_redacts_keys() {
+        let root=std::env::temp_dir().join(format!("kimo-main-ipc-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let app=tauri::test::mock_builder().invoke_handler(command_handler()).manage(state(&root))
+            .build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let webview=tauri::WebviewWindowBuilder::new(&app,"main",Default::default()).build().unwrap();
+        let request=|command:&str,body:Value| tauri::test::get_ipc_response(&webview,tauri::webview::InvokeRequest {
+            cmd:command.into(),callback:tauri::ipc::CallbackFn(0),error:tauri::ipc::CallbackFn(1),
+            url:"tauri://localhost".parse().unwrap(),body:tauri::ipc::InvokeBody::Json(body),headers:Default::default(),invoke_key:tauri::test::INVOKE_KEY.into(),
+        }).map(|response|response.deserialize::<Value>().unwrap());
+        let before=request("app_state",json!({})).unwrap();
+        for command in ["engine_call","engine_read","change_undo","project_open","project_save","pick","media_thumb","open_url","reveal","cli_signin","cli_install","cli_register","cli_models","agent_select","agent_send","mcp_set","key_set","key_clear","key_test","settings_set","crash_answer","viewer_frame","viewer_draft","preview_start","preview_update","preview_frame","setup_start"] {
+            let error=request(command,json!({})).unwrap_err();assert!(error.to_string().contains("invalid args"),"{command}: {error}");
+        }
+        assert_eq!(request("app_state",json!({})).unwrap(),before);
+        assert!(request("unknown-command",json!({})).unwrap_err().to_string().contains("not found"));
+        assert_eq!(request("agent_select",json!({"agent":"unknown"})).unwrap_err(),json!("unknown agent"));
+        request("agent_select",json!({"agent":"api","select":true})).unwrap();
+        request("key_set",json!({"provider":"openai","key":"ipc-fixture-secret","remember":false})).unwrap();
+        let after=request("app_state",json!({})).unwrap();assert_eq!(after["settings"]["agent"],"api");assert!(!after.to_string().contains("ipc-fixture-secret"));
+        assert_eq!(request("changes_list",json!({})).unwrap(),json!([]));
+        assert_eq!(request("recovery_status",json!({})).unwrap(),Value::Null);
+        assert_eq!(request("crash_pending",json!({})).unwrap(),json!([]));
+        assert_eq!(request("agent_stop",json!({})).unwrap(),false);
+        request("agent_reset",json!({})).unwrap();request("onboarded_set",json!({})).unwrap();request("setup_pause",json!({})).unwrap();request("setup_skip",json!({})).unwrap();
+        assert!(app.state::<AppState>().cancel_dl.load(Ordering::SeqCst));
+        assert_eq!(request("setup_status",json!({})).unwrap()["done"],true);
+        assert_eq!(request("update_check",json!({})).unwrap()["state"],"off");
+        assert!(request("update_install",json!({})).unwrap_err().to_string().contains("does not update itself"));
+        assert!(request("recovery_restore",json!({})).is_err());
+        assert!(request("mcp_probe",json!({})).is_err());assert!(request("preview_stop",json!({})).is_err());
+        request("recovery_discard",json!({})).unwrap();
+        drop(webview);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bridge_dispatch_and_live_events_preserve_source_and_protocol_errors() {
+        use tauri::Listener;
+        let root=std::env::temp_dir().join(format!("kimo-main-bridge-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        let received=Arc::new(Mutex::new(Vec::new()));
+        for name in ["engine-event","external-event","agent-event"] {
+            let captured=received.clone();app.listen(name,move |e|captured.lock().unwrap().push((name,serde_json::from_str::<Value>(e.payload()).unwrap())));
+        }
+        let event=json!({"type":"project_changed","rev":7});
+        forward(app.handle(),Source::Gui,event.clone());
+        forward(app.handle(),Source::External{conn:9},event.clone());
+        emit_ev(app.handle(),"codex",3,&Ev::Text{ text:"fixture".into() });
+        let received=received.lock().unwrap();
+        assert_eq!(received.iter().filter(|(n,v)|*n=="engine-event"&&*v==event).count(),2);
+        let external=&received.iter().find(|(n,_)|*n=="external-event").unwrap().1;
+        assert_eq!(external["conn"],9);assert_eq!(external["ev"],event);assert!(external["t"].as_u64().unwrap()>0);
+        let agent=&received.iter().find(|(n,_)|*n=="agent-event").unwrap().1;
+        assert_eq!(agent["agent"],"codex");assert_eq!(agent["turn"],3);assert_eq!(agent["ev"]["text"],"fixture");
+        drop(received);
+        let handler=bridge_handler(app.handle().clone());
+        assert_eq!(handler("fixture","ping",json!({})).unwrap(),json!({}));
+        assert_eq!(handler("fixture","tools/list",json!({})).unwrap(),json!({"tools":[]}));
+        for (method,key) in [("resources/list","resources"),("resources/templates/list","resourceTemplates"),("prompts/list","prompts")] {
+            assert_eq!(handler("fixture",method,json!({})).unwrap()[key],json!([]));
+        }
+        assert_eq!(handler("fixture","initialize",json!({"protocolVersion":"2025-03-26"})).unwrap()["serverInfo"]["version"],env!("CARGO_PKG_VERSION"));
+        assert_eq!(handler("fixture","tools/call",json!({})).unwrap_err().0,-32602);
+        assert_eq!(handler("fixture","tools/call",json!({"name":"timeline"})).unwrap_err().0,-32603);
+        assert_eq!(handler("fixture","tools/call",json!({"name":"timeline","arguments":{"action":"add_track"}})).unwrap_err().0,-32603);
+        assert_eq!(handler("fixture","unknown",json!({})).unwrap_err(),(-32601,"method not found: unknown".into()));
+        tauri::async_runtime::block_on(async {
+            assert_eq!(mcp_set(app.handle().clone(),false).await.unwrap(),json!({"enabled":false}));
+            assert!(mcp_set(app.handle().clone(),true).await.is_err());
+            let update=update_check(app.handle().clone()).await.unwrap();assert_eq!(update["state"],"off");assert!(update["checked_at"].as_u64().unwrap()>0);
+            assert_eq!(*app.state::<AppState>().update.lock().unwrap(),update);
+            assert!(update_install(app.handle().clone()).await.unwrap_err().contains("does not update itself"));
+        });
+        drop(handler);drop(app);std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

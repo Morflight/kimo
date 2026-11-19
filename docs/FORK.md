@@ -115,3 +115,7 @@ The native state suite also starts the required real `KIMO_MCP_BIN` with a synth
 Native command handlers accept Tauri’s runtime parameter so the same production handlers can be exercised with its mock runtime. Shipping invocations still infer the normal desktop runtime; the tests use the same state and sidecar logic without opening a user window.
 
 Mock-runtime commands also drive the real sidecar through save/open (including a missing-file error), add-track/undo, new-project and restart. Assertions compare project tracks after undo, persisted project paths and the empty viewer after reset.
+
+Native bridge tests assert JSON-RPC initialization, empty resources, malformed/missing tools and unknown-method errors. Live-event tests distinguish GUI and external sources and preserve agent/turn metadata. A build without an updater key remains off and refuses installation without contacting an update feed.
+
+The shipping IPC registry is shared with mock-webview tests. Required arguments are validated through actual Tauri dispatch before state mutation; successful agent/key settings are then read back with secret redaction. Unknown commands and disabled updates retain their error responses.

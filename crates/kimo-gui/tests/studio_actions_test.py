@@ -523,6 +523,63 @@ async def main():
             assert await native.evaluate('__kimo.S.tab')==tab
             assert not errors,errors
             print('PASS engine state presentation, refused imports, custom attached agents and unknown tab stability')
+            await native.evaluate("""() => {
+              const invoke=__kimoBridge.invoke;
+              window.setupFixture={mode:'missing',ready:false,done:false,parts:[
+                {id:'ffmpeg',name:'FFmpeg',note:'fixture system tool',satisfied:'system'},
+                {id:'ffprobe',name:'Probe',note:'fixture installed tool',satisfied:'download'},
+                {id:'model',name:'Model',note:'fixture optional download',optional:true,pinned:true,size:5000000},
+                {id:'unknown-tool',name:'Other',note:'fixture unavailable tool',pinned:false}
+              ]};
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command==='setup_status')return setupFixture;
+                if(command==='setup_start'){
+                  if(setupFixture.mode==='error')throw Error('fixture download refused');
+                  if(setupFixture.mode==='pending')return new Promise(resolve=>window.finishSetup=resolve);
+                  return {ready:setupFixture.ready};
+                }
+                return invoke(command,args);
+              };
+              document.querySelector('#setup').classList.add('on');
+            }""")
+            await native.click('#setup-go')
+            await native.wait_for_function('document.querySelectorAll("#parts .part").length===4')
+            assert 'still missing' in await native.inner_text('#setup-err')
+            assert 'on this computer' in await native.inner_text('[data-part="ffmpeg"]')
+            assert 'Installed' in await native.inner_text('[data-part="ffprobe"]')
+            assert '5 MB' in await native.inner_text('[data-part="model"]')
+            assert 'Not published' in await native.inner_text('[data-part="unknown-tool"]')
+            for payload in [{'id':'absent','phase':'done'},{'id':'model','phase':'downloading','done':2,'total':4,'bytes_per_s':1000000}]:
+                await native.evaluate('(p)=>__mock.emit("setup-progress",p)',payload)
+            assert await native.locator('[data-part="model"] .bar i').evaluate('(e)=>e.style.width')=='50%'
+            assert '1.0 MB/s' in await native.inner_text('[data-part="model"] .spd')
+            for phase in ['done','verified']:
+                await native.evaluate('(phase)=>__mock.emit("setup-progress",{id:"model",phase})',phase)
+                assert await native.inner_text('[data-part="model"] .st')=='Installed'
+                assert await native.inner_text('[data-part="model"] .spd')==''
+            await native.evaluate('__mock.emit("setup-progress",{id:"unknown-tool",phase:"unavailable"})')
+            assert await native.inner_text('[data-part="unknown-tool"] .st')=='Not available'
+            await native.evaluate('__mock.emit("setup-progress",{id:"unknown-tool",phase:"error",error:"fixture checksum failure"})')
+            assert await native.inner_text('[data-part="unknown-tool"] .st')=='fixture checksum failure'
+            await native.evaluate('__mock.emit("setup-progress",{id:"unknown-tool",phase:"system"})')
+            assert await native.locator('[data-part="unknown-tool"] .bar i').evaluate('(e)=>e.style.width')=='100%'
+            await native.evaluate('setupFixture.mode="error"')
+            await native.click('#setup-go')
+            await native.wait_for_function('document.querySelector("#setup-err").textContent.includes("fixture download refused")')
+            assert await native.is_enabled('#setup-go')
+            await native.evaluate('setupFixture.mode="pending"')
+            await native.click('#setup-go')
+            await native.click('#setup-pause')
+            assert await native.evaluate('sparseRequests.some(r=>r.command==="setup_pause")')
+            await native.evaluate('finishSetup({ready:false})')
+            await native.wait_for_function('!document.querySelector("#setup-go").disabled')
+            await native.evaluate('setupFixture.mode="ready";setupFixture.ready=true;setupFixture.done=true')
+            await native.click('#setup-go')
+            await native.wait_for_function('!document.querySelector("#setup").classList.contains("on")')
+            assert 'Ready' in await native.inner_text('#h-parts')
+            assert 'using this computer' in await native.inner_text('#h-parts')
+            assert not errors,errors
+            print('PASS setup tool origins, download progress/error/retry, pause and readiness without real downloads')
             await browser.close()
     finally:
         server.shutdown()

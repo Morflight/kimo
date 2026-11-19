@@ -33,3 +33,5 @@ The inspector preserves focus only while editing the selected clip. Deleting a c
 Preview preparation controls are tested with a deferred synthetic start response: cancellation must wait for the start, stop the session, clear the pending preparation and display the stopped state. The playback error callback must show its diagnostic.
 
 Fallback image-draft playback advances to the chunk end before loading the next chunk, preventing replay of the same final frame. `studio_draft_test.py` uses two synthetic chunks and requires exactly one next-draft request and a final stop. Escape closes an open overlay/menu first; a subsequent Escape in Edit clears the selection without interfering with text entry.
+
+The native-adapter browser proof distinguishes system, downloaded, optional pinned and unavailable setup parts. It asserts progress percentages, speed clearing on completion, error text, retry availability, cancellation dispatch and ready-state dismissal, without performing real downloads.
