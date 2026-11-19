@@ -1,2 +1,4 @@
 # signed bytes: any line-ending conversion would break the signature check
 crates/kimo-gui/tests/updater_key/** -text
+# Golden manifests are compared byte-for-byte with LF output on every platform.
+crates/kimo-core/tests/golden/*.txt text eol=lf

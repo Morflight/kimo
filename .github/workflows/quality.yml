@@ -123,6 +123,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # Keep debug assertions and every test, but avoid unoptimized renderer overhead.
+      CARGO_PROFILE_TEST_OPT_LEVEL: "2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Reclaim unused hosted-runner SDK space
@@ -173,18 +175,25 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
-          import os, pathlib, subprocess, tempfile
+          import hashlib, os, pathlib, subprocess, tempfile, urllib.request
           root = pathlib.Path(tempfile.gettempdir())
+          faceocc = root / 'faceocc2.webm'
+          url = 'https://raw.githubusercontent.com/opencv/opencv_extra/ebf9366b3845efe1e54bf2440cf238fd68905bab/testdata/cv/tracking/faceocc2/data/faceocc2.webm'
+          urllib.request.urlretrieve(url, faceocc)
+          assert hashlib.sha256(faceocc.read_bytes()).hexdigest() == '5ffedeca4fb3acfd65e6f6aa71f016f748628727be1e24914fde2198b42089c5'
           image = root / 'perf1080.rgba'
           subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i',
               'crates/kimo-core/src/vision/testdata/astronaut_176x220.ppm',
               '-vf', 'scale=1920:1080', '-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'rawvideo', str(image)], check=True)
           assert image.stat().st_size == 1920 * 1080 * 4
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
-              for key in ['KIMO_CSM_FRAMES', 'KIMO_PBR_FRAMES', 'KIMO_PRIMITIVE_FRAMES']:
+              env.write(f'KIMO_FACEOCC2_WEBM={faceocc}\n')
+              for key in ['KIMO_CSM_FRAMES', 'KIMO_PBR_FRAMES', 'KIMO_PRIMITIVE_FRAMES',
+                          'KIMO_CAMERA_FRAMES', 'KIMO_PARTICLE_FRAMES', 'KIMO_TRANSITION_FRAMES', 'KIMO_UV_FRAMES']:
                   directory = root / 'kimo-native-proofs' / key
                   directory.mkdir(parents=True, exist_ok=True)
                   env.write(f'{key}={directory}\n')
+              env.write(f'KIMO_3D_FRAME={root / "kimo-native-proofs" / "foundation.png"}\n')
           PYTHON
       - name: Workspace tests and coverage
         if: matrix.scope == 'workspace'
@@ -199,7 +208,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo llvm-cov report --json --output-path rust-workspace.json
+          python3 tools/quality/rust_coverage_report.py --output-path rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-core/ rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-cli/ rust-workspace.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-mcp/ rust-workspace.json
@@ -229,7 +238,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo llvm-cov report --manifest-path crates/kimo-gui/Cargo.toml --json --output-path rust-desktop.json
+          python3 tools/quality/rust_coverage_report.py --manifest-path crates/kimo-gui/Cargo.toml --output-path rust-desktop.json
           python3 tools/quality/check_rust_coverage.py --prefix crates/kimo-gui/ rust-desktop.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
