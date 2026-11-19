@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -321,3 +321,33 @@ assert.deepEqual(changeRows({}, {label:'Target title',changed:{clips_added:[{cli
 assert.deepEqual(changeRows({}, {clip:'c9',label:'c9',changed:{clips_added:[{clip_id:'c9'}],clips_removed:[{clip_id:'c1'}],tracks_removed:['t1']}}),null);
 assert.deepEqual(changeRows({}, {changed:{clips_moved:[{clip_id:'c1',from:'Video',to:'Audio'}]}}),[{k:'Track',from:'Video',v:'Audio'}]);
 console.log('PASS structural change readouts retain timing, key removal and human clip/track identities');
+
+
+const audioModes={mixFixture:{panels:{inspector:{kind:'kv'},extra:{kind:'kv'},loudness:{kind:'loudness'}}}};
+const mixState=fresh('mixFixture');
+const eqFixture={widget:'eq',bands:[{f:100,g:0},{f:1000,g:1,sel:true},{f:500,g:2,type:'highpass'},{f:300,type:'bell'}]};
+const compFixture={widget:'comp'},panFixture={k:'Pan',v:'C'};
+mixState.views.mixFixture={inspector:{blocks:[eqFixture,compFixture,panFixture]},extra:{},loudness:{meters:[{}, {v:.95,peak:.99},{v:.1,peak:.9}]}};
+const mix=(tool,payload)=>root.namespace.audioOps(mixState,audioModes,{tool_name:tool,payload});
+assert.equal(root.namespace.fmtPan(undefined),'');assert.equal(root.namespace.fmtPan('unknown'),'unknown');
+mix('eq',{args:{frequency:900,g:3,q:2}});
+assert.equal(eqFixture.bands[1].f,900);assert.equal(eqFixture.bands[1].g,3);assert.equal(eqFixture.bands[1].q,2);assert.equal(eqFixture.bands[2].g,2);
+mix('eq',{band:0,to:0});assert.equal(eqFixture.bands[0].g,0);assert.equal(eqFixture.bands[0].sel,true);assert.equal(eqFixture.bands[1].sel,false);
+mix('eq',{});assert.equal(eqFixture.bands[0]._flash,1000);
+eqFixture.bands.forEach(b=>delete b.sel);mix('eq',{});assert.equal(eqFixture.bands[0].sel,true);
+mix('compress',{});assert.equal(compFixture.inDb,-10);
+mix('compress',{threshold:-6,ratio:3,level:-2});assert.equal(compFixture.threshold,-6);assert.equal(compFixture.ratio,3);assert.equal(compFixture.inDb,-2);
+mix('pan',{value:-.5});assert.equal(panFixture.v,'L50');assert.equal(panFixture.from,'C');
+mix('pan',{to:-.5});assert.equal(panFixture.from,'C');mix('pan',{});assert.equal(panFixture.v,'L50');
+for(const [payload,expected] of [[{result:{integrated_lufs:-14}},'-14.0'],[{result:{measured_lufs:-20,gain_db:6}},'-14.0'],[{result:{target_lufs:-16}},'-16.0'],[{result:{lufs:-18}},'-18.0'],[{lufs:-19},'-19.0'],[{param:'loudness',to:-21},'-21.0'],[{args:{target_lufs:-22}},'-22.0'],[{args:{lufs:-23}},'-23.0']]) {
+ mix('measure_loudness',payload);assert.equal(mixState.views.mixFixture.loudness.lufs,expected);
+}
+const loud=mixState.views.mixFixture.loudness;
+mix('normalize_loudness',{result:{measured_lufs:0,gain_db:0,sample_peak_dbfs:-1,target_lufs:-14}});
+assert.equal(loud.target,'-14.0');assert.deepEqual(plain(loud.rows),[['Input','0.0 LUFS'],['Gain','0.0 dB'],['Peak','-1.0 dBFS']]);
+mix('measure_loudness',{result:{loudness_range:{lra_lu:4.25}}});assert.deepEqual(plain(loud.rows[0]),['LRA','4.3 LU']);
+mix('gain',{gain:100});assert.ok(loud.meters.every(m=>m.hit.lvl===1));assert.ok(loud.meters.every(m=>m.peakHold.lvl===1));
+mix('gain',{gain:-100});assert.ok(loud.meters.every(m=>m.hit.lvl===0));assert.equal(loud.meters[0].hit.base,.5);assert.equal(loud.meters[2].peakHold.lvl,1);
+const dryModes={dry:{panels:{inspector:{kind:'kv'}}}},dry=fresh('dry');dry.views.dry={inspector:{blocks:[{widget:'eq'}]}};
+assert.equal(root.namespace.audioOps(dry,dryModes,{tool_name:'eq'}),false);
+console.log('PASS EQ selection, compressor defaults, pan stability, loudness precedence and bounded meter levels');
