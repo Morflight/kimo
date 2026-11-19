@@ -421,10 +421,12 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
         command.args(["-threads","1","-filter_threads","1","-filter_complex_threads","1"]);
         #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); }
     }
-    command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-f","rawvideo","-pix_fmt",pix,"-"]);
-    if step>1 || background { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
-        if step>1 {command.args(["-fps_mode","passthrough"]);}
-        if background {command.args(["-threads:v","1"]);}
+    // The filter chain already conforms the rate (`fps=`) and the buffer is indexed frame by frame, so
+    // every filtered frame must be written exactly once. FFmpeg 7+ `setpts` no longer forwards the frame
+    // rate; without passthrough the CLI then assumes 25 fps for rawvideo and duplicates frames to fill it.
+    command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-fps_mode","passthrough","-f","rawvideo","-pix_fmt",pix,"-"]);
+    if background { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
+        command.args(["-threads:v","1"]);
         command.arg("-");
         #[cfg(windows)] if background { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); } }
     let mut buf=Vec::new();

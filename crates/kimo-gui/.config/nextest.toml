@@ -1,0 +1,36 @@
+# cargo-nextest configuration for the desktop workspace (crates/kimo-gui is its own Cargo
+# workspace, so nextest reads this file, not the repository-root one). Same two required profiles
+# as the engine workspace: `ci` on every push, `nightly` (+ #[ignore] proofs via --run-ignored all)
+# on schedule and before any release. See docs/QUALITY.md "Per-push and nightly suites".
+# No desktop heavy set has been measured yet: `ci` runs every non-ignored test, and its 30 s
+# per-test limit makes any slow test fail visibly rather than lengthen per-push CI silently.
+
+# The telemetry and live-feed tests bind kimo's fixed default spectator ports 127.0.0.1:7421-7430.
+# testutil::PORTS only serialized them inside one process; nextest runs each test in its own
+# process, so this group runs them one at a time.
+[test-groups]
+spectator-ports = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "test(/(^|::)(private_and_external_are_tagged|binds_loopback_only|all_public_ports_occupied_is_an_error_without_starting_a_listener|live_feed_tags_gui_and_external_engines)$/)"
+test-group = "spectator-ports"
+
+[profile.ci]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "15s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
+store-failure-output = true
+
+[profile.nightly]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.nightly.junit]
+path = "junit.xml"
+store-failure-output = true

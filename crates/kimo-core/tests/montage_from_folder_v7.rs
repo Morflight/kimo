@@ -20,10 +20,11 @@ fn write_png(path: &std::path::Path, rgb: [u8; 3]) {
     assert!(ch.status.success());
 }
 
-/// Writes a tiny 1s solid-color video using ffmpeg.
+/// Writes a tiny 1s solid-color video using ffmpeg. 4:2:0 H.264 needs even dimensions: FFmpeg 7+
+/// refuses an odd size instead of rounding it, so the fixture is 16x10.
 fn write_video(path: &std::path::Path, rgb: [u8; 3], secs: f64) {
     let ch = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c=#{:02x}{:02x}{:02x}:s=16x9:d={secs}:r=10", rgb[0], rgb[1], rgb[2]),
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c=#{:02x}{:02x}{:02x}:s=16x10:d={secs}:r=10", rgb[0], rgb[1], rgb[2]),
                "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", path.to_str().unwrap()])
         .output().expect("ffmpeg video");
     assert!(ch.status.success());

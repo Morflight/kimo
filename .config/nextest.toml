@@ -11,6 +11,17 @@
 # test after 30 s, so a new slow test fails per-push CI until it is made faster or
 # deliberately added here. See docs/QUALITY.md "Per-push and nightly suites".
 
+# Tests that bind kimo's fixed default spectator ports (127.0.0.1:7421-7430) share a real system
+# resource. Their in-process mutex only serialized them within one test process; nextest runs each
+# test in its own process, so this group runs them one at a time across processes. The desktop crate
+# is a separate workspace with its own crates/kimo-gui/.config/nextest.toml.
+[test-groups]
+spectator-ports = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary_id(kimo-mcp::spectator_default)"
+test-group = "spectator-ports"
+
 [profile.ci]
 fail-fast = false
 status-level = "fail"
