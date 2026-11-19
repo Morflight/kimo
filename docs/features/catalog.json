@@ -26,7 +26,9 @@
         "crates/kimo-core/tests/overlap_pipeline.rs",
         "crates/kimo-core/tests/octree_mesh_bench_cp4.rs",
         "crates/kimo-core/tests/webm_probe.rs",
-        "crates/kimo-core/tests/readme_count.rs"
+        "crates/kimo-core/tests/readme_count.rs",
+        "crates/kimo-core/tests/search_tools.rs",
+        "crates/kimo-core/tests/thread_hygiene.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",

@@ -34,16 +34,14 @@ pub const RING_CAP: usize = 96;
 pub const PRIME: usize = 6;
 pub const WARM_FRAMES: usize = 32;
 pub const WARM_SECONDS: u64 = 5;
-thread_local! { static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-pub(crate) fn background_decode()->bool { BACKGROUND.with(|x|x.get()) }
 #[cfg(windows)]
 fn background_priority(on:bool) {
     unsafe extern "system" { fn GetCurrentThread()->*mut std::ffi::c_void; fn SetThreadPriority(thread:*mut std::ffi::c_void,priority:i32)->i32; }
     unsafe { SetThreadPriority(GetCurrentThread(),if on {0x00010000}else{0x00020000}); }
 }
 struct Background(bool);
-impl Background { fn enter(on:bool)->Self { BACKGROUND.with(|x|x.set(on)); #[cfg(windows)] if on {background_priority(true);} Self(on) } }
-impl Drop for Background { fn drop(&mut self){BACKGROUND.with(|x|x.set(false)); #[cfg(windows)] if self.0 {background_priority(false);} } }
+impl Background { fn enter(on:bool)->Self { #[cfg(windows)] if on {background_priority(true);} Self(on) } }
+impl Drop for Background { fn drop(&mut self){#[cfg(windows)] if self.0 {background_priority(false);} } }
 /// Automatic work is deliberately limited to plain HD projects. File duration/bytes do not
 /// predict the cost of a short decode window; source dimensions and composition do.
 pub fn warm_eligible(p:&Project)->bool {
@@ -353,6 +351,7 @@ impl Stream {
                 }
             };
             let _background = Background::enter(warming);
+            cache.background_decode = warming;
             cache.decode_budget = Some(if warming { (64 << 20).min(stream_decode_budget()) } else { stream_decode_budget() });
             let (w, h, batch_t) = (self.w, self.h, std::time::Instant::now());
             let times: Vec<f64> = seqs.iter().map(|&s| run.frame(s) as f64 / self.fps()).collect();

@@ -30,8 +30,10 @@ fn top_names(ss: &mut Session, q: &str, limit: usize) -> Vec<String> {
 /// ranking change can't quietly lose it while fixing trim_filler_words.
 #[test] fn fit_clip_duration_stays_the_top_hit_for_a_duration_cap_query() {
     let mut ss = Session::new();
-    let names = top_names(&mut ss, "make it shorter than 30 seconds", 8);
-    assert_eq!(names.first().map(String::as_str), Some("fit_clip_duration"), "{names:?}");
+    for query in ["make it shorter than 30 seconds", "shorten this clip duration", "make the clip longer"] {
+        let names = top_names(&mut ss, query, 8);
+        assert_eq!(names.first().map(String::as_str), Some("fit_clip_duration"), "{query}: {names:?}");
+    }
 }
 
 /// The exact phrasing that already worked (KQ4) must keep working.

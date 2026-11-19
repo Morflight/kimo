@@ -43,3 +43,9 @@ Instrumented CI tests use test-profile optimization level 2, retaining debug ass
 Process-lifecycle unit tests use a compiled native child for stdout/stderr, blocked pipes, delayed exit and stdin capture. They keep their existing 100 ms deadlines, two-second cleanup ceilings, exact output and bounded-stderr checks. Reaping is checked through `/proc` on Linux and the Windows process table on Windows, rather than assuming `/proc` exists everywhere.
 
 Export stderr readers, preview warm-up timers and vision fixtures start through the cancellation-token helper. The existing worker-cancellation and raw-thread checks remain unchanged.
+
+Preview background decode policy is carried by its render cache and copied explicitly by snapshots. Linear blend scratch uses the existing three-frame bounded pool, keyed by both width and height, instead of an additional thread-local cache. Regression tests verify independent cache policies, same-area/different-shape buffer reuse, dirty-pixel clearing and identical blends after prior renders; the thread-local inventory limits remain unchanged.
+
+Natural-language tool search treats shorter/shorten/longer/length as duration intent and ignores common connective words. Existing top-hit and filler-word ranking requirements are retained.
+
+The registry golden records eight reviewed contract changes: six shortened tool-summary first sentences with their details retained; the existing load_project restore argument (5cbf5f7); and preview_stream warming (77b1c91). Only those eight registry hashes change. Frame and project golden hashes stay unchanged and remain exact comparisons.

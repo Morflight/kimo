@@ -412,6 +412,23 @@ async def main():
             assert await page.locator('#bin-list .asset').count()==3
             assert not errors,errors
             print('PASS sparse project metadata, missing clip sources, stable labels and case-insensitive media search')
+            await page.evaluate('''async () => {
+              fixture.project.markers=[{id:'named-marker',time:.5,name:'Cut',color:'#ff0000'},{id:'plain-marker',time:1}];
+              fixture.project.tracks=[{id:'flagged',name:'Protected',muted:true,solo:true,locked:true,clips:[
+                {id:'fast',start:0,duration:8,speed:2,source:{type:'media',asset_id:'video'},transition_in:{},effects:[{kind:'glow'},{kind:'blur'}]}
+              ]}];
+              __kimo.T.z=700;await __kimo.loadProject();
+            }''')
+            assert await page.locator('.thead[data-track="flagged"] .on').count()==3
+            assert await page.locator('.track[data-track="flagged"]').evaluate('(e)=>e.classList.contains("muted")&&e.classList.contains("locked")')
+            assert '2×' in await page.inner_text('[data-clip="fast"] .cs')
+            assert await page.inner_text('[data-clip="fast"] .fx')=='fx2'
+            assert await page.locator('[data-clip="fast"] .tr').evaluate('(e)=>e.style.width')=='350px'
+            assert (await page.locator('[data-mk="plain-marker"]').get_attribute('title')).startswith('Marker')
+            await page.locator('[data-mk="named-marker"]').dispatch_event('pointerdown')
+            assert await page.evaluate('__kimo.V.t')==.5
+            assert await page.evaluate('__kimo.P.dur')==4
+            print('PASS marker seeking, track flags, speed-adjusted duration and transition/effect badges')
             await page.close()
             native = await browser.new_page(viewport={'width': 1280, 'height': 800})
             native.set_default_timeout(10000)

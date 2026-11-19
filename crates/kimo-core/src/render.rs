@@ -16,18 +16,18 @@ impl Frames {
     pub fn get(&self, g: usize) -> Option<&[u8]> { let n = self.len(); if n == 0 { return None; } let i = (g.saturating_sub(self.first)/self.step.max(1)).min(n - 1); let buf=if let Some(f)=&self.linear_buf{self.quantized.get_or_init(||f.iter().map(|v|(v.clamp(0.,1.)*255.+0.5) as u8).collect())}else{&self.buf};Some(&buf[i * self.fs..(i + 1) * self.fs]) }
 }
 impl std::ops::Index<usize> for Frames { type Output = [u8]; fn index(&self, i: usize) -> &[u8] { self.get(self.first+i*self.step.max(1)).expect("no decoded frame") } }
-pub struct Cache { pub sample_step:usize, frames: HashMap<String, (String, std::sync::Arc<Frames>)>, /// Code clip frames per clip id: (signature, last slot asked for, slot -> canvas-size RGBA8). See codeclip.rs.
+pub struct Cache { pub(crate) background_decode: bool, pub sample_step:usize, frames: HashMap<String, (String, std::sync::Arc<Frames>)>, /// Code clip frames per clip id: (signature, last slot asked for, slot -> canvas-size RGBA8). See codeclip.rs.
     code: HashMap<String, CodeSlots>, pub size: (u32, u32, f64), /// Export-only static layer cache (project is immutable for the cache's lifetime).
     pub export_mode: bool, proxy_clips: std::collections::BTreeMap<String,String>, /// Decode cache byte budget for this cache (None = the default `decode_cache_limit`); the real-time preview raises it so playback decodes in full windows.
     pub decode_budget: Option<usize>, statics: std::sync::RwLock<HashMap<String, std::sync::Arc<StaticCrop>>> }
 /// Rendered frames of one code clip: (signature, last slot prepared, slot -> canvas-size straight-alpha RGBA8).
 type CodeSlots = (String, usize, std::collections::BTreeMap<usize, std::sync::Arc<Vec<u8>>>);
 pub struct StaticCrop { x0: usize, y0: usize, x1: usize, y1: usize, d: Vec<f32> }
-impl Cache { pub fn new() -> Self { Cache { sample_step:1, frames: HashMap::new(), code: HashMap::new(), size: (0, 0, 0.0), export_mode: false, proxy_clips: Default::default(), decode_budget: None, statics: std::sync::RwLock::new(HashMap::new()) } } pub fn new_export() -> Self { let mut c = Cache::new(); c.export_mode = true; c } pub fn frames_of(&self, id: &str) -> Option<&Frames> { self.frames.get(id).map(|x| x.1.as_ref()) }
+impl Cache { pub fn new() -> Self { Cache { background_decode: false, sample_step:1, frames: HashMap::new(), code: HashMap::new(), size: (0, 0, 0.0), export_mode: false, proxy_clips: Default::default(), decode_budget: None, statics: std::sync::RwLock::new(HashMap::new()) } } pub fn new_export() -> Self { let mut c = Cache::new(); c.export_mode = true; c } pub fn frames_of(&self, id: &str) -> Option<&Frames> { self.frames.get(id).map(|x| x.1.as_ref()) }
     /// A cheap point-in-time copy for overlapping export: shares every decoded frame/code-slot buffer by
     /// Arc (no pixel data is duplicated), so a prefetch thread can decode the next window into its own
     /// `Cache` instance without aliasing the one the current batch's compose threads are reading.
-    pub fn snapshot(&self) -> Cache { Cache { sample_step:self.sample_step, frames: self.frames.clone(), code: self.code.clone(), size: self.size, export_mode: self.export_mode, proxy_clips: self.proxy_clips.clone(), decode_budget: self.decode_budget, statics: std::sync::RwLock::new(self.statics.read().map(|g| g.clone()).unwrap_or_default()) } }
+    pub fn snapshot(&self) -> Cache { Cache { background_decode: self.background_decode, sample_step:self.sample_step, frames: self.frames.clone(), code: self.code.clone(), size: self.size, export_mode: self.export_mode, proxy_clips: self.proxy_clips.clone(), decode_budget: self.decode_budget, statics: std::sync::RwLock::new(self.statics.read().map(|g| g.clone()).unwrap_or_default()) } }
 }
 
 /// Still-image extensions the decoder holds as one looped frame (ffmpeg `-loop 1`). One list, read by
@@ -325,7 +325,7 @@ fn decode_preview_transport(cmd: &mut Command, max: usize, deadline: std::time::
     result
 }
 
-fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Option<(f64, i64)>, via_file: bool, limit: usize, step:usize) -> Result<Frames, String> {
+fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Option<(f64, i64)>, via_file: bool, limit: usize, step:usize, background: bool) -> Result<Frames, String> {
     let (w, h) = (p.width, p.height);
     check_decodable(path)?;
     if path.ends_with(".kimopx") {
@@ -417,16 +417,16 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     let exr_args:Vec<&str>=if path.to_lowercase().ends_with(".exr"){vec!["-apply_trc","linear"]}else{vec![]};
     let vf=if native_fit{format!("setpts=PTS/{},{},trim=start_frame={a_rel}:end_frame={},setpts=PTS-STARTPTS,format={pix}",speed.max(0.01),fps_filter,a_rel+n)}else{vf};
     let mut command=Command::new("ffmpeg");
-    if crate::preview_stream::background_decode() {
+    if background {
         command.args(["-threads","1","-filter_threads","1","-filter_complex_threads","1"]);
         #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); }
     }
     command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-f","rawvideo","-pix_fmt",pix,"-"]);
-    if step>1 || crate::preview_stream::background_decode() { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
+    if step>1 || background { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
         if step>1 {command.args(["-fps_mode","passthrough"]);}
-        if crate::preview_stream::background_decode() {command.args(["-threads:v","1"]);}
+        if background {command.args(["-threads:v","1"]);}
         command.arg("-");
-        #[cfg(windows)] if crate::preview_stream::background_decode() { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); } }
+        #[cfg(windows)] if background { use std::os::windows::process::CommandExt; command.creation_flags(0x00004000); } }
     let mut buf=Vec::new();
     let linear_buf=if native_fit{
         let bytes_per_frame=raw_fs.checked_mul(if float_source{4}else{2}).ok_or("native frame size overflow")?;
@@ -615,16 +615,17 @@ fn prepare_window(p: &Project, cache: &mut Cache, t0: f64, t1: f64, window:usize
         let alias = jobs.iter().position(|j| j.sig == sig && j.start == start && j.count == count && j.ia == ia && j.ib == ib && j.apath == apath);
         jobs.push(DecodeJob { step, c, apath, orig: original_path, start, count, seek_base, sig, ia, ib, selected: selected.is_some(), using_preview_proxy, alias, via_file: preview && analysis });
     }
+    let background = cache.background_decode;
     let run = |j: &DecodeJob| -> Result<(Frames, String, bool), String> {
-        match decode(p, j.c, &j.apath, j.start, j.count, j.seek_base, j.via_file, limit, j.step) {
-            Ok(fr) if j.selected && !fr.covers(j.ia, j.ib) => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
+        match decode(p, j.c, &j.apath, j.start, j.count, j.seek_base, j.via_file, limit, j.step, background) {
+            Ok(fr) if j.selected && !fr.covers(j.ia, j.ib) => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step, background)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
             Ok(fr) => Ok((fr, j.sig.clone(), false)),
-            Err(_) if j.selected => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
+            Err(_) if j.selected => Ok((decode(p, j.c, &j.orig, j.start, j.count, None, j.via_file, limit, j.step, background)?, format!("{}|original-fallback", j.sig), j.using_preview_proxy)),
             Err(e) => Err(e),
         }
     };
     let own = jobs.iter().filter(|j| j.alias.is_none()).count();
-    let mut results: Vec<Option<Result<(Frames, String, bool), String>>> = if own < 2 || crate::preview_stream::background_decode() {
+    let mut results: Vec<Option<Result<(Frames, String, bool), String>>> = if own < 2 || background {
         jobs.iter().map(|j| if j.alias.is_some() { None } else { Some(run(j)) }).collect()
     } else {
         let slots: Vec<std::sync::Mutex<Option<Result<(Frames, String, bool), String>>>> = jobs.iter().map(|_| std::sync::Mutex::new(None)).collect();
@@ -855,11 +856,11 @@ fn transform(src: &Frame, scale: f64, rot_deg: f64, dx: f64, dy: f64) -> Frame {
 thread_local! { static BACKDROP: std::cell::RefCell<Option<std::rc::Rc<Frame>>> = Default::default(); }
 /// Composite of all layers below the clip currently being rendered. Only set while an effect that declares `needs_backdrop` runs; None otherwise.
 pub fn backdrop() -> Option<std::rc::Rc<Frame>> { BACKDROP.with(|b| b.borrow().clone()) }
-thread_local! { static POOL: std::cell::RefCell<Vec<(Vec<f32>, (usize, usize, usize, usize))>> = Default::default(); }
+thread_local! { static POOL: std::cell::RefCell<Vec<(Frame, (usize, usize, usize, usize))>> = Default::default(); }
 /// Reusable layer buffers: a returned buffer is zero except inside its dirty rect, which is cleared on reuse (avoids a fresh 14 MB page-faulted allocation per layer).
-fn pool_take(w: usize, h: usize) -> Frame { let n = w * h * 4; let hit = POOL.with(|p| { let mut p = p.borrow_mut(); p.iter().position(|(v, _)| v.len() == n).map(|i| p.swap_remove(i)) });
-    match hit { Some((mut v, (x0, y0, x1, y1))) => { for y in y0..=y1.min(h - 1) { v[(y * w + x0) * 4..(y * w + x1.min(w - 1) + 1) * 4].fill(0.0); } Frame { w, h, d: v } }, None => Frame::new(w, h) } }
-fn pool_give(f: Frame, rect: (usize, usize, usize, usize)) { POOL.with(|p| { let mut p = p.borrow_mut(); if p.len() < 3 { p.push((f.d, rect)); } }); }
+fn pool_take(w: usize, h: usize) -> Frame { let hit = POOL.with(|p| { let mut p = p.borrow_mut(); p.iter().position(|(f, _)| f.w == w && f.h == h).map(|i| p.swap_remove(i)) });
+    match hit { Some((mut f, (x0, y0, x1, y1))) => { for y in y0..=y1.min(h - 1) { f.d[(y * w + x0) * 4..(y * w + x1.min(w - 1) + 1) * 4].fill(0.0); } f }, None => Frame::new(w, h) } }
+fn pool_give(f: Frame, rect: (usize, usize, usize, usize)) { POOL.with(|p| { let mut p = p.borrow_mut(); if p.len() < 3 { p.push((f, rect)); } }); }
 thread_local! { static FAST_NS: std::cell::Cell<bool> = Default::default(); }
 thread_local! { static LAST_RECT: std::cell::Cell<Option<(usize, usize, usize, usize)>> = Default::default(); }
 fn transform_bb(src: &Frame, bb: Option<(usize, usize, usize, usize)>, scale: f64, rot_deg: f64, dx: f64, dy: f64) -> Frame {
@@ -986,13 +987,6 @@ fn wants_linear_blend(src: &Source, linear_blend: bool, transitioning: bool) -> 
 /// effects (auto_grade, match_shot_look) and encode are completely unaffected, gamma space throughout.
 fn blend_opt(dst: &mut Frame, src: &Frame, opacity: f32, mode: &str, mask: Option<&dyn Fn(usize, usize) -> f32>, linear: bool) { blend_region_opt(dst, src, opacity, mode, mask, None, linear) }
 
-thread_local! {
-    /// Per-thread scratch for blend_region_opt's linearized src copy -- reused across the many blend calls
-    /// one worker thread makes within an export batch (std::thread::scope respawns threads per BATCH, not
-    /// per frame, so this still saves most of the repeated 720p/1080p-sized allocations within a batch).
-    static LINEAR_SRC_SCRATCH: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
-}
-
 /// Tight row AND column bounds of src's non-transparent pixels within [ry0,ry1) -- the same margin-skip
 /// blend_region already does per row, computed once up front so blend_region_opt only linearizes/delinearizes
 /// the pixels actually blended, not a layer's full (often mostly-transparent) bounding box.
@@ -1026,9 +1020,9 @@ fn blend_region_opt(dst: &mut Frame, src: &Frame, opacity: f32, mode: &str, mask
     // avoids the LUT's small round-trip quantization noise on pixels a copy or a no-op would've left exact.
     let m_id = match mode { "add" => 1, "multiply" => 2, "screen" => 3, "overlay" => 4, m => BLEND_MODES.iter().position(|x| *x == m).filter(|&k| k >= 5).unwrap_or(0) };
     let normal_copy = m_id == 0;
-    LINEAR_SRC_SCRATCH.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.len() != src.d.len() { buf.clear(); buf.resize(src.d.len(), 0.0); }
+    {
+        // Borrow an owned frame from the bounded layer pool; no additional thread-local cache.
+        let mut buf = pool_take(src.w, src.h).d;
         for y in top..bot { let row = y * w * 4; buf[row + left * 4..row + right * 4].copy_from_slice(&src.d[row + left * 4..row + right * 4]); }
         for y in top..bot {
             let row = y * w * 4;
@@ -1042,9 +1036,9 @@ fn blend_region_opt(dst: &mut Frame, src: &Frame, opacity: f32, mode: &str, mask
         }
         // Swap the scratch buffer into a throwaway Frame for blend_region's &Frame signature, then take the
         // Vec back out so the next call on this thread reuses the same allocation instead of a fresh one.
-        let src_lin = Frame { w: src.w, h: src.h, d: std::mem::take(&mut *buf) };
+        let src_lin = Frame { w: src.w, h: src.h, d: std::mem::take(&mut buf) };
         blend_region(dst, &src_lin, opacity, mode, mask, Some((left, top, right.saturating_sub(1), bot.saturating_sub(1))));
-        *buf = src_lin.d;
+        buf = src_lin.d;
         for y in top..bot {
             let row = y * w * 4;
             for x in left..right {
@@ -1054,7 +1048,8 @@ fn blend_region_opt(dst: &mut Frame, src: &Frame, opacity: f32, mode: &str, mask
                 let d = &mut dst.d[i..i + 4]; d[0] = linear_to_srgb(d[0]); d[1] = linear_to_srgb(d[1]); d[2] = linear_to_srgb(d[2]);
             }
         }
-    });
+        pool_give(Frame { w: src.w, h: src.h, d: buf }, (left, top, right - 1, bot - 1));
+    }
 }
 /// `region` (x0,y0,x1,y1 inclusive) must contain every pixel of `src` with alpha > 0; pixels outside are skipped without scanning (bit-identical to a full scan).
 fn blend_region(dst: &mut Frame, src: &Frame, opacity: f32, mode: &str, mask: Option<&dyn Fn(usize, usize) -> f32>, region: Option<(usize, usize, usize, usize)>) {
@@ -1905,5 +1900,57 @@ mod prng_overflow_tests {
         assert_eq!(a.d, b.d);
         assert!(a.d.iter().all(|v| v.is_finite()));
         assert!(a.d.chunks_exact(4).any(|p| p[3] > 0.0));
+    }
+}
+
+#[cfg(test)]
+mod render_state_contract_tests {
+    use super::*;
+
+    #[test]
+    fn background_decode_policy_belongs_to_each_cache_and_its_snapshot() {
+        let mut warm = Cache::new();
+        warm.background_decode = true;
+        assert!(warm.snapshot().background_decode);
+        assert!(!Cache::new().background_decode);
+        assert!(!Cache::new_export().background_decode);
+        warm.background_decode = false;
+        assert!(!warm.snapshot().background_decode);
+    }
+
+    #[test]
+    fn pooled_frames_keep_dimensions_and_clear_every_dirty_pixel() {
+        POOL.with(|p| p.borrow_mut().clear());
+        pool_give(Frame { w: 2, h: 8, d: vec![1.0; 64] }, (0, 0, 1, 7));
+        let other = pool_take(8, 2);
+        assert_eq!((other.w, other.h), (8, 2));
+        assert!(other.d.iter().all(|v| *v == 0.0));
+        let reused = pool_take(2, 8);
+        assert_eq!((reused.w, reused.h), (2, 8));
+        assert!(reused.d.iter().all(|v| *v == 0.0));
+        for _ in 0..5 { pool_give(Frame::new(2, 2), (0, 0, 1, 1)); }
+        POOL.with(|p| assert_eq!(p.borrow().len(), 3));
+        POOL.with(|p| p.borrow_mut().clear());
+    }
+
+    #[test]
+    fn linear_blends_are_identical_after_other_sizes_and_dirty_pool_reuse() {
+        for (w, h) in [(2, 8), (8, 2), (4, 4)] {
+            for mode in ["normal", "add", "multiply", "screen", "overlay"] {
+                let source = Frame { w, h, d: (0..w*h).flat_map(|i| [0.2, 0.6, 0.8, if i % 3 == 0 { 0.0 } else { 0.5 }]).collect() };
+                let base = || Frame { w, h, d: (0..w*h).flat_map(|_| [0.3, 0.4, 0.2, 1.0]).collect() };
+                POOL.with(|p| p.borrow_mut().clear());
+                let mut expected = base();
+                blend_opt(&mut expected, &source, 0.75, mode, None, true);
+                POOL.with(|p| p.borrow_mut().clear());
+                pool_give(Frame { w: h, h: w, d: vec![1.0; w*h*4] }, (0, 0, h-1, w-1));
+                pool_give(Frame { w, h, d: vec![1.0; w*h*4] }, (0, 0, w-1, h-1));
+                let mut actual = base();
+                blend_opt(&mut actual, &source, 0.75, mode, None, true);
+                assert_eq!(actual.d, expected.d, "{w}x{h} {mode}");
+                assert!(actual.d.iter().all(|v| v.is_finite()));
+            }
+        }
+        POOL.with(|p| p.borrow_mut().clear());
     }
 }
