@@ -129,3 +129,5 @@ The stop regression also injects an OS kill refusal, checks that the same child 
 Discovery/model-cache/sign-in tests run in isolated child processes with fixture CLI overrides and synthetic home/config directories. They test retry after an empty model catalog, caching after success, authentication-status fallbacks and supported configuration locations. Credential fixtures intentionally contain invalid documents: only file existence is checked.
 
 Agent search layout policy now receives explicit platform, home and application-data inputs. Metadata fixtures cover version/build directories, bundled Claude/Codex/Antigravity locations and native executable-extension searches while runtime discovery continues to use the real platform inputs.
+
+Desktop launcher tests inspect the unchanged Windows/macOS/Linux command policies, quoting and terminal priority without opening user applications. The executor starts and reaps only its compiled fixture. Invalid URL schemes and interior-NUL arguments must fail before a desktop launch. Process tests also enforce timeout cancellation and streamed-reply fallback when providers omit a final message.

@@ -273,53 +273,84 @@ fn run_register(bin: &Path, args: &[String]) -> Result<String, String> {
     if out.status.success() { Ok(if text.is_empty() { "Added kimo.".into() } else { text }) } else { Err(if text.is_empty() { format!("exited with {}", out.status) } else { text }) }
 }
 
+/// A launch request, kept separate from process creation so platform quoting can be checked without opening user apps.
+struct DesktopCommand {
+    program: PathBuf,
+    args: Vec<std::ffi::OsString>,
+    raw: Option<String>,
+    quiet: bool,
+}
+
+fn desktop_command(program: &str, args: &[&str]) -> DesktopCommand {
+    DesktopCommand { program: program.into(), args: args.iter().map(|arg| std::ffi::OsString::from(*arg)).collect(), raw: None, quiet: false }
+}
+
+fn spawn_desktop_command(plan: DesktopCommand) -> Result<Child, String> {
+    let mut command = Command::new(plan.program);
+    command.args(plan.args);
+    if plan.quiet { quiet(&mut command); }
+    #[cfg(windows)]
+    if let Some(raw) = plan.raw { use std::os::windows::process::CommandExt; command.raw_arg(raw); }
+    #[cfg(not(windows))]
+    let _ = plan.raw;
+    command.spawn().map_err(|error| error.to_string())
+}
+
+fn terminal_command_for(os: &str, cmdline: &str, find: impl Fn(&str) -> Option<PathBuf>) -> Result<DesktopCommand, String> {
+    match os {
+        "windows" => {
+            let mut plan = desktop_command("cmd", &[]);
+            plan.raw = Some(format!("/c start \"kimo\" cmd /k \"{cmdline}\""));
+            Ok(plan)
+        }
+        "macos" => {
+            let script = format!("tell application \"Terminal\" to do script \"{}\"\ntell application \"Terminal\" to activate", cmdline.replace('\\', "\\\\").replace('"', "\\\""));
+            Ok(desktop_command("osascript", &["-e", &script]))
+        }
+        _ => {
+            let hold = format!("{cmdline}; echo; read -p 'Press Enter to close'");
+            for (terminal, pre) in [("x-terminal-emulator", vec!["-e"]), ("gnome-terminal", vec!["--"]), ("konsole", vec!["-e"]), ("xfce4-terminal", vec!["-x"]), ("kitty", vec![]), ("alacritty", vec!["-e"]), ("xterm", vec!["-e"])] {
+                if find(terminal).is_some() {
+                    let mut plan = desktop_command(terminal, &pre);
+                    plan.args.extend(["sh", "-c", &hold].map(std::ffi::OsString::from));
+                    return Ok(plan);
+                }
+            }
+            Err("No terminal app found. Run this yourself: ".to_string() + cmdline)
+        }
+    }
+}
+
 /// Open a visible terminal running `cmdline` (sign in / install). The user sees and drives it.
 pub fn open_terminal(cmdline: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        // `start` opens a new console window; /k keeps it open so the user can read the result. cmd.exe does its own
-        // quote parsing, so the line is passed raw, wrapped in one extra pair of quotes that /k strips.
-        use std::os::windows::process::CommandExt;
-        Command::new("cmd").raw_arg(format!("/c start \"kimo\" cmd /k \"{cmdline}\"")).spawn().map(|_| ()).map_err(|e| e.to_string())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!("tell application \"Terminal\" to do script \"{}\"\ntell application \"Terminal\" to activate", cmdline.replace('\\', "\\\\").replace('"', "\\\""));
-        Command::new("osascript").args(["-e", &script]).spawn().map(|_| ()).map_err(|e| e.to_string())
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let hold = format!("{cmdline}; echo; read -p 'Press Enter to close'");
-        for (t, pre) in [("x-terminal-emulator", vec!["-e"]), ("gnome-terminal", vec!["--"]), ("konsole", vec!["-e"]), ("xfce4-terminal", vec!["-x"]), ("kitty", vec![]), ("alacritty", vec!["-e"]), ("xterm", vec!["-e"])] {
-            if which(t).is_some() {
-                let mut c = Command::new(t);
-                c.args(pre).args(["sh", "-c", &hold]);
-                return c.spawn().map(|_| ()).map_err(|e| e.to_string());
-            }
-        }
-        Err("No terminal app found. Run this yourself: ".to_string() + cmdline)
-    }
+    terminal_command_for(std::env::consts::OS, cmdline, which).and_then(spawn_desktop_command).map(drop)
+}
+
+fn url_command_for(os: &str, url: &str) -> Result<DesktopCommand, String> {
+    if !url.starts_with("https://") { return Err("only https links".into()); }
+    Ok(match os {
+        "windows" => { let mut plan = desktop_command("rundll32", &["url.dll,FileProtocolHandler", url]); plan.quiet = true; plan }
+        "macos" => desktop_command("open", &[url]),
+        _ => desktop_command("xdg-open", &[url]),
+    })
 }
 
 /// Open an https URL in the user's browser.
 pub fn open_url(url: &str) -> Result<(), String> {
-    if !url.starts_with("https://") { return Err("only https links".into()); }
-    #[cfg(windows)]
-    { let mut c = Command::new("rundll32"); quiet(&mut c).args(["url.dll,FileProtocolHandler", url]).spawn().map(|_| ()).map_err(|e| e.to_string()) }
-    #[cfg(target_os = "macos")]
-    { Command::new("open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string()) }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    { Command::new("xdg-open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string()) }
+    url_command_for(std::env::consts::OS, url).and_then(spawn_desktop_command).map(drop)
+}
+
+fn reveal_command_for(os: &str, path: &Path) -> DesktopCommand {
+    match os {
+        "windows" => { let mut plan = desktop_command("explorer", &[]); plan.raw = Some(format!("/select,\"{}\"", path.display())); plan }
+        "macos" => { let mut plan = desktop_command("open", &["-R"]); plan.args.push(path.as_os_str().to_owned()); plan }
+        _ => { let mut plan = desktop_command("xdg-open", &[]); plan.args.push(path.parent().unwrap_or(path).as_os_str().to_owned()); plan }
+    }
 }
 
 /// Show a file in the system file manager.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    #[cfg(windows)]
-    { use std::os::windows::process::CommandExt; Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn().map(|_| ()).map_err(|e| e.to_string()) }
-    #[cfg(target_os = "macos")]
-    { Command::new("open").arg("-R").arg(path).spawn().map(|_| ()).map_err(|e| e.to_string()) }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    { Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn().map(|_| ()).map_err(|e| e.to_string()) }
+    spawn_desktop_command(reveal_command_for(std::env::consts::OS, path)).map(drop)
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -917,6 +948,41 @@ warning: something on stderr"#);
     }
 
     #[test]
+    fn desktop_launch_plans_preserve_arguments_and_platform_policy() {
+        let args=|plan:&DesktopCommand| plan.args.iter().map(|x| x.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let windows=terminal_command_for("windows","agent login", |_|None).unwrap();
+        assert_eq!(windows.program,Path::new("cmd"));assert!(windows.args.is_empty());
+        assert_eq!(windows.raw.as_deref(),Some("/c start \"kimo\" cmd /k \"agent login\""));assert!(!windows.quiet);
+        let mac=terminal_command_for("macos",r#"agent "a\b""#, |_|None).unwrap();
+        assert_eq!(mac.program,Path::new("osascript"));
+        assert_eq!(args(&mac),vec!["-e",r#"tell application "Terminal" to do script "agent \"a\\b\""
+tell application "Terminal" to activate"#]);
+        for (name,flag) in [("x-terminal-emulator",Some("-e")),("gnome-terminal",Some("--")),("konsole",Some("-e")),("xfce4-terminal",Some("-x")),("kitty",None),("alacritty",Some("-e")),("xterm",Some("-e"))] {
+            let plan=terminal_command_for("linux","agent login",|candidate| (candidate==name).then(||PathBuf::from(name))).unwrap();
+            assert_eq!(plan.program,Path::new(name));
+            let mut expected:Vec<&str>=flag.into_iter().collect();expected.extend(["sh","-c","agent login; echo; read -p 'Press Enter to close'"]);
+            assert_eq!(args(&plan),expected);assert!(plan.raw.is_none());assert!(!plan.quiet);
+        }
+        assert_eq!(terminal_command_for("linux","agent",|_|Some("present".into())).unwrap().program,Path::new("x-terminal-emulator"));
+        assert_eq!(terminal_command_for("linux","agent",|_|None).err().unwrap(),"No terminal app found. Run this yourself: agent");
+        for (os,program) in [("windows","rundll32"),("macos","open"),("linux","xdg-open")] {
+            let plan=url_command_for(os,"https://example.invalid/a b").unwrap();
+            assert_eq!(plan.program,Path::new(program));assert_eq!(plan.quiet,os=="windows");assert!(plan.raw.is_none());
+            let expected=if os=="windows" {vec!["url.dll,FileProtocolHandler","https://example.invalid/a b"]} else {vec!["https://example.invalid/a b"]};assert_eq!(args(&plan),expected);
+        }
+        assert_eq!(open_url("http://example.invalid"),Err("only https links".into()));
+        let path=Path::new("folder with spaces/é.kimo");
+        let win=reveal_command_for("windows",path);assert_eq!(win.program,Path::new("explorer"));assert_eq!(win.raw,Some(format!("/select,\"{}\"",path.display())));assert!(win.args.is_empty());
+        let mac=reveal_command_for("macos",path);assert_eq!(mac.program,Path::new("open"));assert_eq!(mac.args,vec![std::ffi::OsString::from("-R"),path.as_os_str().to_owned()]);
+        let linux=reveal_command_for("linux",path);assert_eq!(linux.program,Path::new("xdg-open"));assert_eq!(linux.args,vec![path.parent().unwrap().as_os_str().to_owned()]);
+        assert_eq!(reveal_command_for("linux",Path::new("")).args,vec![std::ffi::OsString::new()]);
+        // Interior NUL is rejected before any desktop application can be launched.
+        assert!(open_url("https://example.invalid/\0").is_err());
+        assert!(open_terminal("agent\0").is_err());
+        assert!(reveal(Path::new("bad\0parent/file")).is_err());
+    }
+
+    #[test]
     fn real_child_streams_preserve_prompts_results_errors_and_stop() {
         let dir=std::env::temp_dir().join(format!("kimo-cli-process-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
@@ -927,7 +993,7 @@ fn main() {
     let root=std::env::current_exe().unwrap().parent().unwrap().to_owned();
     let args:Vec<_>=std::env::args().skip(1).collect();
     std::fs::write(root.join("argv"),args.join("\0")).unwrap();
-    let mut input=String::new();std::io::stdin().read_to_string(&mut input).unwrap();
+    let mut input=String::new();if !root.join("detached").exists(){std::io::stdin().read_to_string(&mut input).unwrap();}
     std::fs::write(root.join("stdin"),input).unwrap();
     std::io::stdout().write_all(&std::fs::read(root.join("stdout")).unwrap()).unwrap();std::io::stdout().flush().unwrap();
     std::io::stderr().write_all(&std::fs::read(root.join("stderr")).unwrap()).unwrap();
@@ -937,6 +1003,19 @@ fn main() {
 "#).unwrap();
         let built=Command::new("rustc").args(["--edition=2021","--crate-name","fixture"]).arg(&source).arg("-o").arg(&bin).output().unwrap();
         assert!(built.status.success(),"{}",String::from_utf8_lossy(&built.stderr));
+        std::fs::write(dir.join("detached"),"").unwrap();
+        for name in ["stdout","stderr"] {std::fs::write(dir.join(name),"").unwrap();}
+        std::fs::write(dir.join("exit"),"0").unwrap();
+        for quiet in [false,true] {
+            let plan=DesktopCommand{program:bin.clone(),args:vec!["space argument".into(),"é".into()],raw:None,quiet};
+            assert!(spawn_desktop_command(plan).unwrap().wait().unwrap().success());
+            assert_eq!(std::fs::read_to_string(dir.join("argv")).unwrap(),"space argument\0é");
+        }
+        assert!(spawn_desktop_command(DesktopCommand{program:dir.join("absent"),args:vec![],raw:None,quiet:false}).is_err());
+        std::fs::remove_file(dir.join("detached")).unwrap();
+        std::fs::write(dir.join("wait"),"").unwrap();
+        assert!(run_short(&bin,&[],0).is_none(),"expired subprocess budget must kill and reap the fixture");
+        std::fs::remove_file(dir.join("wait")).unwrap();
         let launch=KimoLaunch{command:"fixture-kimo".into(),env:vec![("FIXTURE".into(),"one two".into())]};
         let slot:Slot=Arc::new(Mutex::new(None));
         let cases=[
@@ -955,6 +1034,16 @@ fn main() {
             assert_eq!(std::fs::read_to_string(dir.join("stdin")).unwrap(),expected.1.unwrap_or_default());
             assert_eq!(std::fs::read_to_string(dir.join("argv")).unwrap().split('\0').collect::<Vec<_>>(),expected.0);
             assert!(slot.lock().unwrap().is_none());assert!(!stop(&slot));
+        }
+        for done in [false,true] {
+            let mut events=vec![json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"streamed fallback"}}})];
+            if done {events.push(json!({"type":"result","subtype":"success","result":""}));}
+            std::fs::write(dir.join("stdout"),events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n").unwrap();
+            std::fs::write(dir.join("stderr"),"diagnostic\n".repeat(1000)).unwrap();
+            let fallback=Turn{kind:Kind::ClaudeCode,bin:&bin,prompt:"fixture",session:None,model:None,effort:None,launch:&launch,workdir:&dir};
+            let mut got=vec![];let result=run(&fallback,&slot,&mut |e|got.push(e));
+            assert_eq!(result.reply,"streamed fallback");assert!(result.error.is_none());
+            assert!(matches!(&got[0],Ev::Delta{text} if text=="streamed fallback"));
         }
         let turn=Turn{kind:Kind::Codex,bin:&bin,prompt:"fixture",session:Some("previous"),model:None,effort:None,launch:&launch,workdir:&dir};
         for (stderr,expected) in [("Please login","not signed in"),("quota exceeded","usage limit"),("fixture failure","fixture failure")] {
