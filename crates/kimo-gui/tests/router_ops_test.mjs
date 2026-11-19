@@ -425,3 +425,15 @@ assert.deepEqual(plain(defaultsTimeline.tracks[1].clips.map(c=>[c.s,c.e])),[[2,4
 assert.equal(defaultsCall('loop_clip',{clip_id:'two'}),true);
 assert.deepEqual(plain(defaultsTimeline.tracks[1].clips.map(c=>[c.id,c.s,c.e])),[['one',2,4],['two',4,5],['two_loop1',5,6]]);
 console.log('PASS overwrite trimming, sparse time-key state, interpolation retention and default clip distribution');
+
+// Incomplete spectator diffs must not expose unresolved engine identifiers or invent values.
+const unnamedTimeline={liveTL:{tracks:[{id:'t1',label:'t1',clips:[{id:'c1',label:'c1'}]},{id:'t2',clips:[{id:'c2'}]}]}};
+assert.equal(changeRows(unnamedTimeline,{changed:{clips_added:[{clip_id:'c1'},{clip_id:'c2'}],tracks_added:['t1','t2'],clips_moved:[{clip_id:'c1',from:'t1',to:'t2'}]}}),null);
+assert.deepEqual(changeRows({}, {changed:{clip:{'props.keys':[[{t:1,v:3}],[{t:1,v:3},{v:4}]],'effects.params':[{},{}]}}}),null);
+assert.deepEqual(changeRows({}, {changed:{clip:{'params':[[1,2],[3,4]],'effects.kind':['old','new'],'source.in_point':[1,2]}}}),[
+ {k:'Params',from:'1, 2',v:'3, 4'},{k:'Kind',from:'old',v:'new'},{k:'Source in point',from:'1s',v:'2s'}]);
+assert.equal(changeRows({}, {s:4,e:8,changed:{clip:{start:['invalid',4],duration:['invalid',4]}}}),null);
+assert.deepEqual(changeRows({}, {s:4,e:8,changed:{clip:{duration:[2,4]}}}),[{k:'Out',from:'6s',v:'8s'}]);
+assert.deepEqual(changeRows({}, {changed:'invalid',param:'opacity',from:.2,to:.5}),[{k:'Opacity',from:'20%',v:'50%'}]);
+assert.equal(changeRows({}, {param:'opacity',from:.2}),null);
+console.log('PASS incomplete diffs hide unresolved IDs, preserve unchanged keys and format source timing');
