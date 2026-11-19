@@ -83,8 +83,8 @@ fn set_ref_round_trips_every_locator_and_rejects_unknown() {
 fn resolve_path_rules() {
     let d = std::path::Path::new("/proj/dir");
     let r = resolve_path(Some(d), "/abs/a.mp4"); assert_eq!((r.path.to_str().unwrap(), r.how), ("/abs/a.mp4", How::Abs));
-    let r = resolve_path(Some(d), "media/a.mp4"); assert_eq!((r.path.to_str().unwrap(), r.how), ("/proj/dir/media/a.mp4", How::Rel));
-    let r = resolve_path(Some(d), "../x/a.mp4"); assert_eq!(r.path.to_str().unwrap(), "/proj/dir/../x/a.mp4");
+    let r = resolve_path(Some(d), "media/a.mp4"); assert_eq!((r.path, r.how), (d.join("media/a.mp4"), How::Rel));
+    let r = resolve_path(Some(d), "../x/a.mp4"); assert_eq!(r.path, d.join("../x/a.mp4"));
     let r = resolve_path(None, "a.mp4"); assert_eq!((r.path.to_str().unwrap(), r.how), ("a.mp4", How::Rel));
     for w in ["C:\\Users\\me\\a.mp4", "media\\a.mp4", "D:/x/a.mp4"] { let r = resolve_path(Some(d), w); assert_eq!((r.path.to_str().unwrap(), r.how), (w, How::WindowsStyle)); }
     assert_eq!(asset_kind("x.WAV"), RefKind::Audio); assert_eq!(asset_kind("x.exr"), RefKind::Image); assert_eq!(asset_kind("x.mkv"), RefKind::Media);

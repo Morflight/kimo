@@ -986,7 +986,7 @@ async function sendAgent(text) {
   addMsg('user', esc(text));
   const turn = ++S.turn;
   TURN.el = addMsg('agent', `<div class="who"><span class="alogo ${agent}" style="width:18px;height:18px;border-radius:5px;font-size:9px">${agent === 'claude-code' ? 'C' : agent === 'codex' ? '◎' : agent === 'antigravity' ? 'A' : '·'}</span>${esc(actorName(agent))}<span class="mono" id="turn-clock"></span></div><div class="blocks"></div>`);
-  TURN.blocks = TURN.el.querySelector('.blocks'); TURN.steps = new Map(); TURN.started = performance.now(); TURN.agent = agent; TURN.status = null; TURN.text = '';
+  TURN.blocks = TURN.el.querySelector('.blocks'); TURN.steps = new Map(); TURN.started = performance.now(); TURN.agent = agent; TURN.status = null; TURN.text = ''; TURN.meta = ''; TURN.err = null;
   setStatus('Starting…');
   setBusy(true);
   askStatus(`${actorName(agent)} is working…`);
@@ -1087,6 +1087,7 @@ $('#askbar').onsubmit = e => { e.preventDefault(); const v = $('#ask-in').value;
 $('#agent-new').onclick = async () => {
   if (S.busy) await B.invoke('agent_stop');
   await B.invoke('agent_reset'); S.turn++;
+  setStatus(null); TURN.el = null; setBusy(false); askStatus('');
   $('#msgs').innerHTML = '<div class="msg agent hello" id="chat-hello"><b>New conversation.</b> Your project stays as it is; the agent starts fresh.</div>';
 };
 

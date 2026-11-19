@@ -150,8 +150,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path $buildTarget | Out-Null
           "CARGO_TARGET_DIR=$buildTarget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host 'Build target' $buildTarget 'free GiB' ([math]::Round($buildDrive.Free / 1GB, 1))
-      - if: runner.os == 'Windows'
-        run: choco install ffmpeg -y --no-progress
+      - name: Install the full Windows FFmpeg build required by export tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg-full -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg full installation failed' }
+          $package = Join-Path $env:ChocolateyInstall 'lib/ffmpeg-full'
+          $ffmpegBinary = Get-ChildItem -Path $package -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (-not $ffmpegBinary) { throw 'FFmpeg full executable was not installed' }
+          $ffmpegDirectory = $ffmpegBinary.Directory.FullName
+          $ffmpegDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $encoders = & $ffmpegBinary.FullName -hide_banner -encoders 2>&1
+          if ($LASTEXITCODE -ne 0 -or -not ($encoders -match '\blibsvtav1\b')) { throw 'The full FFmpeg build must provide libsvtav1' }
+          & (Join-Path $ffmpegDirectory 'ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'The matching ffprobe executable is required' }
       - shell: bash
         run: |
           set -euo pipefail

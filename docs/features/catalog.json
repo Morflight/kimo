@@ -28,7 +28,9 @@
         "crates/kimo-core/tests/webm_probe.rs",
         "crates/kimo-core/tests/readme_count.rs",
         "crates/kimo-core/tests/search_tools.rs",
-        "crates/kimo-core/tests/thread_hygiene.rs"
+        "crates/kimo-core/tests/thread_hygiene.rs",
+        "crates/kimo-core/tests/export_job_errors.rs",
+        "crates/kimo-core/tests/error_table.rs"
       ],
       "sources": [
         "crates/kimo-core/src/analysis_proxy.rs",
@@ -479,7 +481,8 @@
       "id": "desktop",
       "status": "legacy-unverified",
       "docs": [
-        "docs/FORK.md"
+        "docs/FORK.md",
+        "docs/features/native-test-environment.md"
       ],
       "tests": [
         "crates/kimo-gui/tests/playback_delivery_test.mjs",

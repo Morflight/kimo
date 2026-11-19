@@ -46,7 +46,7 @@ async def main():
         pg.on('pageerror', lambda e: errors.append(str(e)))
         await pg.route('**/*', lambda r: r.continue_() if r.request.url.startswith('http://127.0.0.1') else r.abort())
         await pg.goto(base); await pg.wait_for_selector('body[data-ready="1"]')
-        await pg.evaluate(STUB, [PROJECT, JOBS])
+        await pg.evaluate(STUB, [PROJECT, {**JOBS, 'jobs': [*JOBS['jobs'], {'state':'checking'}]}])
         await pg.evaluate("window.__mock.emit('project-changed', {actor: 'you', action: 'load_project'})")
         await pg.wait_for_selector('.asset[data-id="asset1"]', state='attached')
         badge = '.asset[data-id="asset1"] .px'
@@ -81,6 +81,38 @@ async def main():
         check(await pg.query_selector('.asset[data-id="asset2"] .px') is None, 'light media (skipped) shows no badge')
         await pg.evaluate("window.__mock.emit('engine-event', {type: 'proxy', asset_ids: ['asset2'], path: 'C:/media/small.mp4', state: 'unsupported', progress: 0, reasons: ['long_gop'], note: 'no edit proxy: variable frame rate'})")
         check((await pg.text_content('.asset[data-id="asset2"] .px')).strip() == 'Original', 'unsupported shows Original')
+        cases = [
+            ({'state':'ready','reasons':[],'note':'Owned cache verified'}, 'Proxy', 'Owned cache verified.'),
+            ({'state':'building','stage':'analysis','progress':0}, 'Proxy 0%', 'analysis copy'),
+            ({'state':'unsupported'}, 'Original', 'no proxy for this file'),
+            ({'state':'failed'}, 'Proxy failed', 'The proxy could not be built.'),
+            ({'state':'failed','error':'owned decode refusal'}, 'Proxy failed', 'owned decode refusal'),
+            ({'state':'queued','reasons':['long','forced','future reason']}, 'Proxy queued', 'long file, always on, future reason'),
+            ({'state':'future-state','reasons':[]}, '', 'Waiting to build a lighter copy.'),
+        ]
+        for fields, text, tooltip in cases:
+            job={'type':'proxy','asset_ids':['asset1'],'path':SRC,**fields}
+            await pg.evaluate('(job)=>window.__mock.emit("engine-event",job)',job)
+            check((await pg.text_content(badge)).strip()==text, f'{fields["state"]}: exact badge text')
+            check(tooltip in await pg.get_attribute(badge,'title'), f'{fields["state"]}: diagnostic tooltip')
+        for state in ['queued','checking']:
+            await pg.evaluate('(job)=>window.__mock.emit("engine-event",job)',{'type':'proxy','asset_ids':['asset1'],'path':SRC,'state':state})
+            check(await pg.query_selector(badge) is None, f'{state} without reasons stays unbadged')
+        await pg.click('#wel-skip')
+        await pg.click('[data-tab="edit"]')
+        await pg.fill('#bin-q','not-an-owned-asset')
+        await pg.evaluate('(job)=>window.__mock.emit("engine-event",job)',{'type':'proxy','asset_ids':['asset1'],'path':SRC,'state':'ready','reasons':[]})
+        check(await pg.query_selector(badge) is None,'hidden asset receives state without creating detached badge markup')
+        await pg.fill('#bin-q','')
+        check(await pg.get_attribute(badge,'data-state')=='ready','revealing the asset paints its newest state')
+        await pg.evaluate('''() => {
+          window.__mock.emit('engine-event',{type:'proxy',state:'failed'});
+          window.__mock.emit('engine-event',{type:'proxy',asset_ids:['asset1'],state:'failed'});
+          __kimo.P.assets.find(a=>a.id==='asset2').path=null;
+          window.__mock.emit('engine-event',{type:'proxy',asset_ids:['asset2'],path:null,state:'failed'});
+        }''')
+        check(await pg.get_attribute(badge,'data-state')=='ready','missing paths and asset IDs cannot overwrite a known proxy')
+        check(await pg.get_attribute('.asset[data-id="asset2"] .px','data-state')=='unsupported','missing asset paths cannot match missing event paths')
         await b.close()
     srv.shutdown()
     check(not errors, f'no page errors {errors}')

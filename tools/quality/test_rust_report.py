@@ -44,9 +44,9 @@ class RustReport(unittest.TestCase):
             responses=[]
             def invoke(argv,**kwargs):
                 if argv[0]=='cargo':return subprocess.CompletedProcess(argv,1,'',error)
-                self.assertEqual(argv[0],'llvm-cov.exe');self.assertEqual(len(argv),2)
-                path=Path(argv[1][1:]);responses.append(path)
-                self.assertEqual(shlex.split(path.read_text()),command[1:])
+                self.assertEqual(argv[:2],['llvm-cov.exe','export']);self.assertEqual(len(argv),3)
+                path=Path(argv[2][1:]);responses.append(path)
+                self.assertEqual(shlex.split(path.read_text()),command[2:])
                 kwargs['stdout'].write(b'{"data":[],"fixture":"all objects retained"}')
                 return subprocess.CompletedProcess(argv,status)
             with tempfile.TemporaryDirectory() as directory, patch.object(report.subprocess,'run',side_effect=invoke), contextlib.redirect_stderr(io.StringIO()) as err:

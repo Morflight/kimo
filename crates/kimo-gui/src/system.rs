@@ -56,8 +56,8 @@ pub fn models_dir() -> Option<PathBuf> {
 /// Pick the best model file in a folder.
 pub fn model_in(dir: &Path) -> Option<PathBuf> { MODELS.iter().map(|m| dir.join(m)).find(|p| p.is_file()) }
 
-fn whisper_fallback(windows: bool) -> Option<PathBuf> {
-    if windows { None } else { first_file(&ffmpeg_dirs(), "whisper-cli") }
+fn whisper_fallback(windows: bool, dirs: impl FnOnce() -> Vec<PathBuf>) -> Option<PathBuf> {
+    if windows { None } else { first_file(&dirs(), "whisper-cli") }
 }
 
 /// A part already on this computer (outside kimo's own download folder), by part id.
@@ -68,7 +68,7 @@ pub fn find(id: &str) -> Option<PathBuf> {
             .or_else(|| crate::agents::which("whisper-cli"))
             .or_else(|| crate::agents::which("whisper-cpp"))
             .or_else(|| models_dir().map(|d| d.join("bin").join(exe("whisper-cli"))).filter(|p| p.is_file()))
-            .or_else(|| whisper_fallback(cfg!(windows))),
+            .or_else(|| whisper_fallback(cfg!(windows), ffmpeg_dirs)),
         "model" => std::env::var_os("KIMO_WHISPER_MODEL").map(PathBuf::from).filter(|p| p.is_file())
             .or_else(|| models_dir().and_then(|d| model_in(&d))),
         _ => None,
@@ -95,12 +95,18 @@ mod tests {
     }
     #[test]
     fn platform_search_paths_include_portable_packages_without_cross_platform_assumptions() {
-        assert_eq!(whisper_fallback(true), None);
+        assert_eq!(whisper_fallback(true, ffmpeg_dirs), None);
         assert_eq!(exe_for("ffmpeg", true), "ffmpeg.exe");
         assert_eq!(exe_for("ffmpeg", false), "ffmpeg");
         let root = std::env::temp_dir().join(format!("kimo-system-paths-{}", std::process::id()));
         let package = root.join("Microsoft/WinGet/Packages/vendor.FFmpeg/build");
         std::fs::create_dir_all(&package).unwrap();
+        let whisper = package.join("whisper-cli");
+        std::fs::write(&whisper, b"native discovery fixture").unwrap();
+        assert_eq!(whisper_fallback(false, || vec![root.join("absent"), package.clone()]), Some(whisper.clone()));
+        std::fs::remove_file(&whisper).unwrap();
+        assert_eq!(whisper_fallback(false, || vec![package.clone()]), None);
+
         std::fs::create_dir_all(root.join("Microsoft/WinGet/Packages/unrelated")).unwrap();
         std::fs::write(root.join("Microsoft/WinGet/Packages/ffmpeg-file"), b"not a directory").unwrap();
         let dirs = ffmpeg_dirs_for(true, &|_| Some(root.clone()), Some(root.clone()));

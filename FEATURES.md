@@ -2150,3 +2150,9 @@ Studio fallback drafts now cross chunk boundaries instead of replaying the same 
 Registered tool descriptions keep their opening sentence under 150 characters. Caption composition, frame inspection, motion review, reference comparison and vision detection retain their full argument and fallback details after that concise summary.
 
 Spectator transport retains exact byte ordering when a connected reader stalls. Nonblocking socket writes advance only by the reported accepted-byte count; the regression compares an eight-MiB payload byte for byte after a deliberate reader pause.
+
+Code-clip parameter edits now flash the affected timeline clip and show the parameter name/value (and key time when present) in the inspector. Unknown clips and incomplete numeric parameter events do not invent a change.
+
+A flash expiring while a clean frame is pending defers its full refresh even if the next clip edit has not arrived yet. The next edit still paints only the timeline and rail; the inspector and header catch up on the following non-edit frame.
+
+Studio clears usage metadata when a new agent turn begins. A reply without cost or turn-count metadata no longer inherits those values from the previous reply.

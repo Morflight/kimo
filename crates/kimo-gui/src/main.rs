@@ -515,7 +515,10 @@ fn recovery_status(st: State<'_, AppState>) -> Option<recovery::Offer> { st.offe
 async fn recovery_restore<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> {
     let a2 = app.clone();
     let v = blocking(app, |st| {
-        let o = st.offer.lock().unwrap().take().ok_or("nothing to restore")?;
+        // Retain the offer until the engine has restored it successfully. Holding
+        // this lock also serializes concurrent Restore/Discard requests.
+        let mut offer = st.offer.lock().unwrap();
+        let o = offer.as_ref().ok_or("nothing to restore")?;
         // with its undo history: Ctrl+Z after the restore undoes the edits made before the crash
         let r = st.ledger.call("you", "project", &recovery::restore_call(&o.autosave))?;
         if engine::is_error(&r) { return Err(engine::result_text(&r)); }
@@ -523,7 +526,9 @@ async fn recovery_restore<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result
         *st.project_path.lock().unwrap() = o.project_path.clone();
         // restored work is unsaved work: keep it recoverable until the user saves
         let mut rec = st.rec.lock().unwrap(); rec.project_path = o.project_path.clone(); rec.saved_rev = 0; recovery::store(&st.data_dir, &rec);
-        Ok(json!({"project_path": o.project_path, "autosaved_at": o.autosaved_at}))
+        let result = json!({"project_path": o.project_path, "autosaved_at": o.autosaved_at});
+        *offer = None;
+        Ok(result)
     }).await?;
     let _ = a2.emit("project-changed", json!({"actor": "you", "action": "restore"}));
     Ok(v)
@@ -781,6 +786,30 @@ fn command_handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> boo
         ]
 }
 
+fn bridge_connection<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, up: bool) {
+    let st = app.state::<AppState>();
+    let mut attached = st.attached.lock().unwrap();
+    let count = attached.entry(label.to_owned()).or_insert(0);
+    if up { *count += 1 } else { *count = count.saturating_sub(1) }
+    if *count == 0 { attached.remove(label); }
+    let snapshot = attached.clone();
+    drop(attached);
+    let _ = app.emit("agent-connection", json!({"client": label, "up": up, "attached": snapshot}));
+}
+
+fn handle_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: tauri::RunEvent) {
+    if let tauri::RunEvent::Exit = event {
+        let st = app.state::<AppState>();
+        cli_agents::stop(&st.turn);
+        // Update restarts retain recovery; an ordinary exit records a clean session.
+        if !st.updating.load(Ordering::SeqCst) {
+            let mut record = st.rec.lock().unwrap(); record.clean = true; recovery::store(&st.data_dir, &record);
+        }
+        if let Some(server) = st.bridge.lock().unwrap().take() { server.remove_file(); }
+        st.sup.stop();
+    }
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "mcp").unwrap_or(false) { run_mcp(&argv[1..]); }
@@ -875,16 +904,7 @@ fn main() {
             });
             // the bridge: agents launched with `kimo-gui mcp` join this engine
             let h4 = handle.clone();
-            let on_conn: bridge::OnConn = Arc::new(move |label, up| {
-                let st = h4.state::<AppState>();
-                let mut a = st.attached.lock().unwrap();
-                let n = a.entry(label.to_string()).or_insert(0);
-                if up { *n += 1 } else { *n = n.saturating_sub(1) }
-                if *n == 0 { a.remove(label); }
-                let snapshot = a.clone();
-                drop(a);
-                let _ = h4.emit("agent-connection", json!({"client": label, "up": up, "attached": snapshot}));
-            });
+            let on_conn: bridge::OnConn = Arc::new(move |label, up| bridge_connection(&h4, label, up));
             match bridge::serve(Some(&data_dir), bridge_handler(handle.clone()), on_conn) {
                 Ok(s) => *app.state::<AppState>().bridge.lock().unwrap() = Some(s),
                 Err(e) => eprintln!("kimo: bridge not started: {e}"),
@@ -917,21 +937,60 @@ fn main() {
         .invoke_handler(command_handler())
         .build(tauri::generate_context!())
         .expect("kimo failed to start")
-        .run(|app, ev| {
-            if let tauri::RunEvent::Exit = ev {
-                let st = app.state::<AppState>();
-                cli_agents::stop(&st.turn);
-                // an update restart is not a clean exit: unsaved work (autosaved just before) is offered back afterwards
-                if !st.updating.load(Ordering::SeqCst) { let mut r = st.rec.lock().unwrap(); r.clean = true; recovery::store(&st.data_dir, &r); }
-                if let Some(b) = st.bridge.lock().unwrap().take() { b.remove_file(); }
-                st.sup.stop();
-            }
-        });
+        .run(handle_run_event);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_entry_child() {
+        let Ok(args) = std::env::var("KIMO_TEST_MCP_ENTRY_ARGS") else { return; };
+        run_mcp(&serde_json::from_str::<Vec<String>>(&args).unwrap());
+    }
+
+    #[test]
+    fn mcp_entry_uses_owned_bridge_or_standalone_and_preserves_exit_status() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let root=std::env::temp_dir().join(format!("kimo-mcp-entry-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source=root.join("fixture.rs"); let binary=root.join("fixture").with_extension(std::env::consts::EXE_EXTENSION);
+        std::fs::write(&source,r#"fn main() { let args:Vec<_>=std::env::args().skip(1).collect(); println!("MCP_FIXTURE_ARGS={:?}",args); std::process::exit(7); }"#).unwrap();
+        let built=Command::new("rustc").args(["--edition=2021","--crate-name","mcp_entry_fixture"]).arg(&source).arg("-o").arg(&binary).output().unwrap();
+        assert!(built.status.success(),"{}",String::from_utf8_lossy(&built.stderr));
+        let child=|args:Value| {
+            let mut command=Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact","tests::mcp_entry_child","--nocapture"])
+                .env("KIMO_TEST_MCP_ENTRY_ARGS",args.to_string()).env("KIMO_DATA_DIR",&root)
+                .env("KIMO_MCP_BIN",&binary).env("KIMO_FONTS",&root).env_remove("KIMO_STANDALONE")
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+        };
+        for args in [json!(["--client","fixture-agent","--flag","space value"]), json!(["--client"])] {
+            let output=child(args.clone()).output().unwrap(); assert_eq!(output.status.code(),Some(7));
+            let expected=if args.as_array().unwrap().len()>1 {"MCP_FIXTURE_ARGS=[\"--flag\", \"space value\"]"} else {"MCP_FIXTURE_ARGS=[]"};
+            assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+        }
+        let bridge=bridge::serve(Some(&root),Arc::new(|client,method,params| {
+            assert_eq!(client,"entry-fixture"); assert_eq!(method,"fixture/echo"); Ok(params)
+        }),Arc::new(|_,_|{})).unwrap();
+        let mut attached=child(json!(["--client","entry-fixture"])).spawn().unwrap();
+        attached.stdin.take().unwrap().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"fixture/echo\",\"params\":{\"owned\":true}}\n").unwrap();
+        let output=attached.wait_with_output().unwrap(); assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        let response=String::from_utf8_lossy(&output.stdout).lines().find_map(|line|serde_json::from_str::<Value>(line).ok()).unwrap();
+        assert_eq!(response["id"],42); assert_eq!(response["result"],json!({"owned":true}));
+        let output=child(json!([])).env("KIMO_STANDALONE","1").output().unwrap(); assert_eq!(output.status.code(),Some(7));
+        drop(bridge);
+        let invalid=root.join("invalid-engine"); std::fs::write(&invalid,b"not executable").unwrap();
+        let output=child(json!([])).env("KIMO_MCP_BIN",&invalid).output().unwrap(); assert_eq!(output.status.code(),Some(1));
+        let output=child(json!([])).env("KIMO_MCP_BIN",root.join("missing-engine")).env("PATH","").output().unwrap();
+        assert_eq!(output.status.code(),Some(127)); assert!(String::from_utf8_lossy(&output.stderr).contains("engine (kimo-mcp) was not found"));
+        let log=std::fs::read_to_string(root.join("mcp-clients.log")).unwrap();
+        assert!(log.contains("attached to the open kimo app")); assert!(log.contains("detached")); assert!(log.contains("standalone engine ended"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn state(root: &Path) -> AppState {
         let sup=Arc::new(Supervisor::new(None,vec![],None));
@@ -997,6 +1056,36 @@ mod tests {
     }
 
     #[test]
+    fn media_thumbnails_use_real_frames_cache_hits_and_short_clip_fallback() {
+        let root=std::env::temp_dir().join(format!("kimo-main-thumb-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        tauri::async_runtime::block_on(async {
+            for extension in ["MP3","wav","aac","m4a","flac","ogg","opus","aiff","aif"] {
+                assert_eq!(media_thumb(app.handle().clone(),root.join(format!("audio.{extension}")).display().to_string()).await.unwrap(),None);
+            }
+            for duration in ["2","0.1"] {
+                let source=root.join(format!("clip-{duration}.mp4"));
+                let encoded=std::process::Command::new("ffmpeg").args(["-v","error","-y","-f","lavfi","-i",&format!("testsrc2=size=64x32:rate=25:duration={duration}"),"-c:v","libx264"]).arg(&source).output().unwrap();
+                assert!(encoded.status.success(),"{}",String::from_utf8_lossy(&encoded.stderr));
+                let url=media_thumb(app.handle().clone(),source.display().to_string()).await.unwrap().unwrap();
+                let file=root.join("cache").join(url.rsplit('/').next().unwrap());
+                let bytes=std::fs::read(&file).unwrap();assert!(bytes.starts_with(&[0xff,0xd8]));
+                let probe=std::process::Command::new("ffprobe").args(["-v","error","-show_entries","stream=width,height","-of","csv=p=0"]).arg(&file).output().unwrap();
+                assert!(probe.status.success());assert_eq!(String::from_utf8(probe.stdout).unwrap().trim(),"320,160");
+                let modified=std::fs::metadata(&file).unwrap().modified().unwrap();
+                assert_eq!(media_thumb(app.handle().clone(),source.display().to_string()).await.unwrap(),Some(url));
+                assert_eq!(std::fs::metadata(file).unwrap().modified().unwrap(),modified,"a cache hit does not rerun the encoder");
+            }
+            assert_eq!(media_thumb(app.handle().clone(),root.join("missing").display().to_string()).await.unwrap(),None);
+            let invalid=root.join("invalid.mp4");std::fs::write(&invalid,b"not a media file").unwrap();
+            assert_eq!(media_thumb(app.handle().clone(),invalid.display().to_string()).await.unwrap(),None);
+        });
+        assert!(open_url("file:///fixture".into()).is_err());
+        drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn updater_key_configuration_requires_nonempty_text() {
         for (config,expected) in [(Value::Null,None),(json!({}),None),(json!({"pubkey":false}),None),(json!({"pubkey":""}),None),(json!({"pubkey":"   "}),None),(json!({"pubkey":" fixture-public-key "}),Some("fixture-public-key"))] {
             let mut context=tauri::test::mock_context(tauri::test::noop_assets());
@@ -1015,7 +1104,7 @@ mod tests {
         let webview=tauri::WebviewWindowBuilder::new(&app,"main",Default::default()).build().unwrap();
         let request=|command:&str,body:Value| tauri::test::get_ipc_response(&webview,tauri::webview::InvokeRequest {
             cmd:command.into(),callback:tauri::ipc::CallbackFn(0),error:tauri::ipc::CallbackFn(1),
-            url:"tauri://localhost".parse().unwrap(),body:tauri::ipc::InvokeBody::Json(body),headers:Default::default(),invoke_key:tauri::test::INVOKE_KEY.into(),
+            url:if cfg!(any(windows,target_os="android")){"http://tauri.localhost"}else{"tauri://localhost"}.parse().unwrap(),body:tauri::ipc::InvokeBody::Json(body),headers:Default::default(),invoke_key:tauri::test::INVOKE_KEY.into(),
         }).map(|response|response.deserialize::<Value>().unwrap());
         let before=request("app_state",json!({})).unwrap();
         for command in ["engine_call","engine_read","change_undo","project_open","project_save","pick","media_thumb","open_url","reveal","cli_signin","cli_install","cli_register","cli_models","agent_select","agent_send","mcp_set","key_set","key_clear","key_test","settings_set","crash_answer","viewer_frame","viewer_draft","preview_start","preview_update","preview_frame","setup_start"] {
@@ -1031,6 +1120,8 @@ mod tests {
         assert_eq!(request("recovery_status",json!({})).unwrap(),Value::Null);
         assert_eq!(request("crash_pending",json!({})).unwrap(),json!([]));
         assert_eq!(request("agent_stop",json!({})).unwrap(),false);
+        request("open_spectator",json!({})).unwrap();request("open_spectator",json!({})).unwrap();
+        assert!(app.get_webview_window("spectator").is_some());
         request("agent_reset",json!({})).unwrap();request("onboarded_set",json!({})).unwrap();request("setup_pause",json!({})).unwrap();request("setup_skip",json!({})).unwrap();
         assert!(app.state::<AppState>().cancel_dl.load(Ordering::SeqCst));
         assert_eq!(request("setup_status",json!({})).unwrap()["done"],true);
@@ -1082,6 +1173,100 @@ mod tests {
             assert!(update_install(app.handle().clone()).await.unwrap_err().contains("does not update itself"));
         });
         drop(handler);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn api_agent_commands_stream_tool_results_and_release_busy_after_http_failure() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use tauri::Listener;
+        let root=std::env::temp_dir().join(format!("kimo-main-api-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base=format!("http://{}",listener.local_addr().unwrap());
+        let server=std::thread::spawn(move || {
+            let mut requests=Vec::new();
+            let replies=[
+                (200,json!({"choices":[{"message":{"content":null,"tool_calls":[{"id":"owned-call","type":"function","function":{"name":"project","arguments":"{\"action\":\"get_project\"}"}}]}}]})),
+                (200,json!({"choices":[{"message":{"content":"Owned fixture reply"}}]})),
+                (401,json!({"error":{"message":"owned authorization refusal"}})),
+            ];
+            for (status,body) in replies {
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut reader=BufReader::new(socket.try_clone().unwrap());
+                let mut first=String::new();reader.read_line(&mut first).unwrap();
+                assert_eq!(first,"POST /chat/completions HTTP/1.1\r\n");
+                let mut headers=String::new();let mut length=0;
+                loop {
+                    let mut line=String::new();reader.read_line(&mut line).unwrap();
+                    if line=="\r\n" { break; }
+                    if let Some((name,value))=line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") { length=value.trim().parse::<usize>().unwrap(); }
+                    }
+                    headers.push_str(&line);
+                }
+                assert!(headers.to_ascii_lowercase().contains("authorization: bearer owned-fixture-key"));
+                let mut bytes=vec![0;length];reader.read_exact(&mut bytes).unwrap();
+                requests.push(serde_json::from_slice::<Value>(&bytes).unwrap());
+                let body=body.to_string();
+                write!(socket,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+            requests
+        });
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        let events=Arc::new(Mutex::new(Vec::new()));let received=events.clone();
+        app.listen("agent-event",move |event|received.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+        {
+            let st=app.state::<AppState>();
+            let mut settings=st.settings.lock().unwrap();settings.agent="api".into();settings.provider="openai".into();
+            settings.base_urls.insert("openai".into(),base);settings.models.insert("openai".into(),"owned-model".into());
+            st.keys.set("openai",Secret::new("owned-fixture-key"),false);
+        }
+        tauri::async_runtime::block_on(async {
+            assert_eq!(agent_send(app.handle().clone(),"owned request".into(),11).await.unwrap(),json!({"reply":"Owned fixture reply"}));
+            assert!(!app.state::<AppState>().busy.load(Ordering::SeqCst));
+            assert!(agent_send(app.handle().clone(),"owned failure".into(),12).await.unwrap_err().contains("401"));
+            assert!(!app.state::<AppState>().busy.load(Ordering::SeqCst));
+        });
+        let requests=server.join().unwrap();assert_eq!(requests.len(),3);
+        assert_eq!(requests[0]["model"],"owned-model");
+        assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["role"]=="tool"&&message["tool_call_id"]=="owned-call"));
+        let events=events.lock().unwrap();
+        for kind in ["status","tool_start","tool_end","done","error"] {
+            assert!(events.iter().any(|event|event["ev"]["kind"]==kind),"missing {kind}: {events:?}");
+        }
+        assert!(events.iter().all(|event|event["agent"]=="api"));
+        assert!(events.iter().any(|event|event["turn"]==12&&event["ev"]["kind"]=="error"));
+        assert!(events.iter().any(|event|event["ev"]["kind"]=="tool_end"&&event["ev"]["ok"]==false));
+        drop(events);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_counts_connections_and_preserves_recovery_during_update_exit() {
+        use tauri::Listener;
+        let root=std::env::temp_dir().join(format!("kimo-main-lifecycle-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        let events=Arc::new(Mutex::new(Vec::new()));let captured=events.clone();
+        app.listen("agent-connection",move |event|captured.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+        let handle=app.handle().clone();
+        let on_conn:bridge::OnConn=Arc::new(move |label,up|bridge_connection(&handle,label,up));
+        for (label,up) in [("owned",true),("owned",true),("other",true),("owned",false),("owned",false),("unknown",false)] { on_conn(label,up); }
+        let snapshots:Vec<_>=events.lock().unwrap().iter().map(|event|event["attached"].clone()).collect();
+        assert_eq!(snapshots,vec![json!({"owned":1}),json!({"owned":2}),json!({"owned":2,"other":1}),json!({"owned":1,"other":1}),json!({"other":1}),json!({"other":1})]);
+        let server=bridge::serve(Some(&root),bridge_handler(app.handle().clone()),on_conn).unwrap();
+        assert!(bridge::info_path(&root).is_file());*app.state::<AppState>().bridge.lock().unwrap()=Some(server);
+        handle_run_event(app.handle(),tauri::RunEvent::Ready);
+        assert!(!app.state::<AppState>().rec.lock().unwrap().clean);assert!(bridge::info_path(&root).is_file());
+        handle_run_event(app.handle(),tauri::RunEvent::Exit);
+        assert!(recovery::load(&root).clean);assert!(!bridge::info_path(&root).exists());assert!(app.state::<AppState>().bridge.lock().unwrap().is_none());
+        {
+            let st=app.state::<AppState>();st.updating.store(true,Ordering::SeqCst);
+            let mut record=st.rec.lock().unwrap();record.clean=false;recovery::store(&root,&record);
+        }
+        handle_run_event(app.handle(),tauri::RunEvent::Exit);
+        assert!(!recovery::load(&root).clean);assert!(!app.state::<AppState>().rec.lock().unwrap().clean);
+        drop(app);std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1183,6 +1368,21 @@ mod tests {
             assert_eq!(recovery::load(&root).saved_rev,0);
             let recovered=engine_read(h.clone(),"project".into(),json!({"action":"get_project","args":{}})).await.unwrap();
             assert_eq!(recovered["data"]["tracks"].as_array().unwrap().len(),count);
+            let blocker=root.join("owned-regular-file");std::fs::write(&blocker,b"preserve me").unwrap();
+            let invalid=blocker.join("project.kimo").display().to_string();
+            let remembered=st.project_path.lock().unwrap().clone();
+            assert!(project_save(h.clone(),invalid.clone()).await.is_err());
+            assert_eq!(*st.project_path.lock().unwrap(),remembered);
+            let record_before=serde_json::to_value(recovery::load(&root)).unwrap();
+            *st.project_path.lock().unwrap()=Some(invalid);
+            assert!(!st.autosave_now());assert_eq!(serde_json::to_value(recovery::load(&root)).unwrap(),record_before);
+            *st.project_path.lock().unwrap()=remembered;
+            let absent=root.join("absent-autosave.kimo").display().to_string();
+            *st.offer.lock().unwrap()=Some(recovery::Offer{autosave:absent.clone(),project_path:None,autosaved_at:456});
+            assert!(recovery_restore(h.clone()).await.is_err());
+            assert_eq!(recovery_status(app.state()).expect("failed restore must remain retryable").autosave,absent);
+            assert_eq!(serde_json::to_value(recovery::load(&root)).unwrap(),record_before);
+            assert_eq!(std::fs::read(&blocker).unwrap(),b"preserve me");
             assert!(mcp_probe(h.clone()).await.unwrap().ok);
             let connected=mcp_set(h.clone(),true).await.unwrap();assert_eq!(connected["enabled"],true);
             let port=connected["external_port"].as_u64().unwrap() as u16;
@@ -1193,6 +1393,62 @@ mod tests {
 
         });
         st.sup.stop();drop(st);drop(app);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn setup_resumes_verified_parts_and_stops_after_a_cancelled_download() {
+        use std::io::{BufRead, BufReader, Write};
+        use tauri::Listener;
+        for cancel in [false,true] {
+            let root=std::env::temp_dir().join(format!("kimo-main-setup-outcome-{}-{cancel}",std::process::id()));
+            let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+            let payload=b"owned setup payload";
+            let seed=root.join("seed");std::fs::write(&seed,payload).unwrap();
+            let hash=download::sha512_file(&seed).unwrap();std::fs::remove_file(seed).unwrap();
+            let mut st=state(&root);
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url=format!("http://{}/owned-part",listener.local_addr().unwrap());
+            let p=Part{id:"owned-part".into(),name:"Owned part".into(),urls:vec![url],sha512:hash,size:payload.len() as u64,dest:"owned.bin".into(),executable:false,optional:false,note:"fixture".into(),os:String::new()};
+            let server=if cancel {
+                let cancelled=st.cancel_dl.clone();
+                Some(std::thread::spawn(move || {
+                    let (mut socket,_)=listener.accept().unwrap();
+                    socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                    let mut reader=BufReader::new(socket.try_clone().unwrap());
+                    let mut first=String::new();reader.read_line(&mut first).unwrap();assert_eq!(first,"GET /owned-part HTTP/1.1\r\n");
+                    loop { let mut line=String::new();reader.read_line(&mut line).unwrap();if line=="\r\n" { break; } }
+                    cancelled.store(true,Ordering::SeqCst);
+                    write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",payload.len()).unwrap();
+                    socket.write_all(payload).unwrap();
+                }))
+            } else {
+                // A complete interrupted download must be verified and published without HTTP.
+                std::fs::write(root.join("owned.bin.part"),payload).unwrap();
+                drop(listener);None
+            };
+            st.parts=vec![p.clone()];
+            if cancel { st.parts.push(Part{id:"must-not-start".into(),dest:"later.bin".into(),..p}); }
+            let app=tauri::test::mock_app();assert!(app.manage(st));
+            let events=Arc::new(Mutex::new(Vec::new()));let captured=events.clone();
+            app.listen("setup-progress",move |event|captured.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+            let result=tauri::async_runtime::block_on(setup_start(app.handle().clone(),false)).unwrap();
+            if let Some(server)=server { server.join().unwrap(); }
+            assert_eq!(result["results"].as_array().unwrap().len(),1);
+            assert_eq!(result["ready"],!cancel);
+            assert_eq!(app.state::<AppState>().settings.lock().unwrap().setup_done,!cancel);
+            if cancel {
+                assert_eq!(result["results"][0],json!({"id":"owned-part","ok":false,"error":"Paused."}));
+                assert!(!root.join("owned.bin").exists());assert!(!root.join("later.bin.part").exists());
+                assert_eq!(*events.lock().unwrap(),vec![json!({"id":"owned-part","phase":"error","error":"Paused."})]);
+            } else {
+                assert_eq!(result["results"][0],json!({"id":"owned-part","ok":true}));
+                assert_eq!(std::fs::read(root.join("owned.bin")).unwrap(),payload);
+                assert!(!root.join("owned.bin.part").exists());
+                let phases:Vec<_>=events.lock().unwrap().iter().map(|event|event["phase"].as_str().unwrap().to_owned()).collect();
+                assert_eq!(phases,vec!["verifying","done"]);
+            }
+            drop(app);std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -1236,4 +1492,60 @@ mod tests {
         assert_eq!(shaped(json!({"content":[{"type":"text","text":"{\"value\":7}"}]})),json!({"ok":true,"text":"{\"value\":7}","data":{"value":7}}));
         assert_eq!(shaped(json!({"isError":true,"content":[{"type":"text","text":"refused"}]})),json!({"ok":false,"text":"refused","data":null}));
     }
+    #[test]
+    fn subscription_command_fixture_child() {
+        use tauri::Listener;
+        let Some(root)=std::env::var_os("KIMO_MAIN_TURN_FIXTURE").map(PathBuf::from) else { return; };
+        let app=tauri::test::mock_app();assert!(app.manage(state(&root)));
+        let events=Arc::new(Mutex::new(Vec::new()));let captured=events.clone();
+        app.listen("agent-event",move |event|captured.lock().unwrap().push(serde_json::from_str::<Value>(event.payload()).unwrap()));
+        agent_select(app.state(),"codex".into(),Some("owned-model".into()),Some("high".into()),None).unwrap();
+        let run=|turn|tauri::async_runtime::block_on(agent_send(app.handle().clone(),"Owned synthetic prompt".into(),turn));
+        std::fs::write(root.join("mode"),"success").unwrap();
+        let first=run(1).unwrap();assert_eq!(first["reply"],"Owned fixture reply");assert_eq!(first["session"],"owned-session");
+        assert_eq!(app.state::<AppState>().sessions.lock().unwrap()["codex"],"owned-session");
+        std::fs::write(root.join("mode"),"expired").unwrap();
+        let resumed=run(2).unwrap();assert_eq!(resumed["reply"],"Owned fixture reply");
+        let calls=std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(),3);assert_eq!(calls.lines().filter(|line|line.contains("resume")).count(),1);
+        assert!(calls.contains("owned-model"));assert!(calls.contains("high"));
+        app.state::<AppState>().sessions.lock().unwrap().clear();
+        agent_select(app.state(),"codex".into(),Some(String::new()),Some(String::new()),None).unwrap();
+        std::fs::write(root.join("mode"),"failure").unwrap();
+        let error=run(3).unwrap_err();assert!(error.contains("owned fixture refusal"),"{error}");
+        assert!(!app.state::<AppState>().busy.load(Ordering::SeqCst));assert!(app.state::<AppState>().turn.lock().unwrap().is_none());
+        let captured=events.lock().unwrap();
+        assert!(captured.iter().all(|event|event["agent"]=="codex"));
+        assert!(captured.iter().any(|event|event["turn"]==1&&event["ev"]["kind"]=="status"&&event["ev"]["text"].as_str().unwrap().contains("owned-model · high effort")));
+        assert!(captured.iter().any(|event|event["turn"]==2&&event["ev"]["kind"]=="status"&&event["ev"]["text"]=="turn complete"));
+    }
+
+    #[test]
+    fn subscription_commands_retry_expired_sessions_once_and_release_failed_turns() {
+        use std::process::Command;
+        let root=std::env::temp_dir().join(format!("kimo-main-turn-{}",std::process::id()));std::fs::create_dir_all(&root).unwrap();
+        let source=root.join("fixture.rs");let binary=root.join("fixture").with_extension(std::env::consts::EXE_EXTENSION);
+        std::fs::write(&source,r#"
+use std::io::{Read,Write};
+fn main(){
+ let root=std::env::current_exe().unwrap().parent().unwrap().to_owned();let args:Vec<_>=std::env::args().skip(1).collect();
+ if args.iter().any(|a|a=="--version"){println!("owned fixture 1.0");return;}
+ let mut log=std::fs::OpenOptions::new().create(true).append(true).open(root.join("calls")).unwrap();writeln!(log,"{:?}",args).unwrap();
+ let mut input=String::new();std::io::stdin().read_to_string(&mut input).unwrap();
+ let mode=std::fs::read_to_string(root.join("mode")).unwrap();
+ if mode=="failure"{eprintln!("owned fixture refusal");std::process::exit(1);}
+ if mode=="expired"&&args.iter().any(|a|a=="resume"){eprintln!("session not found");std::process::exit(1);}
+ println!("{{\"type\":\"thread.started\",\"thread_id\":\"owned-session\"}}");
+ println!("{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"Owned fixture reply\"}}}}");
+ println!("{{\"type\":\"turn.completed\"}}");
+}
+"#).unwrap();
+        let built=Command::new("rustc").args(["--edition=2021","--crate-name","owned_cli_turn"]).arg(&source).arg("-o").arg(&binary).output().unwrap();
+        assert!(built.status.success(),"{}",String::from_utf8_lossy(&built.stderr));
+        let output=Command::new(std::env::current_exe().unwrap()).args(["--exact","tests::subscription_command_fixture_child","--nocapture"])
+            .env("KIMO_MAIN_TURN_FIXTURE",&root).env("KIMO_CODEX_BIN",&binary).output().unwrap();
+        assert!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

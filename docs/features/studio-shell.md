@@ -35,3 +35,15 @@ Preview preparation controls are tested with a deferred synthetic start response
 Fallback image-draft playback advances to the chunk end before loading the next chunk, preventing replay of the same final frame. `studio_draft_test.py` uses two synthetic chunks and requires exactly one next-draft request and a final stop. Escape closes an open overlay/menu first; a subsequent Escape in Edit clears the selection without interfering with text entry.
 
 The native-adapter browser proof distinguishes system, downloaded, optional pinned and unavailable setup parts. It asserts progress percentages, speed clearing on completion, error text, retry availability, cancellation dispatch and ready-state dismissal, without performing real downloads.
+
+Each agent turn starts with empty usage metadata and no previous error. A reply-only completion must not inherit the previous turn's cost or turn count. The three-turn browser regression checks thinking truncation, tool/status events, usage-bearing completion, reply-only completion and an empty reply, including completion while Edit is visible.
+
+The action proof also exercises keyboard navigation and editing commands, exact seeking, failed or cancelled native file dialogs, connection command failures and Live actor filters. A 610-event fixture verifies the existing 600-entry history limit and 300-row rendering limit, including eviction of the oldest event. These cases retain the synthetic-adapter limits above.
+
+Additional browser cases verify proxy diagnostics and state retention while the media search hides an asset. Connection fixtures check session-only and remembered-key receipts and both explicit and missing MCP probe errors. Router assertions cover partial read replies, private-ID redaction, fallback call timing, bounded camera/mesh history, tracking residual validation, and geometry retained by a layout whose panels are not yet available.
+
+Export browser cases retain the empty-timeline guard, cancellation without a path, refusal without a job ID, missing progress counters, completion using the requested output path, and warning/cancellation diagnostics. They use synthetic jobs and perform no export.
+
+Media tests generate thumbnails in memory and verify insertion, cached filtering, fallback command diagnostics, rejection of a non-project read response and two-file import from Home into Edit.
+
+Starting a new conversation releases the cancelled turn immediately and clears its status, even if the native agent promise settles later. A deterministic deferred-adapter regression covers both late success and late failure, verifies neither can replace the new conversation, and retains the busy guard against duplicate sends. The regression reproduced a stuck busy state before the fix.

@@ -426,9 +426,10 @@ function armFlashEnd(e, whole) {
 }
 function flashExpired() {
   flashTo = 0; flashAt = Infinity; metrics.flashEnds++;
-  // An expiry must not promote a queued clip-only edit to a full repaint.
-  // Its remaining panels catch up on the already-owed non-edit frame.
-  if (rafId && !dirty && queue.length && queue.every(isClipEdit)) { deferred.on = true; return; }
+  // Keep expiry work deferred while a clean frame is already pending: a clip edit
+  // can arrive before that frame, even when the queue is still empty here.
+  // The remaining panels catch up on the next frame without an edit.
+  if (rafId && !dirty) { deferred.on = true; return; }
   dirty = true;
   if (rafId || hidden) return;
   freezeNow(performance.now());

@@ -49,3 +49,73 @@ Preview background decode policy is carried by its render cache and copied expli
 Natural-language tool search treats shorter/shorten/longer/length as duration intent and ignores common connective words. Existing top-hit and filler-word ranking requirements are retained.
 
 The registry golden records eight reviewed contract changes: six shortened tool-summary first sentences with their details retained; the existing load_project restore argument (5cbf5f7); and preview_stream warming (77b1c91). Only those eight registry hashes change. Frame and project golden hashes stay unchanged and remain exact comparisons.
+
+A failed encoder keeps its actual stderr when the export frame channel closes, allowing disk-full/codec classification and chunk-preserving recovery. Render/decode errors keep precedence when they caused the stop. The error-code golden updates only the discovered effect count (185 to 189); all codes, parameters and other hints remain identical.
+
+The external-reference audit now classifies the caption/chart call specifications, pinned vision model files, SVG/CSV inputs and fast-export reads. Project-derived media still passes through Project::resolve; caller inputs are expanded into native project data. Every source file remains scanned and exact open-site counts remain enforced, including test fixture reads.
+
+The director initial profile keeps its 36-tool/29,900-byte limits: review remains listed, while detailed look/watch/compare_reference inspection remains discoverable through search_tools and kimo_describe and callable in the full registry. Motion-blur sampling uses resolved transforms; crowding fixes sample local animation at the reported time; motion-path key detection reads key metadata while positions continue through resolve_xform. No transform-lint file exclusions or waiver lines are added.
+
+The IPC harness uses Tauri's platform-local origin (http://tauri.localhost on Windows/Android, tauri://localhost elsewhere). This preserves real command authorization and argument validation on Windows rather than disabling the ACL.
+
+Whisper fallback discovery takes an explicit directory provider so both platform policies can be checked against owned fixture folders on Windows and Linux, including the missing-file case. The production provider remains the existing system-directory search.
+
+The crowded-text fixture positions the second line from its measured ink top, then asserts the actual five-pixel gap before checking the unchanged crowding rule. The picture-scan regression checks both a distinct clip midpoint and a midpoint shared with the regular grid: seven distinct samples in each case, exactly one decode preparation per sample, and a complete reported scan.
+
+Viewer engine tests require KIMO_MCP_BIN to point to an existing test binary and fail explicitly when it is unavailable. A render interrupted while holding the render mutex is followed by frame and draft requests, checking that poison recovery produces the expected cache bytes.
+
+The Studio setup acceptance test waits for the asynchronously refreshed Ready indicator after the setup dialog closes; its existing timeout and text assertions remain unchanged.
+
+Delivery font fixtures use the engine's platform-aware system font discovery and still exercise actual TrueType embedding restrictions and collected-file hashes. The export-memory regression reads physical RAM from Windows CIM or Linux MemTotal, retaining the 85% hard ceiling and exact worker-count assertions. Variable-frame-rate fixture encoding uses FFmpeg's output-specific fps_mode=vfr; decoded-frame equality remains exact.
+
+Viewer protocol tests exercise both platform origins, a cache file evicted between lookup and read, all-pinned entries, shared cache files, obsolete queued scrubs and cleanup of extracted draft frames. Missing FPS uses the existing 30 FPS default; engine errors remain errors. A local HTTP fixture regression verifies that invalid UTF-8 cannot produce a response or contaminate the next recorded request.
+
+Native thumbnail tests encode owned 64×32 fixtures, verify real 320×160 JPEGs, exercise the short-clip fallback and require unchanged cache timestamps on repeat requests. Audio and invalid inputs must return no thumbnail. Spectator-window creation and reuse run in Tauri's mock runtime. The HTTP fixture accept loop also receives an interrupted accept followed by a real connection, ensuring that the subsequent request is still served.
+
+Windows CI installs Chocolatey's ffmpeg-full package and prepends its actual binary directory to PATH, keeping ffmpeg and ffprobe from the same distribution. The setup step requires libsvtav1 before any export tests run. Gyan's official build inventory lists libsvtav1 among the additional full-build libraries: https://www.gyan.dev/ffmpeg/builds/ . No AV1 test is skipped or replaced.
+
+The timeline benchmark drains MutationObserver records at animation-callback boundaries, recording timer mutations between callbacks separately instead of attributing them to the last edit frame. An owned-node calibration requires one in-frame and one timer mutation in their respective buckets. Every mutation remains counted, and the allowed edit panels, three runs, 10 ms limits, 400-element ceiling and heap limit are unchanged.
+
+The live-feed and chat undo integration tests also require the real engine fixture. Their shared event waiter is tested for timeout on the wrong event, and setup tests require an existing system FFmpeg to satisfy the part without creating a download directory.
+
+A deterministic browser regression reproduces expiry during a pending catch-up frame before the next edit enters the queue. The previous implementation changed the header and missed the scoped repaint. Expiry now leaves that pending frame clean and marks the full refresh deferred, covering both timer/edit orderings without relaxing the DOM mutation contract.
+
+Engine PATH construction uses Rust's platform-aware split/join functions. Tests require exact empty overrides when FFmpeg is already on PATH, and reject a directory that cannot be represented in PATH rather than emitting a malformed search path. Part satisfaction is checked for all three outcomes: downloaded, system and missing.
+
+Export job ownership uses the native process creation time: Linux procfs or Windows GetProcessTimes with a query-only process handle. Windows GetExitCodeProcess distinguishes a running owner from a terminated process; access errors refuse takeover instead of declaring a lock stale. Windows host identity comes from GetComputerNameW. The native-child regression requires a stable current-process identity and checks that an owned child loses its identity after termination and reaping. The existing active-owner, stale-owner, PID-reuse and foreign-host lock assertions remain unchanged.
+
+CLI fixtures also cover malformed model catalogs, incomplete entries and an empty completion following an already received reply. The same event collector checks successful output and verifies that launch/configuration failures emit no events. Platform directory and terminal policies share a single implementation across their injected providers.
+
+The layout-jitter sampler applies its existing deliberate-spring rule to viewer metadata as well as panels and rows. Early sampling reproduced metadata moving with a panel marked data-anim during the initial mode transition. A calibration still requires a real one-pixel metadata shift to measure exactly one pixel; only the explicitly marked spring sample is treated as an animation. The acceptance limit remains 0.5 pixels. Any scenario without a completed measurement now fails the run instead of allowing the remaining measurements to hide it.
+
+Studio acceptance drives the real keyboard handlers for navigation, edits, seeking, zoom and file operations, checking the recorded commands. Native-command failures use owned adapters and must appear in the UI without uncaught browser errors. Telemetry acceptance injects an interrupted accept and closes one socket's write side before greeting, then requires successful delivery on the next real connection.
+
+The desktop MCP entry is exercised in child processes with an owned loopback bridge and a compiled fixture executable. Tests verify attachment, argument forwarding, forced standalone mode, failed execution, missing-engine diagnostics and exit-status preservation. All logs and bridge descriptors stay in the fixture directory.
+
+CLI discovery tests remove an owned cached executable and require rediscovery from PATH or the owned extra-directory location. Directory enumeration failures retain the direct version candidate. Process output readers use the stdout/stderr pipes guaranteed by their own Stdio::piped spawn configuration; they no longer silently accept an internally absent pipe. Missing, null and populated tool errors retain their existing parser results.
+
+A three-turn Studio fixture checks thinking/tool/status events, usage-bearing completion, a reply-only completion and an empty reply. Usage metadata is cleared at the next turn's start: a regression first reproduced the old cost and turn count on the second reply, then verified that the corrected second reply contains neither.
+
+Server handshake regressions inject reader/writer clone failures and timeout-setting failures around real loopback sockets, plus invalid UTF-8 and a closed write side. Every failure must leave both connection notifications and handled requests empty. The successful control must authenticate, return the exact JSON-RPC result and announce both connection and disconnection.
+
+Studio Live acceptance checks sparse external envelopes, unknown actors, error/warning totals and all actor filters. A 610-event sequence must retain exactly 600 entries and render exactly 300 rows, with the oldest fixture event evicted.
+
+The Windows LLVM response-file fallback leaves the `export` subcommand on the command line: llvm-cov dispatches it before expanding response-file options. Every original export option and object remains in the response file. The regression checks the exact subcommand placement, full 500-object inventory, output and failure status, and temporary-file cleanup.
+
+The TCP spectator proofs preserve bytes delivered before Winsock reports ConnectionReset when the sender process exits. Other read errors still fail. Both proofs now also require a final newline, then retain their complete JSON, exact frame ordering, pacing and one-start/one-terminal-per-call assertions; a reset cannot conceal missing or truncated events.
+
+The desktop API command proof uses an owned localhost HTTP server and an in-memory fixture key. It checks the outgoing model/tool-result requests, all translated event kinds and turn IDs, a refused tool call, successful completion and HTTP 401 failure. Both outcomes must release the busy flag.
+
+The desktop command tests also exercise connection reference counts and both exit paths: ordinary shutdown marks recovery clean and removes the bridge descriptor, while update shutdown preserves the recovery record. Local socket fixtures cover bridge clone, timeout, address and relay failures, incomplete greetings, and exact protocol replies. Setup command fixtures resume a verified complete part and cancel a pending local download without starting a subsequent part.
+
+An owned executable fixture drives subscription-agent commands through success, expired-session retry, and terminal failure. Assertions preserve the exact streamed protocol status, selected model/effort, one retry only, retained session ID and release of the busy flag and child slot. No installed subscription CLI or external account is used.
+
+A native failure regression makes a regular file obstruct the save destination, verifies failed saves preserve the remembered project and recovery record, and attempts to restore an absent autosave. Restore retains its offer until the engine succeeds; concurrent Restore/Discard requests serialize on that offer. The regression failed before the fix because the offer was consumed on error.
+
+Cross-platform path regressions preserve rooted forward-slash references instead of rebasing them under the project directory, and compare relative paths with native path joins. The exact error-text golden comparison retains the two Windows missing-parent OS messages through narrowly scoped native suffix expectations; all other bytes and structured error assertions remain unchanged.
+
+The collect-destination golden case owns a uniquely named nonempty temporary directory and verifies its sentinel survives refusal. Only that owned path is represented as the historical `/tmp` label in the complete text comparison; the system temporary directory is never assumed nonempty or collected into. The prior fixture could succeed in an empty container and contaminate later cases.
+
+High-bit exports attach the declared range, primaries, transfer and matrix to the converted encoder frames as well as the stream options. FFmpeg 9.0.2 otherwise drops primaries and transfer from untagged raw input. The existing HEVC/FFV1 tests retain their exact tag and decoded-pixel assertions; the external H.264 fixture also declares its frame metadata explicitly.
+
+Executable entry-point tests launch the actual desktop binary with owned data directories. `--version` must return the package version without creating application state; `--crash-test` must fail and leave exactly one local report with the deliberate panic, version, main thread and backtrace, before creating any engine or bridge state.

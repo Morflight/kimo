@@ -41,11 +41,15 @@ pub fn info_path(dir: &Path) -> PathBuf { dir.join("bridge.json") }
 
 /// 32 random hex chars from the OS (no extra dependency: SHA-512 over time, pid, address entropy and a fresh socket port).
 pub fn token() -> String {
+    token_with_address(TcpListener::bind(("127.0.0.1", 0)).and_then(|listener| listener.local_addr()))
+}
+
+fn token_with_address(address: std::io::Result<std::net::SocketAddr>) -> String {
     use sha2::{Digest, Sha512};
     let mut h = Sha512::new();
     h.update(format!("{:?}{}", std::time::SystemTime::now(), std::process::id()));
     let local = 0u8; h.update(format!("{:p}", &local));
-    if let Ok(l) = TcpListener::bind(("127.0.0.1", 0)) { if let Ok(a) = l.local_addr() { h.update(a.port().to_le_bytes()); } }
+    if let Ok(address) = address { h.update(address.port().to_le_bytes()); }
     for (k, v) in std::env::vars_os().take(8) { h.update(k.to_string_lossy().as_bytes()); h.update(v.to_string_lossy().as_bytes()); }
     h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
@@ -62,8 +66,14 @@ impl Drop for Server { fn drop(&mut self) { self.remove_file(); } }
 
 /// Start listening on 127.0.0.1:<free port>; writes `bridge.json` into `dir` when given.
 pub fn serve(dir: Option<&Path>, handler: Handler, on_conn: OnConn) -> std::io::Result<Server> {
-    let l = TcpListener::bind(("127.0.0.1", 0))?;
-    let info = Info { port: l.local_addr()?.port(), token: token(), pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into() };
+    serve_on(TcpListener::bind(("127.0.0.1", 0)), &TcpListener::local_addr, dir, handler, on_conn)
+}
+
+fn serve_on(listener: std::io::Result<TcpListener>, address: &dyn Fn(&TcpListener) -> std::io::Result<std::net::SocketAddr>,
+    dir: Option<&Path>, handler: Handler, on_conn: OnConn,
+) -> std::io::Result<Server> {
+    let l = listener?;
+    let info = Info { port: address(&l)?.port(), token: token(), pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into() };
     let tok = info.token.clone();
     std::thread::spawn(move || {
         for s in l.incoming().flatten() {
@@ -98,18 +108,26 @@ pub fn clean_label(s: &str) -> String {
 }
 
 fn session(s: TcpStream, token: &str, handler: Handler, on_conn: OnConn) -> std::io::Result<()> {
+    session_with(s, token, handler, on_conn, &mut TcpStream::try_clone, &TcpStream::set_read_timeout)
+}
+
+// Keep OS failures observable without exhausting process-wide handles in tests.
+fn session_with(s: TcpStream, token: &str, handler: Handler, on_conn: OnConn,
+    clone_socket: &mut dyn FnMut(&TcpStream) -> std::io::Result<TcpStream>,
+    timeout: &dyn Fn(&TcpStream, Option<Duration>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     // The hello must arrive quickly; after it, a client may stay quiet for minutes while its model thinks. The timeout
     // is set and cleared on the SAME handle the reader uses (a try_clone'd socket does not share it on Windows).
-    let mut r = BufReader::new(s.try_clone()?);
-    r.get_ref().set_read_timeout(Some(HELLO_TIMEOUT))?;
+    let mut r = BufReader::new(clone_socket(&s)?);
+    timeout(r.get_ref(), Some(HELLO_TIMEOUT))?;
     let mut first = String::new();
     r.read_line(&mut first)?;
     let mut it = first.split_whitespace();
     let (Some(HELLO), Some(t), label) = (it.next(), it.next(), it.next()) else { return Ok(()) };
     if !constant_eq(t.as_bytes(), token.as_bytes()) { return Ok(()); }
     let label = clean_label(label.unwrap_or("agent"));
-    r.get_ref().set_read_timeout(None)?;
-    let w = Arc::new(Mutex::new(s.try_clone()?));
+    timeout(r.get_ref(), None)?;
+    let w = Arc::new(Mutex::new(clone_socket(&s)?));
     w.lock().unwrap().write_all(b"OK\n")?;
     on_conn(&label, true);
     for line in r.lines() {
@@ -186,14 +204,19 @@ fn client_handshake(s: &mut impl ClientSocket, token: &str, label: &str) -> Resu
 
 /// Relay stdin → app and app → stdout until either side closes. Used by `kimo-gui mcp` when the app is open.
 pub fn relay_stdio(s: TcpStream) -> i32 {
-    let mut up = match s.try_clone() { Ok(u) => u, Err(_) => return 1 };
+    relay_with(s, TcpStream::try_clone, || Box::new(std::io::stdin().lock()), &mut std::io::stdout().lock())
+}
+
+fn relay_with(s: TcpStream, clone_socket: fn(&TcpStream) -> std::io::Result<TcpStream>,
+    input: fn() -> Box<dyn Read>, stdout: &mut dyn Write,
+) -> i32 {
+    let mut up = match clone_socket(&s) { Ok(u) => u, Err(_) => return 1 };
     let t = std::thread::spawn(move || {
-        let mut stdin = std::io::stdin().lock();
+        let mut stdin = input();
         let _ = std::io::copy(&mut stdin, &mut up);
         let _ = up.shutdown(std::net::Shutdown::Write);
     });
     let mut down = s;
-    let mut stdout = std::io::stdout().lock();
     let mut buf = [0u8; 64 * 1024];
     loop {
         match down.read(&mut buf) {
@@ -263,12 +286,16 @@ mod tests {
     #[test]
     fn wrong_token_is_refused_and_missing_app_is_reported() {
         let d = tmp("bad");
-        let (srv, _) = echo_server(&d);
-        let mut s = TcpStream::connect(("127.0.0.1", srv.info.port)).unwrap();
-        s.write_all(format!("{HELLO} 0000 x\n").as_bytes()).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        let mut b = [0u8; 3];
-        assert!(s.read_exact(&mut b).is_err(), "no OK for a wrong token");
+        let (srv, connections) = echo_server(&d);
+        for greeting in [format!("{HELLO} 0000 x\n"), "KIMO-BRIDGE/0 invalid x\n".into(), format!("{HELLO}\n"), "\n".into(), String::new()] {
+            let mut socket = TcpStream::connect(("127.0.0.1", srv.info.port)).unwrap();
+            socket.write_all(greeting.as_bytes()).unwrap();
+            socket.shutdown(std::net::Shutdown::Write).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut bytes = [0u8; 3];
+            assert!(socket.read_exact(&mut bytes).is_err(), "no OK for {greeting:?}");
+        }
+        assert!(connections.lock().unwrap().is_empty());
         drop(srv);
         assert!(connect(&d, "x").unwrap_err().contains("not running"));
         let _ = std::fs::remove_dir_all(&d);
@@ -364,14 +391,15 @@ mod tests {
         #[cfg(windows)] let home = root.join("dev.kimo.app");
         #[cfg(target_os = "macos")] let home = root.join("Library/Application Support/dev.kimo.app");
         #[cfg(all(not(windows), not(target_os = "macos")))] let home = root.join(".local/share/dev.kimo.app");
-        for (mode, expected) in [("override", Some(root.clone())), ("base", Some(root.join("dev.kimo.app"))), ("home", Some(home)), ("missing", None)] {
+        #[cfg(target_os = "macos")] let base = None;
+        #[cfg(not(target_os = "macos"))] let base = Some(root.join("dev.kimo.app"));
+        for (mode, expected) in [("override", Some(root.clone())), ("base", base), ("home", Some(home)), ("missing", None)] {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
             child.args(["--exact", "bridge::tests::data_directory_child", "--nocapture"]);
             for key in ["KIMO_DATA_DIR", "XDG_DATA_HOME", "APPDATA", "HOME", "USERPROFILE"] { child.env_remove(key); }
             if mode == "override" { child.env("KIMO_DATA_DIR", &root); }
             if mode == "base" {
-                if cfg!(target_os = "macos") { continue; }
-                child.env(if cfg!(windows) { "APPDATA" } else { "XDG_DATA_HOME" }, &root);
+                child.env("APPDATA", &root).env("XDG_DATA_HOME", &root);
             }
             if mode == "home" {
                 child.env("HOME", &root).env("USERPROFILE", &root).env("APPDATA", &root).env("XDG_DATA_HOME", "relative-ignored");
@@ -421,6 +449,121 @@ mod tests {
             assert_eq!(data_dir_for("linux", &|key| if key == "XDG_DATA_HOME" { xdg.clone() } else { None }, Some(root.clone())), Some(root.join(".local/share/dev.kimo.app")));
         }
         assert_eq!(data_dir_for("linux", &|key| (key == "XDG_DATA_HOME").then(|| root.clone()), None), Some(root.join("dev.kimo.app")));
+    }
+
+    #[test]
+    fn relay_handles_failed_cloning_writes_and_flushes_without_forging_output() {
+        struct Output { fail: &'static str, bytes: Vec<u8> }
+        impl Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.fail == "write" { return Err(std::io::ErrorKind::BrokenPipe.into()); }
+                self.bytes.extend_from_slice(bytes); Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if self.fail == "flush" { Err(std::io::ErrorKind::BrokenPipe.into()) } else { Ok(()) }
+            }
+        }
+        for fail in ["clone", "write", "flush", ""] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            peer.write_all(b"owned reply\n").unwrap();
+            peer.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut output = Output { fail, bytes: Vec::new() };
+            let clone_socket = if fail == "clone" { (|_: &TcpStream| Err(std::io::Error::other("clone refused"))) as fn(&TcpStream) -> std::io::Result<TcpStream> } else { TcpStream::try_clone };
+            let status = relay_with(client, clone_socket, || Box::new(std::io::Cursor::new(b"owned input\n")), &mut output);
+            if fail == "clone" {
+                assert_eq!(status, 1); assert!(output.bytes.is_empty());
+            } else {
+                let mut input = String::new(); peer.read_to_string(&mut input).unwrap();
+                assert_eq!(status, 0); assert_eq!(input, "owned input\n");
+                assert_eq!(output.bytes, if fail == "write" { b"".as_slice() } else { b"owned reply\n".as_slice() });
+            }
+        }
+    }
+
+    #[test]
+    fn listener_failures_preserve_existing_descriptors_and_token_fallback() {
+        let root = tmp("listener-failure");
+        std::fs::create_dir_all(&root).unwrap();
+        let descriptor = info_path(&root);
+        std::fs::write(&descriptor, b"owned existing descriptor").unwrap();
+        let connections = Arc::new(Mutex::new(Vec::new()));
+        let handler: Handler = Arc::new(|_, _, params| Ok(params));
+        let recorded = connections.clone();
+        let on_conn: OnConn = Arc::new(move |label, up| recorded.lock().unwrap().push((label.to_owned(), up)));
+        // The successful server exercises the same supplied callbacks and actual JSON-RPC transport.
+        let server = serve_on(TcpListener::bind(("127.0.0.1", 0)), &TcpListener::local_addr, None, handler.clone(), on_conn.clone()).unwrap();
+        let mut client = TcpStream::connect(("127.0.0.1", server.info.port)).unwrap();
+        client_handshake(&mut client, &server.info.token, "owned").unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        assert_eq!(rpc(&mut client, &mut reader, json!({"id":1,"method":"echo","params":9}))["result"], 9);
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = occupied.local_addr().unwrap();
+        let failed_bind = TcpListener::bind(address);
+        assert!(failed_bind.is_err());
+        assert_eq!(serve_on(failed_bind, &TcpListener::local_addr, Some(&root), handler.clone(), on_conn.clone()).err().unwrap().kind(), std::io::ErrorKind::AddrInUse);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let released = listener.local_addr().unwrap();
+        assert_eq!(serve_on(Ok(listener), &|_| Err(std::io::Error::other("address unavailable")), Some(&root), handler, on_conn).err().unwrap().to_string(), "address unavailable");
+        let _rebound = TcpListener::bind(released).unwrap();
+        assert_eq!(std::fs::read(&descriptor).unwrap(), b"owned existing descriptor");
+        for address in [Ok(address), Err(std::io::Error::other("no entropy socket"))] {
+            let value = token_with_address(address);
+            assert_eq!(value.len(), 32);
+            assert!(value.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        drop((client, reader, server));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn server_handshake_failures_never_announce_a_connection() {
+        use std::net::Shutdown;
+        for fail in ["reader", "timeout", "utf8", "reset", "writer", "greeting", ""] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            client.write_all(if fail == "utf8" { b"\xff\n" } else { b"KIMO-BRIDGE/1 fixture owned\n" }).unwrap();
+            if fail.is_empty() { client.write_all(b"{\"id\":7,\"method\":\"echo\",\"params\":7}\n").unwrap(); }
+            client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+            if fail == "greeting" { server.shutdown(Shutdown::Write).unwrap(); }
+            let connections = Arc::new(Mutex::new(Vec::new()));
+            let observed = connections.clone();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let received = requests.clone();
+            let handler: Handler = Arc::new(move |label, method, params| {
+                received.lock().unwrap().push((label.to_owned(), method.to_owned()));
+                Ok(params)
+            });
+            let on_conn: OnConn = Arc::new(move |label, up| observed.lock().unwrap().push((label.to_owned(), up)));
+            let mut clones = 0;
+            let result = session_with(server, "fixture", handler, on_conn, &mut |socket| {
+                clones += 1;
+                if (fail == "reader" && clones == 1) || (fail == "writer" && clones == 2) {
+                    Err(std::io::Error::other("clone failed"))
+                } else { socket.try_clone() }
+            }, &|socket, duration| {
+                if (fail == "timeout" && duration.is_some()) || (fail == "reset" && duration.is_none()) {
+                    Err(std::io::Error::other("timeout failed"))
+                } else { socket.set_read_timeout(duration) }
+            });
+            if fail.is_empty() {
+                result.unwrap();
+                assert_eq!(*connections.lock().unwrap(), vec![("owned".into(), true), ("owned".into(), false)]);
+                let mut greeting = String::new(); client.read_to_string(&mut greeting).unwrap();
+                let (hello, reply) = greeting.split_once('\n').unwrap();
+                assert_eq!(hello, "OK");
+                assert_eq!(serde_json::from_str::<Value>(reply).unwrap(), json!({"jsonrpc":"2.0", "id":7, "result":7}));
+                assert_eq!(*requests.lock().unwrap(), vec![("owned".into(), "echo".into())]);
+            } else {
+                assert!(result.is_err(), "{fail}");
+                assert!(connections.lock().unwrap().is_empty(), "{fail}");
+                assert!(requests.lock().unwrap().is_empty(), "{fail}");
+            }
+        }
     }
 
     #[test]

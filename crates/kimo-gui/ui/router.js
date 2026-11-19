@@ -584,6 +584,10 @@ function editOps2(state, MODES, tl, ev, A) {
   }
   const [t, i] = at(A.clip_id ?? (ev.target || {}).clip_id); if (!t) return false;
   const c = t.clips[i];
+  if (n === 'set_code_clip_param') {
+    if (typeof A.name !== 'string' || N(A.value) == null) return false;
+    c._flash = now(); return true;
+  }
   if (n === 'duplicate_clip') {
     const s = N(A.start); if (s == null) return false; const tt = A.track_id != null ? ensureTrack(tl, A.track_id) : t;
     const cp = { ...c, id: nid(c.id + '_dup'), s, e: s + (c.e - c.s), _flash: now() }; insertClip(tl, tt, cp); tt._flash = now(); return true;

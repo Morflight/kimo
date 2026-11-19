@@ -10,7 +10,19 @@ fn setup() -> (Session, String, String, String) {
     let cl = c(&mut ss, "add_shape", json!({"track_id": t1, "shape": "rect", "width": 60, "height": 40, "fill": [1, 0.5, 0, 1], "start": 1.0, "duration": 2.0}))["clip_id"].as_str().unwrap().to_string();
     (ss, t1, t2, cl)
 }
-fn calls(t1: &str, c: &str) -> Vec<(&'static str, Value)> {
+// Own a nonempty destination: the system temporary directory may legitimately be
+// empty in a container. Only this fixture path is normalized in the text golden.
+struct NonemptyDestination(std::path::PathBuf);
+impl NonemptyDestination {
+    fn new(label: &str) -> Self {
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("kimo-error-baseline-{label}-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();std::fs::write(path.join("owned-sentinel"),b"must not be overwritten").unwrap();Self(path)
+    }
+}
+impl Drop for NonemptyDestination { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).unwrap(); } }
+
+fn calls(t1: &str, c: &str, destination: &std::path::Path) -> Vec<(&'static str, Value)> {
     vec![
         ("no_such_tool", json!({})), ("set_propertyy", json!({})),
         ("delete_clip", json!({})), ("delete_clip", json!({"clip_id": 5})), ("delete_clip", json!({"clip_id": "nope"})),
@@ -30,7 +42,7 @@ fn calls(t1: &str, c: &str) -> Vec<(&'static str, Value)> {
         ("distribute_clips", json!({"track_id": t1, "gap": -1.0})), ("get_scopes", json!({})), ("render_frame", json!({"time": "x"})),
         ("bind_shared_grade_graphs", json!({"clip_id": c, "graphs": ["missing"]})), ("save_project", json!({})), ("load_project", json!({"path": "/nonexistent/x.kimo"})), ("set_property", json!({"clip_id": c, "property": "x", "value": 1.0, "time": 0.0})), ("delete_clip", json!({"clipid": "x"})),
         ("cache_set_budget", json!({})), ("cache_set_budget", json!({"megabytes": -1.0})),
-        ("collect_project", json!({})), ("collect_project", json!({"dest_dir": "/tmp"})), ("collect_project", json!({"dest_dir": "/tmp/kimo_err_row", "copy": "zip"})), ("relink_media", json!({"search_dirs": ["/tmp"], "match": "fuzzy"})),
+        ("collect_project", json!({})), ("collect_project", json!({"dest_dir": destination})), ("collect_project", json!({"dest_dir": "/tmp/kimo_err_row", "copy": "zip"})), ("relink_media", json!({"search_dirs": ["/tmp"], "match": "fuzzy"})),
         ("transcript_import", json!({})), ("transcript_import", json!({"path": "/nonexistent/x.srt"})), ("transcript_get", json!({"transcript_id": "nope"})), ("transcript_coverage", json!({})), ("transcript_to_captions", json!({"track_id": "nope"})), ("validate_captions", json!({})), ("transcript_edit_preview", json!({"edits": [{"op": "wipe", "from_index": 0}]})),
         ("batch", json!({"ops": [{"tool": "undo"}]})), ("batch", json!({"ops": [{"tool": "add_track", "args": {"name": "$zz.x"}}]})), ("batch", json!({"ops": [{"tool": "delete_clip", "args": {"clip_id": c}}, {"tool": "delete_clip", "args": {"clip_id": c}}]})), ("batch", json!({"ops": [{"tool": "add_track"}], "expect_revision": "deadbeef"})),
         ("audio_speech_intervals", json!({"mode":"bogus"})), ("audio_speech_intervals", json!({"aggressiveness":4})), ("audio_speech_intervals", json!({"target":{"clip_id":"missing"}})),
@@ -47,20 +59,37 @@ fn calls(t1: &str, c: &str) -> Vec<(&'static str, Value)> {
 }
 #[test] fn error_texts_are_byte_identical_to_the_baseline() {
     let (probe, t1, _t2, c) = setup(); drop(probe);
-    let calls = calls(&t1, &c);
+    let destination=NonemptyDestination::new("texts");
+    let calls = calls(&t1, &c, &destination.0);
     let mut lines = vec![];
     for (i, (tool, args)) in calls.iter().enumerate() {
-        let (mut ss, _, _, _) = setup(); let line = match dispatch(&mut ss, tool, args) { Ok(_) => "OK (no error)".to_string(), Err(e) => e.replace('\n', "\\n") };
-        lines.push(format!("{i:02} {tool} {}\t{line}", serde_json::to_string(args).unwrap()));
+        let (mut ss, _, _, _) = setup(); let line = match dispatch(&mut ss, tool, args) { Ok(_) => "OK (no error)".to_string(), Err(e) => e.replace(destination.0.to_str().unwrap(), "/tmp").replace('\n', "\\n") };
+        let mut shown_args=args.clone();
+        if shown_args["dest_dir"]==destination.0.to_str().unwrap() { shown_args["dest_dir"]=json!("/tmp"); }
+        lines.push(format!("{i:02} {tool} {}\t{line}", serde_json::to_string(&shown_args).unwrap()));
     }
+    assert_eq!(std::fs::read(destination.0.join("owned-sentinel")).unwrap(),b"must not be overwritten");
     let text = lines.join("\n") + "\n"; let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/error_texts.txt");
     if std::env::var("KIMO_UPDATE_GOLDEN").map(|v| v == "1").unwrap_or(false) { std::fs::write(&p, &text).unwrap(); return; }
-    let want = std::fs::read_to_string(&p).expect("run once with KIMO_UPDATE_GOLDEN=1 to record the baseline"); assert_eq!(text, want, "error text changed");
+    let want = std::fs::read_to_string(&p).expect("run once with KIMO_UPDATE_GOLDEN=1 to record the baseline");
+    // The two absent-parent reads retain the OS error verbatim. Keep the complete
+    // golden text comparison, substituting only that documented native suffix.
+    #[cfg(windows)]
+    let want = {
+        let native = std::io::Error::from_raw_os_error(3).to_string();
+        let mut expected = want;
+        for path in ["/nonexistent/x.kimo", "/nonexistent/x.srt"] {
+            expected = expected.replace(&format!("cannot read '{path}': No such file or directory (os error 2)"), &format!("cannot read '{path}': {native}"));
+        }
+        expected
+    };
+    assert_eq!(text, want, "error text changed");
 }
 
 #[test] fn every_baseline_row_has_the_expected_code_param_and_hint() {
     let (probe, t1, _t2, c) = setup(); drop(probe); let mut lines = vec![]; let mut other = 0; let mut n = 0;
-    for (i, (tool, args)) in calls(&t1, &c).iter().enumerate() {
+    let destination=NonemptyDestination::new("codes");
+    for (i, (tool, args)) in calls(&t1, &c, &destination.0).iter().enumerate() {
         let (mut ss, _, _, _) = setup(); let (mut ss2, _, _, _) = setup();
         match dispatch_ex(&mut ss, tool, args) { Ok(_) => lines.push(format!("{i:02} {tool}\tOK")), Err(e) => { n += 1; if e.code == "other" { other += 1; }
             assert_eq!(Some(e.message.clone()), dispatch(&mut ss2, tool, args).err(), "dispatch_ex text must equal dispatch text");

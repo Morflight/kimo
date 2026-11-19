@@ -5,7 +5,7 @@ import {dirname,resolve} from 'node:path';
 import vm from 'node:vm';
 const directory=fileURLToPath(new URL('../ui/',import.meta.url)), modules=new Map();
 const context=vm.createContext({performance:{now:()=>1000}});
-function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack,insertClip};':''),{identifier:filename,context}));return modules.get(filename);}
+function get(filename){if(!modules.has(filename))modules.set(filename,new vm.SourceTextModule(readFileSync(filename,'utf8')+(filename===resolve(directory,'router.js')?'\nexport {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps,inspectorDiff,callDiff,audioOps,ensureTrack,insertClip,midPath,shortPath,fmtBytes,curveAt,easeOf,bezOf,cubicY,keyChange,keyGraph,xfOps,summary,railArgs,assetNames,splitName,clipLabel,peek,callSection,COVB_H};':''),{identifier:filename,context}));return modules.get(filename);}
 const root=get(resolve(directory,'router.js'));await root.link((name,parent)=>get(resolve(dirname(parent.identifier),name)));await root.evaluate();
 const {gradeOps,graphicsOps,maskOps,sceneOps,editOps2,timelineOps,timelineOps1,exportOps,inspectOps}=root.namespace;
 const modes=get(resolve(directory,'modes.js'));if(modes.status==='unlinked')await modes.link(()=>{});await modes.evaluate();const {MODES}=modes.namespace;
@@ -517,3 +517,318 @@ exportOps(cancelled,MODES,{tool_name:'cancel_job',phase:'complete'});
 assert.equal(Object.values(cancelled.views.export).find(v=>v.rows).rows[0][3],'✕ cancelled');assert.equal(cancelled.views.export.viewer.progress.right,'cancelled');
 assert.equal(exportOps(cancelled,MODES,{tool_name:'resume_job',phase:'start',call_id:'resumed',payload:{args:{job_id:'missing'}}}),false);
 console.log('PASS export job presets, size units, resolution changes, frame progress and failed/cancelled status');
+
+const {midPath,shortPath,fmtBytes}=root.namespace;
+assert.equal(midPath('/very-long-root-folder-name/output.mp4'),'…/output.mp4');
+assert.equal(midPath('abcdefghijklmnopqrstuvwxyz',10),'abcde…wxyz');
+assert.equal(shortPath('/home/fixture/a-very-long-component/b/c/d/very-long-name.mp4'),'…/d/very-long-name.mp4');
+assert.equal(shortPath('/home/fixture/a-very-long-component/b/c/d/very-long-name.mp4',30),'…/c/d/very-long-name.mp4');
+assert.equal(shortPath('a-long-filename.mp4',5),'a-long-filename.mp4');
+for(const [bytes,text] of [[0,'0 B'],[999,'999 B'],[1000,'1 KB'],[1e6,'1.0 MB'],[1e9,'1.00 GB']])assert.equal(fmtBytes(bytes),text);
+for(const [pan,text] of [[0,'C'],[-25,'L25'],[25,'R25']])assert.equal(root.namespace.fmtPan(pan),text);
+const codeState=fresh('edit');codeState.liveTL={tracks:[{id:'v',label:'Code',clips:[{id:'code',label:'Chart',s:0,e:5}]}]};
+for(const [args,value] of [[{name:'height',value:2},'height = 2'],[{name:'height',value:3,time:1.25},'height = 3 @ 1.25 s']]) {
+ const ev=event('set_code_clip_param',{clip_id:'code',...args});
+ assert.equal(timelineOps(codeState,MODES,ev,'edit'),true);
+ const inspector=Object.values(codeState.views.edit).find(v=>v.blocks);
+ assert.equal(inspector.blocks.find(b=>b.k==='Param').v,value);assert.equal(inspector.sub,'Chart');
+ assert.equal(codeState.liveTL.tracks[0].clips[0]._flash,1000);
+}
+for(const args of [{clip_id:'missing',name:'height',value:2},{clip_id:'code',value:2},{clip_id:'code',name:'height',value:'bad'}])assert.equal(editOps2(codeState,MODES,codeState.liveTL,event('set_code_clip_param',args),args),false);
+console.log('PASS compact paths, size/pan boundaries and constant/keyed code-clip parameter feedback');
+
+// Sparse timing events must preserve unrelated animation and the chosen interpolation.
+for(const [tool,prefix,marker] of [['set_speed_ramp','ramp','_ramp'],['set_time_remap','remap','_remap']]) {
+ for(const [blend,label] of [['frame_mix','frame mix'],['optical_flow','flow']]) {
+  const state=fresh('edit'),clip={id:'timing',s:2,e:8,fx:[`${prefix} · ${label}`],keys:[{t:3,_other:true}]};
+  const tl={tracks:[{id:'v',clips:[clip]}]};
+  const args={clip_id:'timing',keys:[[0,1],[2,3],null,['bad',0]]};
+  assert.equal(editOps2(state,MODES,tl,event(tool,args),args),true);
+  assert.deepEqual(plain(clip.fx),[`${prefix} · ${label}`]);
+  assert.deepEqual(plain(clip.keys),[{t:3,_other:true},{t:2,[marker]:true},{t:4,[marker]:true}]);
+  const clear={clip_id:'timing',keys:[]};
+  assert.equal(editOps2(state,MODES,tl,event(tool,clear),clear),true);
+  assert.deepEqual(plain(clip.fx),[]);assert.deepEqual(plain(clip.keys),[{t:3,_other:true}]);
+ }
+ const state=fresh('edit'),clip={id:'timing',s:0,e:5},tl={tracks:[{id:'v',clips:[clip]}]},args={clip_id:'timing',keys:[]};
+ assert.equal(editOps2(state,MODES,tl,event(tool,args),args),true);
+ assert.deepEqual(plain(clip.fx),[]);assert.deepEqual(plain(clip.keys),[]);
+}
+const sparseFx={id:'effects',s:0,e:1},sparseFxTL={tracks:[{id:'v',clips:[sparseFx]}]};
+assert.equal(editOps2(fresh('edit'),MODES,sparseFxTL,event('remove_audio_effect'),{clip_id:'effects',effect_id:'missing'}),false);
+assert.equal(sparseFx.fx,undefined);
+console.log('PASS timing interpolation survives re-keying; clearing preserves unrelated keys and sparse clips');
+
+// Roto events can arrive on layouts without inspector/key panels; geometry remains usable.
+const geometryOnly={roto:{panels:{viewer:{kind:'viewer'}}}};
+const geometryState=fresh('roto');
+assert.equal(maskOps(geometryState,geometryOnly,event('add_mask',{points:[[0,0],[1,1]],feather:3})),true);
+assert.deepEqual(plain(geometryState.views.roto.viewer.overlay[0].path),[[0,0],[1,1]]);
+assert.equal(maskOps(geometryState,geometryOnly,event('set_mask_path_key',{time:1})),false);
+assert.equal(maskOps(geometryState,geometryOnly,event('remove_track_matte')),false);
+assert.deepEqual(Object.keys(geometryState.views.roto),['viewer']);
+const sparseMask=fresh('roto');sparseMask.session={fps:30};
+assert.equal(maskOps(sparseMask,MODES,event('add_mask',{points:[[200,300],[400,500]]})),false);
+assert.equal(sparseMask.views.roto.viewer.overlay,undefined,'pixel points without dimensions cannot be normalized');
+assert.equal(maskOps(sparseMask,MODES,event('set_mask_keyframe',{mask_id:'subject'})),true);
+const sparseMaskKeys=Object.values(sparseMask.views.roto).find(v=>v.lanes);
+assert.deepEqual(plain(sparseMaskKeys.lanes[0].keys),[]);assert.equal(sparseMaskKeys.ruler,undefined);
+assert.equal(maskOps(sparseMask,MODES,event('track_mask',{mask_id:'subject'})),false);
+assert.equal(maskOps(sparseMask,MODES,event('roto_propagate',{mask_id:'subject'})),false);
+assert.equal(maskOps(sparseMask,MODES,event('reorder_mask',{mask_id:'missing',index:0})),false);
+assert.equal(maskOps(sparseMask,MODES,event('refine_matte',{clip_id:'subject',auto_bg:false},'complete',{mae:.3})),true);
+const sparseMatteRows=Object.values(sparseMask.views.roto).find(v=>v.blocks);
+assert.equal(sparseMatteRows.blocks.find(b=>b.k==='Matte MAE').v,'0.30');
+console.log('PASS sparse roto layouts retain geometry without inventing dimensions, key times or tracked spans');
+
+// Keyer references display the timeline's label and preserve unknown numeric modes.
+for(const [ref,label] of [['clip42','Clean plate'],['unresolved','unresolved']]) {
+ const state=fresh('grading');state.liveTL={tracks:[{id:'v',clips:[{id:'clip42',label:'Clean plate',s:0,e:1}]}]};
+ assert.equal(gradeOps(state,MODES,event('add_effect',{kind:'keyer',strings:{ref_clip:ref},params:{despill_mode:9,view:9}})),true);
+ const blocks=Object.values(state.views.grading).find(v=>v.blocks).blocks;
+ assert.equal(blocks.find(b=>b.k==='Keyer').v,`keyer · model 0 · clean plate ${label} · despill 9 · 9 view`);
+}
+const keyerViewer=fresh('grading');
+assert.equal(gradeOps(keyerViewer,{grading:{panels:{viewer:{kind:'viewer'}}}},event('add_effect',{kind:'keyer'})),false);
+assert.deepEqual(Object.keys(keyerViewer.views.grading),['viewer']);
+console.log('PASS keyer timeline names, unresolved references and forward-compatible numeric modes');
+
+// Completion metadata remains useful when optional tracking details are absent.
+for(const [tool,args,result,text] of [
+ ['stabilize',{}, {},'stabilize'],
+ ['stabilize',{}, {engine:'warp'},'warp stabilize'],
+ ['stabilize',{}, {engine:'warp',method:'position',smoothness:20,framing:'stabilize_only',rolling_shutter:0,zoom:1},'warp stabilize · position · smooth 20% · stabilize only'],
+ ['apply_camera_solve',{}, {keyframes:3},'camera solve → keys · 3 keys'],
+ ['apply_camera_solve',{}, {count:4},'camera solve → keys · 4 keys'],
+ ['apply_camera_solve',{}, {},'camera solve → keys'],
+ ['set_ground_plane',{}, {scale:1},'ground plane'],
+ ['place_at_track',{}, {},'null at track'],
+ ['export_st_map',{}, {},'ST map · undistort'],
+ ['validate_planar_track',{}, {ok:false},'validate failed'],
+ ['fit_track_homography',{}, {ok:true},'fit ok']
+]) {
+ const state=fresh('tracking');assert.equal(sceneOps(state,MODES,event(tool,args,'complete',result)),true);
+ assert.equal(state.views.tracking.viewer.left,text,tool);
+}
+for(const tool of ['track_planar','track_mesh','track_features','track_point','track_matte','pin_layer','set_corner_pin']) {
+ const state=fresh('tracking');assert.equal(sceneOps(state,MODES,event(tool,{})),false,tool);
+ assert.equal(state.views.tracking.viewer.overlay,undefined);
+}
+console.log('PASS sparse tracking completions retain reported metadata and never invent tracking geometry');
+
+// Keyframe presentation preserves sparse lists and evaluates degenerate CSS slopes.
+const {curveAt,easeOf,bezOf,cubicY,keyChange,keyGraph,evalKeys,xfOps}=root.namespace;
+assert.equal(curveAt([],2),null);
+for(const [time,value] of [[-1,2],[0,2],[1,4],[2,6],[3,6]])assert.equal(curveAt([{t:2,v:6},{t:0,v:2},{t:1,v:'bad'}],time),value);
+assert.equal(easeOf({}),'linear');assert.equal(easeOf({bez:[0,.2,1,.8]}),'bezier 0 .2 1 .8');
+assert.equal(bezOf({bez:[0,0,1,'invalid']}),null);assert.deepEqual(plain(bezOf({ease:'EASE_IN'})),[.42,0,1,1]);
+for(const x of [.0001,.01,.3,.9]) {const t=Math.cbrt(x);assert.ok(Math.abs(cubicY([0,0,0,1],x)-(3*t*t-2*t*t*t))<1e-5);}
+for(const ease of ['hold','step','constant'])assert.deepEqual(plain(evalKeys([{t:0,v:2,ease},{t:2,v:4}]).pts),[[0,2],[2,2],[2,4]]);
+assert.deepEqual(plain(evalKeys([{t:0,v:2,bez:[0,0,1,1]},{t:0,v:3}]).handles),[]);
+const keyEvent=(from,to,extra={})=>({tool_name:'set_keyframe',phase:'complete',payload:{from,to,...extra}});
+for(const [from,to] of [[[],[]],[[{t:0,v:2}],['invalid']],[[{t:'bad',v:2}],[{t:0,v:2}]]]) {const ev=keyEvent(from,to);assert.equal(keyChange(ev),ev);}
+let changed=keyChange(keyEvent([{t:0,v:1}],[{t:0,v:1}]));assert.deepEqual(plain(changed.payload.key),{label:'value keys',from:'1',to:'1',t:null});
+changed=keyChange(keyEvent([],[{t:0,v:1}],{param:'gain'}));assert.equal(changed.payload.key.from,'none');assert.equal(changed.payload.key.label,'gain @0s');
+changed=keyChange(keyEvent([{t:0,v:1}],[],{args:{property:'x',t:0}}));assert.equal(changed.payload.key.to,'none');assert.equal(changed.payload.key.label,'x @0s');
+changed=keyChange(keyEvent([{t:0,v:1},{t:2,v:3}],[{t:0,v:1},{t:1,v:4},{t:2,v:3}],{args:{time:0}}));assert.equal(changed.payload.key.t,1);assert.equal(changed.payload.key.from,'2');
+changed=keyChange(keyEvent([{t:0,v:1,ease:'linear'}],[{t:0,v:1,bez:[0,0,1,1]}],{args:{property:'scale',time:0}}));assert.equal(changed.payload.key.ease,true);assert.equal(changed.payload.key.to,'bezier 0 0 1 1');
+const graphModes={motion:{panels:{graph:{kind:'curves'}}}};
+assert.equal(keyGraph(fresh('motion'),graphModes,{}),false);
+assert.equal(keyGraph(fresh('absent'),{}, {payload:{to_keys:[]}}),false);
+for(const payload of [{to_keys:[]},{to_keys:[{t:2,v:5}],from_keys:[{t:2,v:5}],param:'custom_value'},{to_keys:[{t:0,v:1},{t:2,v:2}],key:{t:0}}]) {
+ const state=fresh('motion');assert.equal(keyGraph(state,graphModes,{payload,call_id:'graph'}),true);
+ const graph=state.views.motion.graph;assert.ok(Number.isFinite(graph.ruler.step));assert.ok(graph.ruler.t1>graph.ruler.t0);
+ assert.equal(graph.curves.length,payload.to_keys.length?(payload.from_keys?2:1):0);
+ if(payload.param)assert.equal(graph.lanes[0],'custom value');else assert.equal(graph.lanes[0],'value');
+ assert.equal(graph.playhead,payload.key?.t??null);
+ for(const curve of graph.curves)assert.ok(curve.pts.every(point=>point.every(Number.isFinite)));
+}
+const transform=fresh('graph');
+for(const [tool,args,expected] of [
+ ['add_null',{x:2,y:3},'null'],['set_parent',{parent:'missing'},'parent → missing'],['set_parent',{},'unparented'],
+ ['set_expression',{expression:'wiggle',freq:2,amp:3},'wiggle(freq 2, amp 3)'],['set_expression',{},'set_expression'],
+ ['set_motion_blur',{angle:180,samples:0,shutter_phase:30,curve_points:[[0,0],[1,1]]},'shutter 180°'],
+ ['set_keyframe_bezier',{handles:[0,0,1,1],at:2},'ease [0, 0, 1, 1]'],
+ ['set_keyframes',{keys:[null,{t:2},{time:3},{}]},'2 keys']
+]) {xfOps(transform,MODES,event(tool,args));assert.equal(transform.gizmo.read[0],expected,tool);}
+xfOps(transform,MODES,{tool_name:'set_property',phase:'complete',payload:{param:'rot_x',value:30}});assert.equal(transform.gizmo.next.rot_x,30);assert.equal(transform.gizmo.three,true);
+console.log('PASS sparse key changes, hold curves, degenerate Bezier slopes, graph bounds and transform aliases');
+
+{
+// Lighting and scene lists also accept partial, forward-compatible engine records.
+const minimalScene={scene3d:{panels:{viewer:{kind:'viewer'},tree:{kind:'tree'},info:{kind:'kv'},keys:{kind:'keys'}}},lighting:{panels:{viewer:{kind:'viewer'},list:{kind:'list'},rig:{kind:'lightrig'}}}};
+const lights=fresh('lighting');
+for(const args of [{kind:'point'},{kind:'point',intensity:0,pos:['bad',.5],color:[1,0]},{id:'fill',kelvin:4500,pos:[.25,.5],color:[1,.5,0]},{id:'point',pos:[.75,.5]}])assert.equal(sceneOps(lights,minimalScene,event('set_light',args)),true);
+assert.equal(lights.views.lighting.list.rows.find(r=>r._id==='point').v,'');
+assert.equal(lights.views.lighting.rig.rows.find(r=>r[0]==='point')[3],0);
+assert.equal(lights.views.lighting.list.rows.find(r=>r._id==='fill').v,'4500K');
+assert.equal(lights.views.scene3d.tree.items.filter(x=>x.name==='point').length,1);
+assert.equal(lights.views.scene3d.tree.items.find(x=>x.name==='fill').icon,'fill');
+assert.equal(sceneOps(lights,minimalScene,event('set_light',{})),false);
+for(const [args,result,ids] of [[{preset:'three_point'}, {},['rig_key','rig_fill','rig_rim']],[{preset:'portrait',subject:['bad',.5]},{lights:[null,{id:'custom'},'string-light']},['custom','string-light']]]) {
+ const state=fresh('lighting');assert.equal(sceneOps(state,minimalScene,event('light_rig',args,'complete',result)),true);
+ assert.deepEqual(plain(state.views.lighting.list.rows.map(r=>r.k)),ids);assert.equal(state.views.lighting.viewer.overlay,undefined);
+}
+const isolatedLight=fresh('lighting');assert.equal(sceneOps(isolatedLight,{lighting:{panels:{viewer:{kind:'viewer'}}}},event('set_light',{kind:'point'})),true);assert.equal(isolatedLight.views.scene3d,undefined);
+const camera=fresh('scene3d');
+for(const args of [{cam_x:4},{cam_roll:15},{}])assert.equal(sceneOps(camera,minimalScene,event('set_camera',args)),true);
+assert.equal(camera.views.scene3d.info.blocks.find(r=>r.k==='Position').v,'X 4');
+assert.equal(camera.views.scene3d.info.blocks.find(r=>r.k==='Rotation').v,'0, 0, 15');
+for(const args of [{property:'cam_x',value:5},{property:'cam_y',value:6,time:1},{property:'cam_x',value:7,time:2},{property:'cam_z',value:'invalid'}])assert.equal(sceneOps(camera,minimalScene,event('set_camera_keyframe',args)),true);
+assert.equal(camera.camKeys.length,3);assert.equal(camera.views.scene3d.keys.lanes.length,2);assert.equal(camera.views.scene3d.keys.playhead,2);
+assert.equal(camera.views.scene3d.tree.items.filter(x=>x.icon==='cam').length,1);
+for(const config of [{},{objects:'invalid',lights:[{}, {kind:'fill'}]},{objects:[{kind:'plane'}],lights:'invalid'}])assert.equal(sceneOps(camera,minimalScene,event('add_scene3d',{config})),Object.keys(config).length>0);
+assert.ok(camera.views.scene3d.tree.items.some(x=>x.name==='light 1'));assert.ok(camera.views.scene3d.tree.items.some(x=>x.name==='fill 2'));
+const mesh=fresh('modelling');
+for(const [tool,args,name] of [['mesh_boolean',{},'boolean diff'],['mesh_boolean',{operation:'union'},'boolean union'],['generate_mesh_primitive',{primitive:'cube'},'cube'],['generate_mesh_primitive',{kind:'sphere'},'sphere'],['generate_mesh_primitive',{},'primitive'],['mesh_custom',{},'custom']]) {
+ assert.equal(sceneOps(mesh,MODES,event(tool,args)),true);assert.equal(Object.values(mesh.views.modelling).find(v=>v.nodes).nodes.at(-1).name,name);
+}
+const noMaterial=fresh('lighting');noMaterial.views.lighting={info:{sub:'missing'}};
+assert.equal(sceneOps(noMaterial,{lighting:{panels:{info:{kind:'kv'}}}},event('remove_material',{name:'missing'})),true);
+assert.equal(noMaterial.views.lighting.info.sub,'');assert.deepEqual(plain(noMaterial.views.lighting.info.blocks),[{sec:'remove_material',_live:true},{k:'Name',v:'missing',_live:true,_flash:1000}]);
+console.log('PASS sparse lighting, scene/camera records, default mesh names and material removal');
+}
+
+{
+ const {summary,railArgs,assetNames,splitName,clipLabel,readCard,peek,route}=root.namespace;
+ assert.equal(summary(null),'');assert.equal(summary(''),'');assert.equal(summary([1]),'1 item');
+ assert.equal(summary(42),'42');assert.equal(summary('x'.repeat(40)),'x'.repeat(35)+'…');
+ assert.equal(summary({ok:true,path:'/private',absent:null,build:'hash',samples:[1,2],gain:2}),'samples ×2, gain 2');
+ for(const arg of [null,undefined,42,'text',[1]])assert.equal(railArgs({},arg),arg);
+ const raw={clip_id:'clip123',asset_id:'asset123',track_id:'track123',gain:2};
+ assert.deepEqual(plain(railArgs({},raw)),{gain:2});assert.equal(raw.clip_id,'clip123');
+ assert.deepEqual(plain(railArgs({liveTL:{tracks:[]},assets:{}},raw)),{gain:2});
+ assert.equal(splitName({},null),null);assert.equal(splitName({},''),'');
+ assert.equal(clipLabel({}, {label:'V1'},'ingest'),'V1 · Clip 01');
+ const state=fresh('edit');state.liveTL={tracks:[{id:'t1',label:'Video'}]};
+ peek(state,MODES,{track_id:'t1',param:'gain'});assert.equal(state.liveTL.tracks[0]._peek,1000);
+ peek(state,MODES,{track_id:'missing'});assert.equal(state.liveTL.tracks.length,1);
+ assert.equal(readCard(state,MODES,'get_x',[]),false);assert.equal(readCard(fresh('unknown'),MODES,'get_x',[['X','1']]),false);
+ const noPayload={tool_name:'import_media',call_id:'unpopulated',phase:'complete'};assert.equal(assetNames(noPayload,{}),noPayload);
+ for(const bad of [null,{type:'tick'},{phase:'start'}])assert.equal(route(bad,state,MODES)[0],bad);
+ let output=route({tool_name:'unknown_owned_tool',phase:'start',ts:42,ts_ms:100},state,MODES);
+ assert.equal(output[0].id,'unknown_owned_tool@42');assert.equal(output[0].args,undefined);
+ output=route({tool_name:'unknown_owned_tool',phase:'complete',ts:42,ts_ms:145},state,MODES);
+ assert.equal(output[0].dur_ms,45);assert.equal(output[0].status,'ok');
+ assert.equal(route({tool_name:'unknown_owned_tool',phase:'complete',duration_ms:7},state,MODES)[0].dur_ms,7);
+ assert.equal(route({tool_name:'unknown_owned_tool',phase:'start'},state,MODES)[0].id,'unknown_owned_tool@');
+ output=route({tool_name:'unknown_owned_tool',phase:'progress',payload:{done:3,total:4}},state,MODES);
+ assert.deepEqual(plain(output[0].progress),{done:3,total:4});
+ assert.equal(route({tool_name:'unknown_owned_tool',phase:'progress'},state,MODES)[0].progress.pct,null);
+ output=route({tool_name:'normalize_loudness',phase:'complete',target:{param:'volume'},payload:{from:1,to:2.5}},fresh('mixing'),MODES);
+ assert.equal(output[0].args.volume,'x1 → x2.5');
+ const colors=fresh('color');route({tool_name:'false_color',phase:'complete'},colors,MODES);assert.equal(colors.views.color.viewer.falsecolor.split,.5);
+ route({tool_name:'false_color',phase:'complete',payload:{split:.25}},colors,MODES);assert.equal(colors.views.color.viewer.falsecolor.split,.25);
+ route({tool_name:'render_scope',call_id:'scope',phase:'start'},colors,MODES);assert.equal(colors._scopeCalls.scope,'scope');
+ route({tool_name:'render_scope',call_id:'scope',phase:'complete'},colors,MODES);assert.equal(colors._scopeCalls.scope,'scope');
+ const reading=fresh('edit');
+ output=inspectOps(reading,MODES,{tool_name:'get_owned',phase:'error',duration_ms:12},'failed');assert.equal(output[0].status,'error');assert.equal(output[0].dur_ms,12);
+ output=inspectOps(reading,MODES,{tool_name:'get_owned',phase:'complete'},'empty');assert.equal(output[0].status,'ok');
+ console.log('PASS sparse read replies, private-ID redaction, track peeks, fallback call IDs, timing and landed volume');
+}
+{
+ const st=fresh('scene3d');
+ sc(st,'add_scene3d',{config:{objects:[{name:'Subject'}],lights:[{name:'Fill'}]}});
+ sc(st,'set_camera',{cam_fov:40});
+ for(let i=0;i<18;i++)sc(st,'set_light',{id:'Owned '+i,intensity:i});
+ const tree=Object.values(st.views.scene3d).find(v=>v.items);
+ assert.equal(tree.items.length,14);assert.equal(tree.items[0].icon,'cam');assert.deepEqual(plain(tree.items.slice(1).map(x=>x.name)),Array.from({length:13},(_,i)=>'Owned '+i));
+ for(let i=0;i<30;i++)sc(st,'set_camera_key',{property:'cam_pan',value:i,time:i});
+ assert.equal(st.camKeys.length,24);assert.equal(st.camKeys[0].t,6);assert.equal(st.camKeys.at(-1).t,29);
+ const model=fresh('modelling');
+ for(let i=0;i<10;i++)sc(model,'generate_mesh_primitive',{primitive:{kind:'sphere'+i}});
+ const stack=Object.values(model.views.modelling).find(v=>v.nodes);
+ assert.deepEqual(plain(stack.nodes.map(n=>n.name)),Array.from({length:7},(_,i)=>'sphere'+(i+3)));
+ assert.equal(stack.nodes.filter(n=>n.em).length,1);
+ const tr=fresh('tracking');
+ sc(tr,'solve_camera',{}, {frame_rms:[.2,.7,1.2],solves:[{rms_px:.7}]});
+ const keys=Object.values(tr.views.tracking).find(v=>v.graph);
+ assert.deepEqual(plain(keys.graph.pts),[.2,.7,1.2]);assert.equal(keys.graph.max,2);assert.equal(tr.views.tracking.viewer.left,'solve 0.70 px RMS');
+ keys.graph.thr=.5;
+ sc(tr,'track_points',{}, {frame_rms:[1],residuals:['invalid',2],residuals_px:[.1,.2],solves:[]});
+ assert.deepEqual(plain(keys.graph.pts),[.1,.2]);assert.equal(keys.graph.thr,.5);assert.equal(keys.graph.max,1);
+ const pt=fresh('particles');sc(pt,'particle_simulate_raw',{steps:3});sc(pt,'particle_simulate_raw',{steps:7});
+ const rows=Object.values(pt.views.particles).find(v=>v.rows).rows;
+ assert.equal(rows.filter(r=>r._id==='raw').length,1);assert.equal(rows.find(r=>r._id==='raw').v,'7 steps');
+ sc(pt,'add_emitter',{});assert.ok(Object.values(pt.views.particles).find(v=>v.rows).rows.some(r=>r.k==='emitter'&&r.v===''));
+ const ph=sc(fresh('scene3d'),'simulate_physics',{bodies:[{x:0,y:0,clip_id:'body'}]});
+ assert.equal(ph.view.overlay.at(-1).r,.02);
+ console.log('PASS bounded scene history, camera keys and mesh stacks, tracking residual validation and raw simulation updates');
+}
+{
+ // Forward-compatible layouts can retain viewer telemetry before their panels arrive.
+ const unknown=fresh('future-layout');
+ for(const [tool,args,result] of [
+  ['add_emitter',{},{}],['set_light',{id:'light',pos:[.2,.3]},{}],
+  ['set_material',{name:'owned',roughness:.5},{}],['mesh_subdivide',{},{}],
+  ['set_camera',{cam_x:1},{}],['add_scene3d',{config:{objects:[{name:'owned'}]}},{}],
+  ['track_point',{x:.2,y:.3},{frame_rms:[.1,.2]}],
+ ]){const e=event(tool,args,'complete',result);sceneOps(unknown,MODES,e);assert.ok(unknown.views['future-layout'].viewer);}
+ assert.ok(unknown.views['future-layout'].viewer.overlay.some(o=>o.cam?.cam_x===1));
+ assert.ok(unknown.views['future-layout'].viewer.overlay.some(o=>o.pt?.[0]===.2));
+ assert.equal(Object.values(unknown.views['future-layout']).some(v=>v.rows||v.blocks||v.nodes||v.lanes),false);
+ const freshMask=fresh('roto');maskOps(freshMask,MODES,event('refine_matte',{clip_id:'owned'}));
+ assert.equal(Object.values(freshMask.views.roto).find(v=>v.blocks).sub,'refine matte');
+ for(const tool of ['track_mask','roto_propagate','remove_track_matte','remove_mask'])maskOps(fresh('roto'),MODES,event(tool));
+ const feather=fresh('roto');maskOps(feather,MODES,event('add_mask',{points:[{x:0,y:0,fo:2},{x:1,y:1,fi:0}]}));
+ assert.equal(Object.values(feather.views.roto).find(v=>v.blocks).blocks.find(b=>b.k==='Inner/outer feather').v,'1 pts');
+ const spanning=fresh('roto');maskOps(spanning,MODES,event('set_mask_path_key',{time:0}));maskOps(spanning,MODES,event('set_mask_path_key',{time:4}));
+ const sk=Object.values(spanning.views.roto).find(v=>v.lanes),bounds={...sk.ruler};
+ maskOps(spanning,MODES,event('set_track_matte'));
+ const area=sk.lanes.find(l=>l.label==='track matte').area;
+ assert.equal(area[0][0],bounds.t0+(bounds.t1-bounds.t0)*.06);assert.equal(area[1][0],bounds.t1-(bounds.t1-bounds.t0)*.06);
+ const removed=fresh('roto');removed.views.roto={viewer:{overlay:[{unrelated:true}]}};maskOps(removed,MODES,event('remove_mask'));assert.deepEqual(plain(removed.views.roto.viewer.overlay),[{unrelated:true}]);
+ console.log('PASS future layouts retain geometry, absent masks remain harmless and matte spans use existing key bounds');
+}
+
+{
+ const {route,callSection,xfOps,COVB_H}=root.namespace;
+ const owned=fresh('captions');owned.liveTL={tracks:[{id:'t',clips:[{id:'clip1',label:'Owned title'}]}]};
+ assert.equal(callSection(owned,MODES,event('set_text_weight',{clip_id:'clip1',weight:600})),true);
+ assert.deepEqual(plain(owned.liveTL.tracks[0].clips[0].fx),['w600']);
+ assert.equal(callSection(owned,MODES,event('set_text_weight',{clip_id:'clip1',weight:700})),true);
+ const kv=Object.values(owned.views.captions).find(v=>v.blocks);
+ assert.equal(kv.blocks.filter(b=>b.sec==='set_text_weight').length,1);assert.equal(kv.blocks.find(b=>b.k==='Weight').v,'700');
+ const sparse=fresh('edit');
+ xfOps(sparse,MODES,{tool_name:'set_transform',phase:'start'});
+ xfOps(sparse,MODES,event('set_property',{property:'x',value:12}));assert.equal(sparse.xform._.x,12);
+ xfOps(sparse,MODES,event('set_motion_blur',{samples:8,shutter_curve:'custom'}));assert.ok(sparse.gizmo.read.includes('samples 8'));assert.ok(sparse.gizmo.read.includes('curve custom'));
+ xfOps(sparse,MODES,event('set_motion_blur',{}));
+ assert.equal(COVB_H.gamut('unknown-owned-space'),'linear');assert.equal(COVB_H.clipObj({},'clip1'),null);assert.equal(COVB_H.clipObj({liveTL:{tracks:[]}},'clip1'),null);
+ assert.equal(graphicsOps(fresh('future-layout'),MODES,event('add_hud_frame')),true);
+ const graphic=fresh('graphics');route(event('add_hud_frame'),graphic,MODES);assert.equal(graphic.views.graphics.viewer.overlay.at(-1).label,'BOXES');
+ for(const tool of ['new_project','set_track'])route({tool_name:tool,call_id:tool,phase:'start'},fresh('edit'),MODES);
+ const color=fresh('grading');route(event('render_display_scope',{targets_75:true},'start'),color,MODES);route(event('grade',{},'progress',{ }),color,MODES);
+ const explicit=fresh('grading');route({tool_name:'grade',phase:'progress',payload:{pct:25}},explicit,MODES);assert.equal(explicit.views.grading.viewer.wipe,.25);
+ const exported=fresh('export');const start=event('export',{},'start');route(start,exported,MODES);
+ const failed=route({...start,phase:'error',payload:{error:'owned failure'}},exported,MODES);assert.equal(failed[0].status,'error');
+ assert.equal(exported.views.export.viewer.progress.halt,true);
+ const t={tracks:[{id:'t',clips:[{id:'c',s:0,e:1}]}]},s=fresh('edit');
+ editOps2(s,MODES,t,event('project_set',{width:640,height:360}),{width:640,height:360});assert.equal(s.views.edit.viewer.res,'640 x 360');
+ for(const [tool,args] of [['set_speed_ramp',{}],['set_speed_ramp',{keys:[[0,1]]}],['set_time_remap',{keys:[[0,1]]}],['set_flow_blur',{mode:'vector',shutter_curve:'custom'}]]){
+  delete t.tracks[0].clips[0].fx;delete t.tracks[0].clips[0].keys;
+  assert.equal(editOps2(s,MODES,t,event(tool,{clip_id:'c',...args}),{clip_id:'c',...args}),true);
+ }
+ assert.ok(t.tracks[0].clips[0].fx.includes('flow blur vector · curve custom'));
+ console.log('PASS replaceable text summaries, sparse transforms, explicit scope progress and failed export feedback');
+}
+{
+ assert.deepEqual(plain(root.namespace.callDiff({}, {payload:{changed:{clips_added:[{clip_id:'Owned human title'}]}}})),[{k:'Clip',from:'—',v:'Owned human title'}]);
+ mix('eq',{args:{frequency:110,g:4}});assert.equal(eqFixture.bands[0].f,110);assert.equal(eqFixture.bands[0].g,4);assert.equal(eqFixture.bands[1].g,3);
+ const state=fresh('edit'),saved={tracks:[{id:'preserved',clips:[]}]};
+ const other=Object.entries(MODES).filter(([name])=>name!=='edit').flatMap(([name,m])=>Object.entries(m.panels).filter(([,p])=>p.kind==='timeline').map(([key])=>[name,key]))[0];
+ state.views[other[0]]={[other[1]]:saved};root.namespace.timelineView(state,MODES);assert.equal(state.views[other[0]][other[1]],saved);
+ const ex=fresh('export');exportOps(ex,MODES,event('export',{},'start'));
+ ex.views.export.viewer.progress={pct:42};exportOps(ex,MODES,event('resume_job',{},'start'));
+ assert.equal(ex.views.export.viewer.progress.pct,42);
+ exportOps(ex,MODES,event('cancel_job',{},'complete'));
+ assert.equal(Object.values(ex.views.export).find(v=>v.rows).rows[0][3],'✕ cancelled');
+ const material=fresh('lighting');assert.equal(sceneOps(material,MODES,event('remove_material',{name:'missing'})),true);
+ assert.equal(Object.values(material.views.lighting).find(v=>v.blocks)?.sub,undefined);
+ const lights=fresh('lighting');sceneOps(lights,MODES,event('remove_light',{id:'unknown'}));assert.deepEqual(plain(lights.views.lighting.viewer.overlay),[]);
+ const rigEntry=Object.entries(MODES.lighting.panels).find(([,p])=>p.kind==='lightrig')[0];
+ lights.views.lighting[rigEntry]={lights:[{name:'short',_id:'owned'},{name:'kept',_id:'other'}]};
+ sceneOps(lights,MODES,event('remove_light',{id:'owned'}));assert.deepEqual(plain(lights.views.lighting[rigEntry].lights),[{name:'kept',_id:'other'}]);
+ const unknown=fresh('future-layout');sceneOps(unknown,MODES,event('particle_simulate_raw',{steps:5}));assert.equal(Object.values(unknown.views['future-layout']).some(v=>v.rows),false);
+ console.log('PASS human clip names, nearest EQ band, preserved populated timelines, resumed progress and sparse light removal');
+}

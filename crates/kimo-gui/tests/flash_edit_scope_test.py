@@ -41,7 +41,7 @@ async def main():
                 __kimo.apply({type:'tool_start', id:'expiry-edit', name:'split_clip'});
                 __kimo.apply({type:'tool_end', id:'expiry-edit', name:'split_clip', dur_ms:1});
                 // Deliver the expired timer while the edit is queued for paint.
-                const expire = heldExpiry; heldExpiry = null; expire();
+                const expire = heldExpiry; window.runExpiry = expire; heldExpiry = null; expire();
                 await new Promise(requestAnimationFrame);
                 const edit = {scoped: __kimo.metrics.scoped, header: document.querySelector('#pill-act').textContent};
                 await new Promise(requestAnimationFrame);
@@ -52,7 +52,26 @@ async def main():
             assert result['edit']['header'] == result['before']['header'], result
             assert result['after'] == f"{result['calls']} calls", result
             assert result['after'] != result['before']['header'], result
+            queued = await page.evaluate("""async () => {
+                __kimo.apply({type:'tool_start',id:'prepare-catchup',name:'move_clip'});
+                __kimo.apply({type:'tool_end',id:'prepare-catchup',name:'move_clip',dur_ms:1});
+                await new Promise(requestAnimationFrame);
+                const before={scoped:__kimo.metrics.scoped,header:document.querySelector('#pill-act').textContent};
+                // A catch-up frame is pending, but the next edit has not arrived yet.
+                runExpiry();
+                __kimo.apply({type:'tool_start',id:'after-expiry',name:'split_clip'});
+                __kimo.apply({type:'tool_end',id:'after-expiry',name:'split_clip',dur_ms:1});
+                await new Promise(requestAnimationFrame);
+                const edit={scoped:__kimo.metrics.scoped,header:document.querySelector('#pill-act').textContent};
+                await new Promise(requestAnimationFrame);
+                return {before,edit,after:document.querySelector('#pill-act').textContent,calls:__kimo.state.callCount};
+            }""")
+            assert queued['edit']['scoped'] == queued['before']['scoped'] + 1, queued
+            assert queued['edit']['header'] == queued['before']['header'], queued
+            assert queued['after'] == f"{queued['calls']} calls", queued
+            assert queued['after'] != queued['before']['header'], queued
             assert not errors, errors
+            print('PASS expiry before the next edit also preserves scoped paint during pending catch-up')
             print('PASS expired flash preserves scoped edit paint and header catches up on the following frame')
             await browser.close()
     finally:

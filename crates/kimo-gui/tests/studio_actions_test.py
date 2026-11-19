@@ -53,6 +53,7 @@ async def main():
                   if(action==='import_media')return {ok:true,data:{asset_id:'a'}};
                   if(action==='duplicate_clip')return {ok:true,data:{clip_id:'duplicate'}};
                   if(action==='add_track')return {ok:true,data:{track_id:fixture.newTrack||'t'}};
+                  if(action==='add_clip'&&fixture.insertClip){const c={id:'inserted',start:a.start,duration:a.duration,source:{type:a.source_type,asset_id:a.asset_id}};fixture.project.tracks.find(t=>t.id===a.track_id).clips.push(c);return {ok:true,data:{clip_id:c.id}};}
                   if(action==='add_text')return {ok:true,data:{clip_id:'c'}};
                   if(action==='export_job_start')return {ok:true,data:{job_id:'job'}};
                   if(action==='job_status')return {ok:true,data:{state:fixture.jobState,frames_done:20,frames_total:20,chunks:{done:1,total:1},eta:{seconds:0},result:{path:'/fixture/out.mp4'},error:fixture.jobState==='failed'?'synthetic encoder failure':null}};
@@ -149,6 +150,30 @@ async def main():
             await page.locator('#tl-snap').check()
             await page.evaluate('__kimo.V.t=1')
             await drag_clip('.cl',48,'move_clip',{'clip_id':'c','start':1})
+            # End-edge snapping must win when the start edge has no nearby target.
+            await page.evaluate('fixture.project.markers=[{id:"end-target",time:9,name:"End target"}];__kimo.V.t=0;__kimo.loadProject()')
+            await drag_clip('.cl',48,'move_clip',{'clip_id':'c','start':1})
+            # With two candidates, choose the closer end edge rather than the start.
+            await page.evaluate('fixture.project.markers=[{id:"start-target",time:0.9},{id:"end-target",time:9}];__kimo.loadProject()')
+            await drag_clip('.cl',49,'move_clip',{'clip_id':'c','start':1})
+            await page.evaluate('fixture.project.markers=[];__kimo.V.t=0;__kimo.loadProject()')
+            await page.locator('#tl-snap').uncheck()
+            # Generated clips may extend, while unknown source duration stays unbounded.
+            await page.evaluate('fixture.project.tracks[0].clips[0].source={type:"solid",color:[1,0,0]};__kimo.loadProject()')
+            await drag_clip('.r',50,'trim_clip',{'clip_id':'c','duration':9})
+            await drag_clip('.l',50,'trim_clip',{'clip_id':'c','duration':7})
+            await page.evaluate('fixture.project.tracks[0].clips[0].source={type:"media",asset_id:"a"};delete fixture.project.assets.a.duration;__kimo.loadProject()')
+            await drag_clip('.r',50,'trim_clip',{'clip_id':'c','duration':9})
+            await page.evaluate('fixture.project.assets.a.duration=8;__kimo.loadProject();fixture.requests=[]')
+            # A sub-threshold pointer movement must not edit the selected clip.
+            box=await page.locator('[data-clip="c"] .cl').bounding_box()
+            await page.mouse.move(box['x']+20,box['y']+box['height']/2)
+            await page.mouse.down()
+            await page.mouse.move(box['x']+21,box['y']+box['height']/2)
+            await page.mouse.up()
+            assert not await page.evaluate('fixture.requests.some(r=>["move_clip","trim_clip"].includes(r.args.args?.action))')
+            await page.locator('#tl-snap').check()
+            print('PASS end-edge snapping, generated and unknown-duration trims, and drag dead zone')
             await page.evaluate('fixture.project.tracks[0].locked=true;__kimo.loadProject();fixture.requests=[]')
             await page.click('[data-clip="c"] .cl')
             assert 'locked' in await page.inner_text('#toast')
@@ -193,6 +218,13 @@ async def main():
             await page.mouse.wheel(0,-100)
             await page.keyboard.up('Control')
             await page.wait_for_function('__kimo.T.z>60')
+            await page.keyboard.down('Meta')
+            await page.mouse.wheel(0,100)
+            await page.keyboard.up('Meta')
+            await page.wait_for_function('Math.abs(__kimo.T.z-60)<1e-9')
+            await page.mouse.wheel(0,100)
+            await page.wait_for_timeout(80)
+            assert abs(await page.evaluate('__kimo.T.z')-60)<1e-9, 'ordinary wheel must not zoom'
             await page.locator('#tl-scroll').evaluate('el=>el.scrollLeft=0')
             ruler = await page.locator('#tl-ruler').bounding_box()
             await page.mouse.move(ruler['x']+100,ruler['y']+10)
@@ -429,6 +461,259 @@ async def main():
             assert await page.evaluate('__kimo.V.t')==.5
             assert await page.evaluate('__kimo.P.dur')==4
             print('PASS marker seeking, track flags, speed-adjusted duration and transition/effect badges')
+            await page.evaluate('''async () => {
+              fixture.project.assets={a:{id:'a',path:'/fixture/unknown-duration.mp4',duration:0}};
+              fixture.project.tracks=[{id:'empty',clips:[]},{id:'preferred',clips:[{id:'selected',start:0,duration:1,source:{type:'color'}}]}];
+              fixture.project.markers=[];fixture.insertClip=true;fixture.requests=[];
+              __kimo.T.z=50;__kimo.S.sel='selected';__kimo.V.t=2;await __kimo.loadProject();
+            }''')
+            await page.locator('.asset[data-id="a"]').dblclick()
+            await page.wait_for_function('__kimo.S.sel==="inserted"&&__kimo.P.clips.has("inserted")')
+            inserted=await page.evaluate('fixture.requests.find(r=>r.args.args?.action==="add_clip").args.args.args')
+            assert inserted['track_id']=='preferred',inserted
+            assert inserted['duration']==5 and inserted['start']==2,inserted
+            assert 'unknown-duration.mp4' in await page.inner_text('[data-clip="inserted"]')
+            for refusal in ['returned','thrown']:
+                await page.evaluate('(kind)=>{fixture.fixRefused=kind==="returned";fixture.fail=kind==="thrown"?"engine_call":null}',refusal)
+                await page.click('#ed-track')
+                expected='synthetic fix refusal' if refusal=='returned' else 'fixture failure engine_call'
+                await page.wait_for_function('(text)=>document.querySelector("#toast").textContent.includes(text)',arg=expected)
+                assert await page.evaluate('__kimo.P.tracks.length')==2
+            await page.evaluate('fixture.fixRefused=false;fixture.fail=null')
+            print('PASS selected-track insertion, unknown-duration default and failed track creation feedback')
+            await page.evaluate('''async () => {
+              fixture.project.tracks=[{id:'t',name:'Video',clips:[{id:'c',start:0,duration:8,source:{type:'color'}}]}];
+              fixture.insertClip=false;fixture.deferPreview=false;__kimo.S.dirty=false;
+              await __kimo.loadProject();document.activeElement.blur();
+            }''')
+            for key, tab in [('1','home'),('3','agent'),('4','live'),('5','connections'),('2','edit')]:
+                await page.keyboard.press('Control+'+key)
+                assert await page.evaluate('__kimo.S.tab')==tab
+            for shortcut, action in [('Control+z','undo'),('Control+Shift+z','redo'),('Control+y','redo'),('Control+d','duplicate_clip'),('s','split_clip'),('Delete','delete_clip'),('Shift+Backspace','ripple_delete'),('t','add_text'),('m','add_marker')]:
+                await page.evaluate('fixture.requests=[];__kimo.S.sel="c";__kimo.V.t=2;document.activeElement.blur()')
+                await page.keyboard.press(shortcut)
+                await page.wait_for_function('(a)=>fixture.requests.some(r=>r.args.args?.action===a)',arg=action)
+            await page.evaluate('document.activeElement.blur();__kimo.V.t=3')
+            await page.keyboard.press('Shift+ArrowLeft')
+            assert await page.evaluate('__kimo.V.t')==2
+            await page.keyboard.press('Shift+ArrowRight')
+            assert await page.evaluate('__kimo.V.t')==3
+            for shortcut in ['ArrowLeft','ArrowRight','Home','End']:
+                await page.keyboard.press(shortcut)
+            assert await page.evaluate('__kimo.V.t')==8
+            zoom=await page.evaluate('__kimo.T.z')
+            await page.keyboard.press('+')
+            assert await page.evaluate('__kimo.T.z')>zoom
+            await page.keyboard.press('_')
+            assert abs(await page.evaluate('__kimo.T.z')-zoom)<1e-6
+            for shortcut, command, picked in [('Control+Shift+s','project_save','/fixture/keys.kimo'),('Control+o','project_open','/fixture/open-keys.kimo'),('Control+i','engine_call','/fixture/keys.mp4')]:
+                await page.evaluate('(p)=>{fixture.requests=[];fixture.pick=[p];__kimo.S.dirty=false;document.activeElement.blur()}',picked)
+                await page.keyboard.press(shortcut)
+                await page.wait_for_function('(c)=>fixture.requests.some(r=>r.command===c)',arg=command)
+            await page.keyboard.press('Control+e')
+            assert await page.is_visible('#export')
+            await page.keyboard.press('Escape')
+            assert not await page.is_visible('#export')
+            assert not errors,errors
+            print('PASS keyboard navigation, editing, exact seeking, zoom and project/media/export commands')
+            for command, selector in [('pick','#bin-import'),('project_save','#ed-save'),('project_open','#ed-open')]:
+                await page.evaluate('(command)=>{fixture.fail=command;fixture.pick=["/fixture/refused.kimo"];__kimo.S.dirty=false}',command)
+                await page.click(selector)
+                await page.wait_for_function('(command)=>document.querySelector("#toast").textContent.includes("fixture failure "+command)',arg=command)
+            await page.evaluate('fixture.fail=null;fixture.pick=[];fixture.requests=[];__kimo.S.app.project_path=null')
+            await page.click('#ed-open')
+            await page.click('#ed-save')
+            assert not await page.evaluate('fixture.requests.some(r=>r.command==="project_open"||r.command==="project_save")')
+            print('PASS failed media/project dialogs and cancelled file picks preserve the current project')
+            await page.evaluate("__kimo.S.app.settings.agent='api';__kimo.show('agent');void __kimo.sendAgent('Owned event-stream fixture')")
+            await page.wait_for_function('__kimo.S.busy')
+            await page.evaluate('''() => {
+              const emit=ev=>__mock.emit('agent-event',{turn:__kimo.S.turn,ev});
+              emit({kind:'thinking',text:'A'.repeat(700)});emit({kind:'thinking',text:'Z'});
+              emit({kind:'tool_start',id:'tool-one',tool:'timeline',input:{action:'inspect'}});
+              emit({kind:'tool_start',id:'tool-one',tool:'duplicate-event'});
+              emit({kind:'tool_start',id:'tool-two',tool:'fixture'});
+              emit({kind:'tool_end',id:'unknown',ok:true});
+              emit({kind:'tool_end',id:'tool-one',ok:true,output:'owned output'});
+              emit({kind:'tool_end',id:'tool-two',ok:false,output:'owned refusal'});
+              emit({kind:'status',text:'Fixture work complete'});
+            }''')
+            assert await page.locator('#msgs .thinking').last.inner_text()=='A'*599+'Z'
+            assert await page.locator('#msgs .steps').last.locator('.stp').count()==2
+            assert await page.locator('#msgs .steps').last.locator('.stp.err').count()==1
+            await page.locator('#msgs .steps').last.locator('.stp.ok summary').click()
+            assert 'owned output' in await page.locator('#msgs .steps').last.inner_text()
+            assert 'Fixture work complete' in await page.locator('#msgs .status').last.inner_text()
+            await page.evaluate("__mock.emit('agent-event',{turn:__kimo.S.turn,ev:{kind:'done',text:'First fixture reply',turns:3,cost_usd:0.375}});fixture.finishAgent({reply:'First fixture reply'})")
+            await page.wait_for_function('!__kimo.S.busy')
+            meta=await page.locator('#msgs .done-meta').last.inner_text()
+            assert '3 turns' in meta and '$0.375' in meta
+            await page.evaluate("void __kimo.sendAgent('Second fixture turn')")
+            await page.wait_for_function('__kimo.S.busy')
+            await page.evaluate("fixture.finishAgent({reply:'Reply without usage metadata'})")
+            await page.wait_for_function('!__kimo.S.busy')
+            meta=await page.locator('#msgs .done-meta').last.inner_text()
+            assert 'turns' not in meta and '$' not in meta,meta
+            assert await page.locator('#msgs .body').last.inner_text()=='Reply without usage metadata'
+            await page.evaluate("void __kimo.sendAgent('Empty fixture turn')")
+            await page.wait_for_function('__kimo.S.busy')
+            await page.evaluate("__mock.emit('agent-event',{turn:__kimo.S.turn,ev:{kind:'done',turns:1}});__kimo.show('edit');fixture.finishAgent({reply:''})")
+            await page.wait_for_function('!__kimo.S.busy')
+            assert '1 turn' in await page.locator('#msgs .done-meta').last.inner_text()
+            assert 'Done.' in await page.inner_text('#ask-status')
+            assert 'Done.' in await page.inner_text('#toast')
+            assert not errors,errors
+            print('PASS thinking/tool/status streams and turn-local usage metadata, including reply-only and empty turns')
+            await page.evaluate("__kimo.show('live')")
+            await page.click('#live-clear')
+            await page.evaluate('''() => {
+              __mock.emit('live-event',{id:'unknown-actor',actor:'fixture-agent',t:0,tool:'timeline',phase:'end',ok:false,findings:[{severity:'error',message:'Owned invalid edit'}],counts:{error:2,warning:1}});
+              __mock.emit('live-event',{id:'owned-user',actor:'you',t:0,tool:'timeline',phase:'end',ok:true,result:'Owned user result',findings:[{severity:'error',message:'User finding'}]});
+              __mock.emit('live-event',{id:'owned-app',actor:'app',t:0,tool:'timeline',phase:'end',ok:true,findings:[{severity:'error',message:'App finding'}]});
+              __mock.emit('live-event',{id:'owned-agent',actor:'codex',t:0,tool:'timeline',phase:'end',ok:true,counts:{error:1,warning:2}});
+              __mock.emit('external-event',{});__mock.emit('external-event',{ev:{}});
+              __mock.emit('external-event',{conn:31,t:0,ev:{type:'owned_change'}});
+              __mock.emit('external-event',{conn:32,t:0,ev:{tool_name:'owned_external',phase:'error',payload:{error:'Owned external refusal'}}});
+            }''')
+            await page.wait_for_function('document.querySelector("#live-rows").textContent.includes("Owned external refusal")')
+            assert 'Owned invalid edit' in await page.inner_text('#toast')
+            assert await page.locator('#live-rows .a-agent').filter(has_text='fixture-agent').count()==1
+            assert '2 errors' in await page.inner_text('#live-rows')
+            assert '2 warnings' in await page.inner_text('#live-rows')
+            for kind, text in [('you','Owned user result'),('agents','fixture-agent'),('external','Owned external refusal')]:
+                await page.click(f'#live-filter [data-f="{kind}"]')
+                assert text in await page.inner_text('#live-rows')
+            await page.click('#live-filter [data-f="all"]')
+            await page.evaluate('''() => {
+              for(let i=0;i<610;i++)__mock.emit('live-event',{id:'bounded-'+i,actor:'app',t:i,tool:'fixture',phase:'end',ok:true,read_only:true});
+            }''')
+            await page.wait_for_function('document.querySelector("#live-count").textContent==="600 actions"')
+            assert await page.evaluate('__kimo.S.live.size')==600
+            assert not await page.evaluate('__kimo.S.live.has("unknown-actor")')
+            assert await page.locator('#live-rows tr').count()==300
+            assert not errors,errors
+            print('PASS sparse external events, actor filters, error/warning counts and bounded live history')
+            await page.evaluate("""async () => {
+              fixture.fail=null;fixture.fixRefused=false;fixture.pick=[];
+              fixture.project={width:640,height:360,fps:25,assets:{},tracks:[]};
+              __kimo.show('edit');await __kimo.loadProject();
+              __kimo.S.app.project_path='/fixture/owned.kimo';document.querySelector('#ex-path').value='';
+            }""")
+            await page.click('#ed-export')
+            assert await page.inner_text('#ex-sum')=='The timeline is empty — add a clip first.'
+            assert await page.is_disabled('#ex-go')
+            assert await page.input_value('#ex-path')=='/fixture/owned.mp4'
+            await page.click('#ex-close')
+            await page.evaluate("""async () => {
+              fixture.project.tracks=[{id:'owned',clips:[{id:'owned',start:0,duration:1,source:{type:'color'}}]}];
+              await __kimo.loadProject();
+              const previous=__kimoBridge.invoke;window.exportFixture={start:{},status:null,polls:0};
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command==='engine_call'&&args.args.action==='export_job_start')return {ok:true,data:exportFixture.start};
+                if(command==='engine_read'&&args.args.action==='job_status'){exportFixture.polls++;return {ok:true,data:exportFixture.status};}
+                return previous(command,args);
+              };
+            }""")
+            await page.click('#ed-export')
+            await page.fill('#ex-path','')
+            await page.click('#ex-go')
+            assert await page.input_value('#ex-path')==''
+            assert await page.evaluate('fixture.requests.some(r=>r.command==="pick"&&r.args.kind==="export"&&r.args.suggest==="export.mp4")')
+            await page.fill('#ex-path','/fixture/owned.mp4')
+            await page.click('#ex-go')
+            assert await page.inner_text('#ex-err')=='The export did not start.'
+            await page.evaluate('exportFixture.start={job_id:"owned-export"}')
+            await page.click('#ex-go')
+            await page.wait_for_function('exportFixture.polls>0')
+            assert await page.inner_text('#ex-status')=='Rendering…'
+            await page.evaluate('exportFixture.status={state:"queued"}')
+            await page.wait_for_function('document.querySelector("#ex-status").textContent==="queued · 0/? frames"')
+            assert await page.locator('#ex-bar').evaluate('(e)=>e.style.width')=='0%'
+            assert await page.inner_text('#ex-eta')==''
+            await page.evaluate('exportFixture.status={state:"done"}')
+            await page.wait_for_function('document.querySelector("#ex-status").textContent==="Done · owned.mp4"')
+            assert not await page.is_disabled('#ex-go')
+            for status, expected in [({'state':'failed','warnings':['owned warning','second warning']},'owned warning second warning'),({'state':'cancelled'},'cancelled')]:
+                await page.evaluate('(status)=>exportFixture.status=status',status)
+                await page.click('#ex-go')
+                await page.wait_for_function('(text)=>document.querySelector("#ex-err").textContent===text',arg=expected)
+                assert not await page.is_disabled('#ex-go')
+            await page.click('#ex-close')
+            before=await page.evaluate('fixture.requests.length')
+            await page.evaluate("""() => {
+              for(const [selector,type] of [['#bin-list','contextmenu'],['#tl-heads','dblclick'],['#tl-heads','contextmenu'],['#tl-tracks','contextmenu'],['#live-filter','click']])document.querySelector(selector).dispatchEvent(new MouseEvent(type,{bubbles:true}));
+            }""")
+            assert await page.evaluate('fixture.requests.length')==before
+            assert not errors,errors
+            print('PASS empty export, cancelled picker, sparse job progress, fallback output path and terminal warning diagnostics')
+            await page.evaluate("""async () => {
+              const original=__kimoBridge.invoke;
+              const canvas=document.createElement('canvas');canvas.width=4;canvas.height=4;
+              canvas.getContext('2d').fillRect(0,0,4,4);window.ownedThumbnail=canvas.toDataURL();
+              window.mediaBoundary={refuse:false,textRead:false,thumbs:0};
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command==='media_thumb'){mediaBoundary.thumbs++;return ownedThumbnail;}
+                if(command==='engine_call'&&args.args.action==='add_track'&&mediaBoundary.refuse)return {ok:false};
+                if(command==='engine_read'&&args.args.action==='get_project'&&mediaBoundary.textRead)return {ok:true,text:'owned non-project response'};
+                return original(command,args);
+              };
+              fixture.project.assets={a:{id:'a',path:'/fixture/owned-a.png',duration:1,width:4,height:4},b:{id:'b',path:'/fixture/owned-b.png',duration:1,width:4,height:4}};
+              await __kimo.loadProject();
+            }""")
+            await page.wait_for_function('document.querySelectorAll("#bin-list .th img").length===2')
+            assert await page.evaluate('[...document.querySelectorAll("#bin-list .th img")].every(img=>img.src===ownedThumbnail)')
+            count=await page.evaluate('mediaBoundary.thumbs')
+            await page.fill('#bin-q','owned-a')
+            assert await page.locator('#bin-list .th img').count()==1
+            await page.fill('#bin-q','')
+            assert await page.locator('#bin-list .th img').count()==2
+            assert await page.evaluate('mediaBoundary.thumbs')==count
+            await page.evaluate('mediaBoundary.refuse=true')
+            await page.click('#ed-track')
+            await page.wait_for_function('document.querySelector("#toast").textContent==="add_track failed"')
+            await page.evaluate('mediaBoundary.refuse=false;mediaBoundary.textRead=true')
+            before=await page.evaluate('JSON.stringify(__kimo.P.proj)')
+            await page.evaluate('__kimo.loadProject()')
+            assert await page.evaluate('JSON.stringify(__kimo.P.proj)')==before
+            await page.evaluate("""async () => {
+              mediaBoundary.textRead=false;__kimo.S.app.engine.state='running';__kimo.show('home');
+              await __kimo.importPaths(['/fixture/first.mp4','/fixture/second.mp4']);
+            }""")
+            assert await page.evaluate('__kimo.S.tab')=='edit'
+            assert 'Imported 2 files' in await page.inner_text('#toast')
+            assert not errors,errors
+            print('PASS thumbnail insertion and cached filtering, fallback command error, invalid project reply and multi-file home import')
+            await page.evaluate("""() => {
+              const previous=__kimoBridge.invoke;window.turnRace={pending:[],stops:0,resets:0};
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command==='agent_send')return await new Promise((resolve,reject)=>turnRace.pending.push({resolve,reject,turn:args.turn}));
+                if(command==='agent_stop'){turnRace.stops++;return null;}
+                if(command==='agent_reset'){turnRace.resets++;return null;}
+                return previous(command,args);
+              };
+              __kimo.S.cli=[{id:'codex',installed:true,signed_in:true},{id:'antigravity',installed:true,signed_in:true}];
+              __kimo.show('agent');
+            }""")
+            for agent, glyph, fail in [('codex','◎',False),('antigravity','A',True)]:
+                await page.evaluate('(agent)=>{__kimo.S.app.settings.agent=agent;window.racePromise=__kimo.sendAgent("Owned delayed turn")}',agent)
+                await page.wait_for_function('__kimo.S.busy')
+                assert await page.locator('#msgs .who .alogo').last.inner_text()==glyph
+                pending=await page.evaluate('turnRace.pending.length')
+                await page.evaluate('__kimo.sendAgent("");__kimo.sendAgent(null);__kimo.sendAgent("duplicate while busy")')
+                assert await page.evaluate('turnRace.pending.length')==pending
+                turn=await page.evaluate('__kimo.S.turn')
+                await page.click('#agent-new')
+                await page.wait_for_function('(turn)=>__kimo.S.turn>turn',arg=turn)
+                assert not await page.evaluate('__kimo.S.busy'),'new conversation must release a cancelled pending turn'
+                before=await page.inner_text('#msgs')
+                await page.evaluate('(fail)=>{const old=turnRace.pending.at(-1);__mock.emit("agent-event",{turn:old.turn,ev:{kind:"text",text:"stale event"}});if(fail)old.reject(Error("stale failure"));else old.resolve({reply:"stale reply"})}',fail)
+                await page.evaluate('racePromise')
+                assert await page.inner_text('#msgs')==before
+                assert not await page.evaluate('__kimo.S.busy')
+            assert await page.evaluate('turnRace.stops')==2
+            assert await page.evaluate('turnRace.resets')==2
+            assert not errors,errors
+            print('PASS new conversation releases cancelled turns and ignores both late success and late failure')
             await page.close()
             native = await browser.new_page(viewport={'width': 1280, 'height': 800})
             native.set_default_timeout(10000)
@@ -631,10 +916,52 @@ async def main():
             await native.evaluate('setupFixture.mode="ready";setupFixture.ready=true;setupFixture.done=true')
             await native.click('#setup-go')
             await native.wait_for_function('!document.querySelector("#setup").classList.contains("on")')
+            await native.wait_for_function('document.querySelector("#h-parts").textContent.includes("Ready")')
             assert 'Ready' in await native.inner_text('#h-parts')
             assert 'using this computer' in await native.inner_text('#h-parts')
             assert not errors,errors
             print('PASS setup tool origins, download progress/error/retry, pause and readiness without real downloads')
+            await native.evaluate('''() => {
+              const invoke=__kimoBridge.invoke;window.commandFailure=null;
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command===commandFailure)throw Error('fixture rejection '+command);
+                return invoke(command,args);
+              };
+              __kimo.show('connections');document.querySelector('#key-input').closest('details').open=true;
+            }''')
+            for command, selector, message in [('key_set','#key-save','#key-msg'),('key_test','#key-test','#key-msg'),('mcp_set','#mcp-switch','#mcp-err'),('open_url','#key-page','#toast')]:
+                await native.evaluate('(command)=>commandFailure=command',command)
+                if command=='key_set': await native.fill('#key-input','owned-fixture-key-never-sent')
+                await native.click(selector)
+                await native.wait_for_function('([selector,command])=>document.querySelector(selector).textContent.includes("fixture rejection "+command)',arg=[message,command])
+            assert not await native.locator('#mcp-switch').evaluate('(e)=>e.classList.contains("busy")')
+            await native.evaluate("commandFailure='cli_status';__kimo.show('home');__kimo.show('connections')")
+            await native.wait_for_function('document.querySelector("#cli-msg").textContent.includes("fixture rejection cli_status")')
+            await native.evaluate('commandFailure=null')
+            assert not errors,errors
+            print('PASS key, connection, link and CLI status failures remain visible without leaking browser errors')
+            await native.evaluate("__kimo.show('connections');document.querySelector('#key-input').closest('details').open=true")
+            await native.evaluate("""() => {
+              const previous=__kimoBridge.invoke;window.boundaryReply={key:{remembered:false},mcp:{enabled:false}};
+              __kimoBridge.invoke=async(command,args)=>{
+                if(command==='key_set')return boundaryReply.key;
+                if(command==='mcp_set')return boundaryReply.mcp;
+                return previous(command,args);
+              };
+            }""")
+            for reply, expected in [({'remembered':False},'Set for this session.'),({'remembered':True,'store':'owned test store'},'Saved in the owned test store.')]:
+                await native.evaluate('(reply)=>boundaryReply.key=reply',reply)
+                await native.fill('#key-input','owned-fixture-key-never-sent')
+                await native.click('#key-save')
+                await native.wait_for_function('(text)=>document.querySelector("#key-msg").textContent===text',arg=expected)
+                await native.wait_for_function('document.querySelector("#key-input").value===""')
+            for reply, expected in [({'enabled':False},'The engine did not answer.'),({'enabled':False,'probe':{'error':'owned probe refusal'}},'owned probe refusal')]:
+                await native.evaluate('(reply)=>{boundaryReply.mcp=reply;document.querySelector("#mcp-switch").classList.remove("on")}',reply)
+                await native.click('#mcp-switch')
+                await native.wait_for_function('(text)=>document.querySelector("#mcp-err").textContent===text',arg=expected)
+                await native.wait_for_function('!document.querySelector("#mcp-switch").classList.contains("busy")')
+            assert not errors,errors
+            print('PASS session-only and remembered key receipts, missing and explicit MCP probe errors')
             await browser.close()
     finally:
         server.shutdown()

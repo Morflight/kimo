@@ -40,7 +40,12 @@ pub(crate) fn export_high_with(p:&Project,path:&str,format:&str,crf:u32,delivery
     if delivery_settings.mastering.is_some()&&format!="hevc10"{return Err("static mastering metadata supported by HEVC10 only".into())}
     let mut encoder_params="pools=2:frame-threads=2:log-level=error".to_string();if let Some(m)=&delivery_settings.mastering{encoder_params.push(':');encoder_params.push_str(&m.x265()?);}
     if format=="hevc10"{cmd.args(["-crf",&crf.to_string(),"-x265-params",&encoder_params,"-tag:v","hvc1"]);}
-    if let Some(matrix)=delivery.matrix_scale{cmd.args(["-vf",&format!("scale=in_range=pc:out_color_matrix={matrix}:out_range=tv")]);}
+    // Tag the actual encoder frames as well as the output stream. FFmpeg 9
+    // propagates frame color properties over encoder options; untagged raw
+    // input would otherwise erase the declared primaries and transfer.
+    let scale=delivery.matrix_scale.map(|matrix|format!("scale=in_range=pc:out_color_matrix={matrix}:out_range=tv,")).unwrap_or_default();
+    let frame_matrix=if delivery.matrix=="rgb"{"gbr"}else{delivery.matrix};
+    cmd.args(["-vf",&format!("{scale}format={pix},setparams=range={}:color_primaries={}:color_trc={}:colorspace={frame_matrix}",delivery.range,delivery.primaries,delivery.transfer_tag)]);
     cmd.args(["-color_range",delivery.range,"-color_primaries",delivery.primaries,"-color_trc",delivery.transfer_tag,"-colorspace",delivery.matrix]);
     let count=(p.duration()*p.fps).round() as usize;let frame_bytes=(p.width as usize).checked_mul(p.height as usize).and_then(|v|v.checked_mul(8)).ok_or("encoder frame overflow")?;
     let mut encoder=super::process::EncodeStream::new(cmd.arg(path),frame_bytes,super::process::encode_deadline(count))?;let mut cache=crate::render::Cache::new();

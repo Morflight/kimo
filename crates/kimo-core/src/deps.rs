@@ -156,7 +156,7 @@ pub fn resolve_path(project_dir: Option<&Path>, stored: &str) -> Resolved {
     let b = stored.as_bytes();
     if stored.contains('\\') || (b.len() > 2 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) { return Resolved { path: PathBuf::from(stored), how: How::WindowsStyle }; }
     let p = Path::new(stored);
-    if p.is_absolute() { Resolved { path: p.to_path_buf(), how: How::Abs } } else { Resolved { path: match project_dir { Some(d) => d.join(p), None => p.to_path_buf() }, how: How::Rel } }
+    if p.has_root() { Resolved { path: p.to_path_buf(), how: How::Abs } } else { Resolved { path: match project_dir { Some(d) => d.join(p), None => p.to_path_buf() }, how: How::Rel } }
 }
 
 /// Process-wide project directory, for readers deep in render/par worker threads that do not hold the project (a thread_local would be invisible to

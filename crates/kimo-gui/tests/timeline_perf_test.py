@@ -40,7 +40,7 @@ DOM_MAX = 400
 MUT_ON = """() => { window.__mut = { edit: {}, after: {} }; window.__editFr = -1; window.__mh = rs => { for (const r of rs) {
   const n = r.target.nodeType === 1 ? r.target : r.target.parentElement, p = n && n.closest('[data-panel]');
   const k = p ? p.dataset.panel + (r.type === 'characterData' ? ':text' : '') : (n && (n.closest('[id]') || {}).id) || '?';
-  const b = window.__mut[window.__fr === window.__editFr ? 'edit' : 'after']; b[k] = (b[k] || 0) + 1; } }; window.__mo = new MutationObserver(window.__mh);
+  const b = window.__mut[window.__inFrame && window.__fr === window.__editFr ? 'edit' : 'after']; b[k] = (b[k] || 0) + 1; } }; window.__mo = new MutationObserver(window.__mh);
   window.__mo.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true }); }"""
 MUT_OFF = "() => { window.__mh(window.__mo.takeRecords()); window.__mo.disconnect(); return window.__mut; }"
 EDIT_SCOPE = {'tl', 'agent'}
@@ -58,7 +58,16 @@ SEAMS = """() => { const out = { pairs: 0, overlap: 0, minGap: null, past: 0, el
   return out; }"""
 PROBE = """(() => { const rAF = window.requestAnimationFrame.bind(window); window.__app = [];
   window.__wheel = []; addEventListener('wheel', e => window.__wheel.push(e.timeStamp), { capture: true, passive: true });
-  window.__fr = 0; window.requestAnimationFrame = cb => rAF(t => { window.__fr++; const a = performance.now(); cb(t); const b = performance.now(); window.__app.push([t, b - a, b]); });
+  window.__fr = 0; window.__inFrame = false;
+  window.requestAnimationFrame = cb => rAF(t => {
+    if (window.__mo) window.__mh(window.__mo.takeRecords());
+    window.__fr++; window.__inFrame = true; const a = performance.now();
+    try { cb(t); } finally {
+      const b = performance.now(); window.__app.push([t, b - a, b]);
+      if (window.__mo) window.__mh(window.__mo.takeRecords());
+      window.__inFrame = false;
+    }
+  });
   window.__obs = null; window.__watch = () => { const S = window.__obs = []; window.__stop = false; const loop = t => {
     const tl = document.querySelector('[data-panel=tl]');
     S.push([t, document.getElementsByTagName('*').length, tl ? tl.querySelectorAll('.clip:not(.crun)').length : -1, tl ? tl.querySelectorAll('.crun').length : -1]);
@@ -102,6 +111,20 @@ async def main():
         await pg.add_init_script(PROBE)
         await pg.goto(f'http://127.0.0.1:{srv.server_address[1]}/ui/index.html?feed=off'); await pg.wait_for_timeout(600)
         await pg.evaluate('() => __kimo.apply({type: "mode", mode: "edit"})'); await pg.wait_for_timeout(300)
+        # Check the observer's attribution with an owned DOM node: timer work
+        # after a callback must not be charged to that callback's frame.
+        await pg.evaluate(MUT_ON)
+        await pg.evaluate("""async () => {
+          const node=document.createElement('div');node.id='probe-calibration';document.body.appendChild(node);
+          window.__editFr=window.__fr+1;
+          await new Promise(resolve=>requestAnimationFrame(()=>{node.textContent='frame';resolve();}));
+          await new Promise(resolve=>setTimeout(()=>{node.textContent='timer';resolve();},0));
+          node.remove();
+        }""")
+        calibration=await pg.evaluate(MUT_OFF)
+        assert calibration['edit'].get('probe-calibration') == 1, calibration
+        assert calibration['after'].get('probe-calibration') == 1, calibration
+        print('PASS mutation attribution distinguishes frame work from later timer work')
         h0 = await heap()
 
         # (a) mount: every add_clip event in one go, then the frame that drew them

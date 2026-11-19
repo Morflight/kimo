@@ -58,9 +58,11 @@ pub fn engine_env_with(fonts: Option<&std::path::Path>, data_dir: &std::path::Pa
     let ff = have("ffmpeg").and_then(|f| f.parent().map(|d| d.to_path_buf()));
     if let Some(dir) = ff {
         let path = std::env::var("PATH").unwrap_or_default();
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let on_path = std::env::split_paths(&path).any(|p| p == dir);
-        if !on_path { env.push(("PATH".into(), format!("{}{sep}{path}", dir.display()))); }
+        let mut paths: Vec<_> = std::env::split_paths(&path).collect();
+        if !paths.contains(&dir) {
+            paths.insert(0,dir);
+            if let Ok(joined)=std::env::join_paths(paths) { env.push(("PATH".into(),joined.to_string_lossy().into_owned())); }
+        }
     }
     env
 }
@@ -72,9 +74,27 @@ mod tests {
         let p = super::download::for_this_os(super::download::load_parts(super::PARTS_JSON).unwrap());
         assert!(p.iter().any(|x| x.id == "ffmpeg"));
         assert_eq!(p.iter().filter(|x| x.id == "ffmpeg").count(), 1, "one ffmpeg per OS");
+        let absent=std::env::temp_dir().join(format!("kimo-no-download-{}",std::process::id()));
+        assert_eq!(super::part_satisfied(&absent,p.iter().find(|part|part.id=="ffmpeg").unwrap()),Some("system"));
+        assert!(!absent.exists(),"finding the installed encoder must not create a download folder");
         assert!(p.iter().any(|x| x.id == "model" && super::download::pinned(x)));
         assert!(p.iter().all(|x| x.sha512.len() == 128 || x.sha512.starts_with("PIN")), "every part is pinned or visibly unpinned");
     }
+    #[test]
+    fn part_satisfaction_distinguishes_downloaded_system_and_missing_tools() {
+        let root=std::env::temp_dir().join(format!("kimo-part-satisfaction-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut part=super::download::load_parts(super::PARTS_JSON).unwrap().into_iter().find(|p|p.id=="ffmpeg").unwrap();
+        part.dest="fixture.bin".into();
+        assert_eq!(super::part_satisfied(&root,&part),Some("system"));
+        part.id="fixture-unavailable-tool".into();assert_eq!(super::part_satisfied(&root,&part),None);
+        std::fs::write(root.join(&part.dest),b"owned downloaded fixture").unwrap();
+        part.sha512=super::download::sha512_file(&root.join(&part.dest)).unwrap();
+        part.size=std::fs::metadata(root.join(&part.dest)).unwrap().len();
+        assert_eq!(super::part_satisfied(&root,&part),Some("downloaded"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The updater public key built into the app belongs to the release signing key: a file signed with that private key
     /// (tests/updater_key, signed by `tauri signer sign`) verifies with it, exactly as the updater checks a download, and
     /// changed bytes do not. If this fails, installed copies would refuse every update.
@@ -114,6 +134,7 @@ mod tests {
         let parts = super::download::load_parts(super::PARTS_JSON).unwrap();
         let ffdir = d.join("Program Files").join("ffmpeg").join("bin");
         let sys = |id: &str| match id { "ffmpeg" => Some(ffdir.join("ffmpeg.exe")), "model" => Some(d.join("ggml-small.bin")), "whisper" => Some(d.join("whisper-cli")), _ => None };
+        assert!(sys("unknown").is_none());
         let env = super::engine_env_with(None, &d, &parts, &sys);
         let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
         assert_eq!(get("KIMO_WHISPER_MODEL").unwrap(), d.join("ggml-small.bin").display().to_string());
@@ -162,15 +183,18 @@ mod tests {
         assert_eq!(env,vec![("KIMO_FONTS".into(),root.display().to_string())]);
         let first=std::env::split_paths(&std::env::var_os("PATH").unwrap()).next().unwrap();
         let env=super::engine_env_with(None,&root,&[],&|id| (id=="ffmpeg").then(||first.join("ffmpeg")));
-        assert!(env.iter().all(|(key,_)|key!="PATH"));
+        assert_eq!(env,Vec::<(String,String)>::new());
         let env=super::engine_env_with(None,&root,&[],&|id| (id=="ffmpeg").then(std::path::PathBuf::new));
         assert!(env.is_empty());
+        let invalid=root.join("bad:path\"entry").join("ffmpeg");
+        let env=super::engine_env_with(None,&root,&[],&|id|(id=="ffmpeg").then(||invalid.clone()));
+        assert!(env.is_empty(),"an unrepresentable search directory must not corrupt PATH");
         std::fs::remove_dir_all(root).unwrap();
     }
 
 }
 
-/// Against the real engine (KIMO_MCP_BIN): the Live feed and the chat's Undo cards, end to end. Skipped when unset.
+/// Against the real engine (KIMO_MCP_BIN): the Live feed and the chat's Undo cards, end to end. The engine fixture is required.
 #[cfg(test)]
 mod real_engine {
     use crate::agent::{Chat, Llm};
@@ -183,8 +207,11 @@ mod real_engine {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    fn bin() -> Option<PathBuf> { std::env::var_os("KIMO_MCP_BIN").map(PathBuf::from).filter(|p| p.is_file()) }
-    fn wait_for(got: &Arc<Mutex<Vec<(Source, Value)>>>, f: impl Fn(&(Source, Value)) -> bool) -> bool {
+    fn bin() -> PathBuf {
+        let path=PathBuf::from(std::env::var_os("KIMO_MCP_BIN").expect("KIMO_MCP_BIN must point to the test engine"));
+        assert!(path.is_file(),"test engine is missing: {}",path.display());path
+    }
+    fn wait_for(got: &Arc<Mutex<Vec<(Source, Value)>>>, f: &dyn Fn(&(Source, Value)) -> bool) -> bool {
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(5) { if got.lock().unwrap().iter().any(&f) { return true; } std::thread::sleep(Duration::from_millis(50)); }
         false
@@ -192,9 +219,16 @@ mod real_engine {
     fn names_tool(v: &Value, tool: &str) -> bool { v.to_string().contains(tool) }
 
     #[test]
+    fn missing_events_time_out_instead_of_claiming_delivery() {
+        let got=Arc::new(Mutex::new(vec![(Source::Gui,json!({"tool_name":"wrong_tool"}))]));
+        assert!(!wait_for(&got,&|(_,event)|names_tool(event,"expected_tool")));
+        assert_eq!(got.lock().unwrap().len(),1);
+    }
+
+    #[test]
     fn live_feed_tags_gui_and_external_engines() {
-        let Some(bin) = bin() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
-        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let bin = bin();
+        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let got: Arc<Mutex<Vec<(Source, Value)>>> = Arc::new(Mutex::new(vec![]));
         let g2 = got.clone();
         let sink: Sink = Arc::new(move |s, v| g2.lock().unwrap().push((s, v)));
@@ -203,14 +237,14 @@ mod real_engine {
         let sup = Supervisor::new(Some(bin.clone()), vec![("KIMO_SPECTATOR".into(), format!("tcp://127.0.0.1:{port}"))], None);
         sup.start();
         sup.call("timeline", &json!({"action": "add_track", "args": {}})).unwrap();
-        assert!(wait_for(&got, |(s, v)| *s == Source::Gui && names_tool(v, "add_track")), "GUI engine's call not seen: {:?}", got.lock().unwrap());
+        assert!(wait_for(&got, &|(s, v)| *s == Source::Gui && names_tool(v, "add_track")), "GUI engine's call not seen: {:?}", got.lock().unwrap());
         // an external client's engine: default KIMO_SPECTATOR (unset) finds the switch's listener on 7421-7430
         let ext = listen_external(sink, Arc::new(|_| {})).unwrap();
         let other = Supervisor::new(Some(bin), vec![], None);
         other.start();
         std::thread::sleep(Duration::from_millis(300));
         other.call("timeline", &json!({"action": "add_track", "args": {}})).unwrap();
-        assert!(wait_for(&got, |(s, v)| matches!(s, Source::External { .. }) && names_tool(v, "add_track")), "external engine's call not seen");
+        assert!(wait_for(&got, &|(s, v)| matches!(s, Source::External { .. }) && names_tool(v, "add_track")), "external engine's call not seen");
         let n = got.lock().unwrap().len();
         eprintln!("live feed: {n} events from two real engines (one GUI, one external)");
         other.stop(); sup.stop(); ext.stop();
@@ -218,7 +252,7 @@ mod real_engine {
 
     #[test]
     fn chat_cards_undo_through_the_real_engine_history() {
-        let Some(bin) = bin() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let bin = bin();
         let sup = Supervisor::new(Some(bin), vec![("KIMO_SPECTATOR".into(), "off".into())], None);
         sup.start();
         let turn = Mutex::new(0);
@@ -251,7 +285,7 @@ mod real_engine {
 
     #[test]
     fn undoing_an_older_card_undoes_the_later_ones_too() {
-        let Some(bin) = bin() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let bin = bin();
         let sup = Supervisor::new(Some(bin), vec![("KIMO_SPECTATOR".into(), "off".into())], None);
         sup.start();
         let fx = serve(move |r| {

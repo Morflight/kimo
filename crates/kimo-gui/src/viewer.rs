@@ -36,12 +36,15 @@ pub fn frame_index(t: f64, fps: f64) -> i64 { if !(t > 0.0) || !(fps > 0.0) { 0 
 pub fn frame_time(i: i64, fps: f64) -> f64 { if fps > 0.0 { i as f64 / fps } else { 0.0 } }
 
 /// The URL the webview loads a cache file from (Tauri serves custom schemes as http://<scheme>.localhost on Windows).
-pub fn cache_url(name: &str) -> String { if cfg!(windows) { format!("http://kimo.localhost/{name}") } else { format!("kimo://localhost/{name}") } }
+fn protocol_origin(scheme: &str, windows: bool) -> String {
+    if windows { format!("http://{scheme}.localhost") } else { format!("{scheme}://localhost") }
+}
+pub fn cache_url(name: &str) -> String { format!("{}/{name}", protocol_origin("kimo", cfg!(windows))) }
 
 /// Map a kimo:// request path to a file in the cache: only the lower-case hex names this module and the engine's preview
 /// stream write: .png, .jpg, .mp4, .bmp (stream frames) or .wav (stream audio chunks).
 pub fn cache_file(dir: &Path, uri_path: &str) -> Option<(PathBuf, &'static str)> {
-    let name = uri_path.split(['?', '#']).next()?.trim_start_matches('/');
+    let name = uri_path.split_once(['?', '#']).map_or(uri_path, |(path, _)| path).trim_start_matches('/');
     let (stem, ext) = name.rsplit_once('.')?;
     if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return None; }
     let mime = match ext { "png" => "image/png", "jpg" => "image/jpeg", "mp4" => "video/mp4", "bmp" => "image/bmp", "wav" => "audio/wav", _ => return None };
@@ -70,12 +73,15 @@ pub fn byte_range(h: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
 
 /// The kimo:// answer for one request: status, headers, body. Only cache files are served; a Range gets a 206.
 pub fn respond(dir: &Path, uri_path: &str, range: Option<&str>) -> (u16, Vec<(&'static str, String)>, Vec<u8>) {
+    respond_with_reader(dir, uri_path, range, |file| std::fs::read(file))
+}
+fn respond_with_reader(dir: &Path, uri_path: &str, range: Option<&str>, read: fn(&Path) -> std::io::Result<Vec<u8>>) -> (u16, Vec<(&'static str, String)>, Vec<u8>) {
     // Native fetch needs CORS even though img/video tags can display this protocol.
     // Only the packaged app origin may read cache bytes; never reflect arbitrary origins.
-    let origin = if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" };
+    let origin = protocol_origin("tauri", cfg!(windows));
     let cors = ("Access-Control-Allow-Origin", origin.to_string());
     let Some((file, mime)) = cache_file(dir, uri_path) else { return (404, vec![cors, ("Content-Type", "text/plain".into())], b"not in the viewer cache".to_vec()) };
-    let Ok(bytes) = std::fs::read(&file) else { return (404, vec![cors, ("Content-Type", "text/plain".into())], b"gone".to_vec()) };
+    let Ok(bytes) = read(&file) else { return (404, vec![cors, ("Content-Type", "text/plain".into())], b"gone".to_vec()) };
     let len = bytes.len() as u64;
     let mut h = vec![cors, ("Content-Type", mime.to_string()), ("Accept-Ranges", "bytes".to_string()), ("Cache-Control", "no-store".to_string())];
     match byte_range(range, len) {
@@ -103,8 +109,9 @@ pub fn split_frames(ffmpeg: &Path, mp4: &Path, dir: &Path, stem: &str) -> Vec<Pa
 }
 
 /// ffmpeg for draft frames: the first-run tools dir, else PATH.
-pub fn find_ffmpeg(data_dir: &Path) -> Option<PathBuf> {
-    let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+pub fn find_ffmpeg(data_dir: &Path) -> Option<PathBuf> { find_ffmpeg_for(data_dir, cfg!(windows)) }
+fn find_ffmpeg_for(data_dir: &Path, windows: bool) -> Option<PathBuf> {
+    let name = if windows { "ffmpeg.exe" } else { "ffmpeg" };
     let p = data_dir.join("tools").join(name);
     if p.is_file() { Some(p) } else { crate::system::find("ffmpeg") }
 }
@@ -202,13 +209,11 @@ impl Viewer {
             st.before_rev = Some(prev);
             shown.changed = true;
         }
-        if !shown.empty {
+        if let Some(f) = &frame {
             let mut cache = self.cache.lock().unwrap();
             shown.before = st.before_rev.as_deref().and_then(|br| cache.get(br, idx)).or_else(|| st.before_fallback.clone());
-            if let Some(f) = &frame {
-                let pinned: Vec<PathBuf> = [Some(f), shown.before.as_ref(), st.before_fallback.as_ref()].into_iter().flatten().map(|x| x.file.clone()).collect();
-                cache.put(Frame { cached: false, ..f.clone() }, &pinned);
-            }
+            let pinned: Vec<PathBuf> = [Some(f), shown.before.as_ref(), st.before_fallback.as_ref()].into_iter().flatten().map(|x| x.file.clone()).collect();
+            cache.put(Frame { cached: false, ..f.clone() }, &pinned);
             st.last_frame = frame.clone();
         }
         st.last_rev = Some(info.rev.clone());
@@ -298,7 +303,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kimo-cors-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("0a.bmp"), b"bitmap").unwrap();
-        let expected = if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" };
+        let expected = protocol_origin("tauri", cfg!(windows));
         for (path, range, status) in [
             ("/0a.bmp", None, 200), ("/0a.bmp", Some("bytes=0-1"), 206),
             ("/0a.bmp", Some("bytes=99-"), 416), ("/ff.wav", None, 404),
@@ -306,8 +311,26 @@ mod tests {
         ] {
             let (s, headers, _) = respond(&dir, path, range);
             assert_eq!(s, status);
-            assert_eq!(headers.iter().find(|(k, _)| *k == "Access-Control-Allow-Origin").map(|(_, v)| v.as_str()), Some(expected));
+            assert_eq!(headers.iter().find(|(k, _)| *k == "Access-Control-Allow-Origin").map(|(_, v)| v.as_str()), Some(expected.as_str()));
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn protocol_origins_and_eviction_during_a_request_are_explicit() {
+        for scheme in ["kimo", "tauri"] {
+            assert_eq!(protocol_origin(scheme,true),format!("http://{scheme}.localhost"));
+            assert_eq!(protocol_origin(scheme,false),format!("{scheme}://localhost"));
+        }
+        let dir=tmpdir("read-evicted");std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ab.png"),b"png").unwrap();
+        assert!(cache_file(&dir,"/ab.png?version=1#frame").is_some());
+        for name in ["", "/", "/ab", "/.png"] {assert!(cache_file(&dir,name).is_none());}
+        let (status,headers,body)=respond_with_reader(&dir,"/ab.png",None,|file| {
+            std::fs::remove_file(file).unwrap();std::fs::read(file)
+        });
+        assert_eq!((status,body),(404,b"gone".to_vec()));
+        assert!(headers.contains(&("Access-Control-Allow-Origin",protocol_origin("tauri",cfg!(windows)))));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -317,6 +340,7 @@ mod tests {
         assert_eq!(frame_index(1.016, 30.0), 30);
         assert_eq!(frame_index(1.02, 30.0), 31);
         assert_eq!(frame_index(-3.0, 30.0), 0);
+        for fps in [0.,-1.,f64::NAN] {assert_eq!(frame_time(31,fps),0.);assert_eq!(frame_index(1.,fps),0);}
         assert!((frame_time(31, 30.0) - 31.0 / 30.0).abs() < 1e-9);
     }
 
@@ -384,6 +408,14 @@ mod tests {
         let e = mk(4);
         c.put(e, &[a.file.clone(), d.file.clone()]);
         assert!(a.file.exists() && d.file.exists(), "a pinned frame (shown / before) keeps its file");
+        let mut pinned=FrameCache::new(1);
+        pinned.put(a.clone(),&[]);pinned.put(d.clone(),&[a.file.clone(),d.file.clone()]);
+        assert_eq!(pinned.len(),2,"all pinned entries survive until the caller releases them");
+        pinned.put(d.clone(),&[]);assert_eq!(pinned.len(),1);assert!(!a.file.exists());
+        let shared=mk(5);let alias=Frame {index:6,..shared.clone()};
+        let mut aliases=FrameCache::new(1);aliases.put(shared.clone(),&[]);aliases.put(alias,&[]);
+        assert!(shared.file.exists(),"another cache entry still refers to the same file");
+        aliases.put(mk(7),&[]);assert!(!shared.file.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -405,7 +437,6 @@ mod tests {
     }
 
     // ---------- the real engine ----------
-    fn bin() -> Option<std::path::PathBuf> { std::env::var_os("KIMO_MCP_BIN").map(std::path::PathBuf::from).filter(|p| p.is_file()) }
 
     /// Counts engine calls by action, so a test can prove a cache hit made no render.
     struct Counting<'a> { sup: &'a Supervisor, renders: AtomicUsize, previews: AtomicUsize }
@@ -420,11 +451,12 @@ mod tests {
             self.sup.call(name, args)
         }
     }
-    fn engine() -> Option<Supervisor> {
-        let b = bin()?;
+    fn engine() -> Supervisor {
+        let b = std::path::PathBuf::from(std::env::var_os("KIMO_MCP_BIN").expect("KIMO_MCP_BIN must point to the test engine"));
+        assert!(b.is_file(), "test engine is missing: {}", b.display());
         let sup = Supervisor::new(Some(b), vec![("KIMO_SPECTATOR".into(), "off".into()), ("KIMO_INLINE_IMAGES".into(), "0".into())], None);
         sup.start();
-        Some(sup)
+        sup
     }
     fn ok(r: Result<Value, String>) -> Value { let v = r.unwrap(); assert!(!crate::engine::is_error(&v), "engine error: {}", crate::engine::result_text(&v)); v }
     fn gradient(sup: &Supervisor, start: f64, dur: f64, a: &str, b: &str) {
@@ -440,7 +472,7 @@ mod tests {
 
     #[test]
     fn an_empty_project_is_the_empty_state_not_an_error() {
-        let Some(sup) = engine() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let sup = engine();
         let dir = tmpdir("empty");
         let v = Viewer::new(dir.clone());
         let s = v.frame(&sup, 0.0).unwrap();
@@ -452,18 +484,19 @@ mod tests {
 
     #[test]
     fn renders_the_frame_at_the_playhead_and_serves_repeats_from_cache() {
-        let Some(sup) = engine() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let sup = engine();
         gradient(&sup, 0.0, 3.0, "#ff5a24", "#141210");
         let dir = tmpdir("frame");
         let v = Viewer::new(dir.clone());
         let t = Counting { sup: &sup, renders: AtomicUsize::new(0), previews: AtomicUsize::new(0) };
+        assert!(!t.list().is_empty(), "the real engine must expose tools");
         let s = v.frame(&t, 1.0).unwrap();
         let f = s.frame.clone().expect("a frame");
         assert!(!s.empty && (s.duration - 3.0).abs() < 1e-6 && (s.fps - 30.0).abs() < 1e-6, "{s:?}");
         assert_eq!((f.width, f.height, f.index), (1280, 720, 30));
         assert!(f.file.starts_with(&dir) && f.file.is_file() && std::fs::read(&f.file).unwrap().starts_with(b"\x89PNG"));
         let name = f.file.file_name().unwrap().to_string_lossy().to_string();
-        assert!(f.url == format!("kimo://localhost/{name}") || f.url == format!("http://kimo.localhost/{name}"), "{}", f.url);
+        assert_eq!(f.url, cache_url(&name));
         // the very frame a direct engine render gives at that time
         let direct = dir.join("direct.png");
         let r = ok(sup.call("output", &json!({"action": "render_frame", "args": {"time": 1.0, "path": direct, "inline": "never"}})));
@@ -479,7 +512,7 @@ mod tests {
 
     #[test]
     fn an_edit_shows_the_new_frame_and_keeps_the_one_before() {
-        let Some(sup) = engine() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let sup = engine();
         gradient(&sup, 0.0, 3.0, "#ff5a24", "#141210");
         let dir = tmpdir("ab");
         let v = Viewer::new(dir.clone());
@@ -509,7 +542,7 @@ mod tests {
 
     #[test]
     fn streams_frames_ahead_of_the_playhead_through_the_engine() {
-        let Some(sup) = engine() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let sup = engine();
         gradient(&sup, 0.0, 3.0, "#ff5a24", "#141210");
         let dir = tmpdir("stream");
         let v = Viewer::new(dir.clone());
@@ -537,7 +570,7 @@ mod tests {
 
     #[test]
     fn plays_a_short_draft_clip_cached_per_revision() {
-        let Some(sup) = engine() else { eprintln!("KIMO_MCP_BIN unset: skipped"); return };
+        let sup = engine();
         gradient(&sup, 0.0, 3.0, "#ff5a24", "#141210");
         let dir = tmpdir("draft");
         let v = Viewer::new(dir.clone()).with_ffmpeg(find_ffmpeg(&dir));
@@ -569,20 +602,79 @@ mod tests {
             if self.failure==Some("transport") { return Err("synthetic transport error".into()); }
             if self.failure==Some("engine") { return Ok(json!({"isError":true,"content":[{"type":"text","text":"synthetic engine error"}]})); }
             let action=args["action"].as_str().unwrap();
+            if self.failure==Some(action) { return Err(format!("fixture refused {action}")); }
             if self.malformed==Some(action) { return Ok(json!({"content":[{"type":"text","text":"not json"}]})); }
             let data=match action {
                 "get_project"=>json!({"fixture":true}),
-                "timeline_summary"=>json!({"duration":2,"fps":25,"width":640,"height":360,"tracks_bottom_to_top":[{"clips":[{}]}]}),
+                "timeline_summary"=>json!({"duration":2,"fps":if self.malformed==Some("no_fps") {0} else {25},"width":640,"height":360,"tracks_bottom_to_top":[{"clips":[{}]}]}),
                 "render_frame"|"preview_range"=>{
                     if self.write { std::fs::write(args["args"]["path"].as_str().unwrap(),b"fixture bytes").unwrap(); }
                     if action=="render_frame" { return Ok(if self.sha { json!({"structuredContent":{"sha256":"fixture-hash"}}) } else { json!({}) }); }
                     json!({})
                 }
                 "preview_stream"=>{assert!(args["args"]["dir"].is_string());json!({"frames":[{"name":"a.bmp"}]})}
-                _=>panic!("unexpected fixture action {action}"),
+                _=>return Err(format!("unexpected fixture action {action}")),
             };
             Ok(json!({"content":[{"type":"text","text":data.to_string()}]}))
         }
+    }
+
+    #[test]
+    fn incomplete_timeline_facts_and_engine_failures_are_not_forged_frames() {
+        let dir=tmpdir("partial-facts");let viewer=Viewer::new(dir.clone());
+        for action in ["timeline_summary","render_frame"] {
+            let tools=FixtureTools {failure:Some(action),malformed:None,write:false,sha:false};
+            assert_eq!(viewer.frame(&tools,0.).unwrap_err(),format!("fixture refused {action}"));
+        }
+        let tools=FixtureTools {failure:None,malformed:Some("no_fps"),write:true,sha:false};
+        let shown=viewer.frame(&tools,1.).unwrap();
+        assert_eq!(shown.fps,30.);assert_eq!(shown.frame.unwrap().index,30);
+        assert_eq!(tools.call("project",&json!({"action":"unknown"})).unwrap_err(),"unexpected fixture action unknown");
+        let blocked=dir.join("not-a-directory");std::fs::write(&blocked,b"occupied").unwrap();
+        let blocked_viewer=Viewer::new(blocked.clone());assert_eq!(blocked_viewer.dir(),blocked);
+        assert!(blocked_viewer.cache.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read(blocked).unwrap(),b"occupied");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queued_scrubs_render_only_the_latest_request() {
+        let dir=tmpdir("superseded");let viewer=Viewer::new(dir.clone());
+        let tools=FixtureTools {failure:None,malformed:None,write:true,sha:false};
+        let guard=viewer.render.lock().unwrap();
+        std::thread::scope(|scope| {
+            let first=scope.spawn(||viewer.frame(&tools,0.));
+            let second=scope.spawn(||viewer.frame(&tools,1.));
+            let deadline=Instant::now()+std::time::Duration::from_secs(2);
+            while viewer.latest.load(Ordering::SeqCst)<2 {
+                assert!(Instant::now()<deadline,"both requests must reach the render queue");
+                std::thread::yield_now();
+            }
+            drop(guard);
+            let results=[first.join().unwrap(),second.join().unwrap()];
+            assert_eq!(results.iter().filter(|r|r.is_ok()).count(),1);
+            assert_eq!(results.iter().filter_map(|r|r.as_ref().err()).collect::<Vec<_>>(),vec!["superseded"]);
+            assert!(results.iter().filter_map(|r|r.as_ref().ok()).all(|s|s.frame.as_ref().unwrap().file.is_file()));
+        });
+        assert_eq!(viewer.cache.lock().unwrap().len(),1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn previews_recover_after_a_render_lock_is_poisoned() {
+        let dir=tmpdir("poisoned-render");
+        let viewer=Viewer::new(dir.clone());
+        let panic=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _lock=viewer.render.lock().unwrap();
+            panic!("interrupted render fixture");
+        }));
+        assert!(panic.is_err() && viewer.render.is_poisoned());
+        let tools=FixtureTools {failure:None,malformed:None,write:true,sha:false};
+        let frame=viewer.frame(&tools,0.).unwrap().frame.unwrap();
+        assert_eq!(std::fs::read(frame.file).unwrap(),b"fixture bytes");
+        let draft=viewer.draft(&tools,0.,1.).unwrap();
+        assert_eq!(std::fs::read(draft.file).unwrap(),b"fixture bytes");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -592,6 +684,8 @@ mod tests {
             let tools=FixtureTools {failure:Some(failure),malformed:None,write:false,sha:false};
             assert!(tools.list().is_empty());
             assert!(viewer.frame(&tools,0.).unwrap_err().contains(failure));
+            assert!(viewer.draft(&tools,0.,1.).unwrap_err().contains(failure));
+            assert!(viewer.stream(&tools,"start",Value::Null).unwrap_err().contains(failure));
         }
         for action in ["timeline_summary","preview_stream","preview_range"] {
             let tools=FixtureTools {failure:None,malformed:Some(action),write:false,sha:false};
@@ -622,13 +716,21 @@ mod tests {
         assert_eq!(frame.sha256,format!("{:x}",Sha256::digest(b"fixture bytes")));
         let stream=viewer.stream(&tools,"start",Value::Null).unwrap();assert_eq!(stream["frames"][0]["url"],cache_url("a.bmp"));
         let mut drafts=Vec::new();
-        for i in 0..=DRAFT_CAP {let d=viewer.draft(&tools,i as f64/10.,0.2).unwrap();assert!(d.frame_files.is_empty());assert_eq!(d.frames,0);drafts.push(d);}
+        let extracted=dir.join("abc000.jpg");
+        for i in 0..=DRAFT_CAP {
+            let d=viewer.draft(&tools,i as f64/10.,0.2).unwrap();assert!(d.frame_files.is_empty());assert_eq!(d.frames,0);drafts.push(d);
+            if i==0 {std::fs::write(&extracted,b"extracted frame").unwrap();viewer.st.lock().unwrap().drafts[0].frame_files.push(extracted.clone());}
+        }
+        assert!(!extracted.exists(),"eviction also removes extracted draft frames");
         assert!(!drafts[0].file.exists());assert!(drafts[1..].iter().all(|d|d.file.is_file()));
         assert!(frame.file.is_file());assert!(dir.join("keep.png").is_file());
         assert!(split_frames(&dir.join("absent-ffmpeg"),&drafts[1].file,&dir,"fixture").is_empty());
         let tools_dir=dir.join("tools");std::fs::create_dir(&tools_dir).unwrap();
-        let ffmpeg=tools_dir.join(if cfg!(windows) {"ffmpeg.exe"} else {"ffmpeg"});std::fs::write(&ffmpeg,b"fixture").unwrap();
-        assert_eq!(find_ffmpeg(&dir),Some(ffmpeg));
+        for (windows,name) in [(false,"ffmpeg"),(true,"ffmpeg.exe")] {
+            let ffmpeg=tools_dir.join(name);std::fs::write(&ffmpeg,b"fixture").unwrap();
+            assert_eq!(find_ffmpeg_for(&dir,windows),Some(ffmpeg));
+        }
+        assert_eq!(find_ffmpeg(&dir),find_ffmpeg_for(&dir,cfg!(windows)));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

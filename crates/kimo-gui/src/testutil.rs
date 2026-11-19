@@ -1,7 +1,7 @@
 //! Localhost HTTP fixture for tests (no network beyond 127.0.0.1). One thread per connection, HTTP/1.1, Connection: close.
 #![cfg(test)]
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default)]
@@ -25,7 +25,13 @@ pub fn serve<F>(handler: F) -> Fixture where F: Fn(&Req) -> Resp + Send + Sync +
     let h = Arc::new(handler);
     let lg = log.clone();
     std::thread::spawn(move || {
-        for s in l.incoming() {
+        serve_connections(&mut l.incoming(),h,lg);
+    });
+    Fixture { base, log }
+}
+
+fn serve_connections(incoming: &mut dyn Iterator<Item=std::io::Result<TcpStream>>, h: Arc<dyn Fn(&Req)->Resp + Send + Sync>, lg: Arc<Mutex<Vec<Req>>>) {
+        for s in incoming {
             let Ok(mut s) = s else { continue };
             let h = h.clone(); let lg = lg.clone();
             std::thread::spawn(move || {
@@ -59,9 +65,43 @@ pub fn serve<F>(handler: F) -> Fixture where F: Fn(&Req) -> Resp + Send + Sync +
                 }
             });
         }
-    });
-    Fixture { base, log }
 }
 
 /// Tests that bind the public spectator ports 7421-7430 take this, so engines never greet another test's listener.
 pub static PORTS: Mutex<()> = Mutex::new(());
+
+#[test]
+fn malformed_http_input_does_not_contaminate_later_fixture_requests() {
+    use std::net::{Shutdown,TcpStream};
+    let fixture=serve(|_|Resp::bytes(418,b"fixture response".to_vec()));
+    let address=fixture.base.strip_prefix("http://").unwrap();
+    let mut invalid=TcpStream::connect(address).unwrap();
+    invalid.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+    invalid.write_all(b"\xff\n").unwrap();invalid.shutdown(Shutdown::Write).unwrap();
+    let mut reply=Vec::new();invalid.read_to_end(&mut reply).unwrap();
+    assert!(reply.is_empty());assert!(fixture.log.lock().unwrap().is_empty());
+    let mut client=TcpStream::connect(address).unwrap();
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+    client.write_all(b"POST /fixture HTTP/1.1\r\nMalformed header\r\nContent-Length: invalid\r\nX-Fixture: value\r\n\r\n").unwrap();
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut reply=String::new();client.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 418 Status\r\n"));assert!(reply.ends_with("fixture response"));
+    let requests=fixture.log.lock().unwrap();assert_eq!(requests.len(),1);
+    assert_eq!((&*requests[0].method,&*requests[0].path,&*requests[0].body),("POST","/fixture",""));
+    assert_eq!(requests[0].header("x-fixture"),Some("value"));
+}
+
+#[test]
+fn a_failed_accept_does_not_drop_the_next_http_request() {
+    let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client=TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+    let (server,_)=listener.accept().unwrap();
+    let log=Arc::new(Mutex::new(Vec::new()));
+    let mut incoming=vec![Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),Ok(server)].into_iter();
+    serve_connections(&mut incoming,Arc::new(|req|Resp::bytes(200,req.path.as_bytes().to_vec())),log.clone());
+    client.write_all(b"GET /after-interruption HTTP/1.1\r\n\r\n").unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut response=String::new();client.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("/after-interruption"));assert_eq!(log.lock().unwrap().len(),1);
+}

@@ -35,8 +35,11 @@ fn pump(s: TcpStream, src: Source, sink: Sink, status: Option<StatusSink>) {
 
 /// The private port for the GUI's own engine. Returns the port; the accept loop runs on its own thread.
 pub fn listen_private(sink: Sink) -> std::io::Result<u16> {
-    let l = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = l.local_addr()?.port();
+    listen_private_on(TcpListener::bind(("127.0.0.1", 0)), TcpListener::local_addr, sink)
+}
+fn listen_private_on(listener: std::io::Result<TcpListener>, address: fn(&TcpListener) -> std::io::Result<std::net::SocketAddr>, sink: Sink) -> std::io::Result<u16> {
+    let l = listener?;
+    let port = address(&l)?.port();
     std::thread::spawn(move || {
         for s in l.incoming().flatten() {
             let sink = sink.clone();
@@ -58,26 +61,31 @@ impl External {
 pub fn listen_external(sink: Sink, status: StatusSink) -> Result<External, String> {
     let l = GUI_PORTS.clone().find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())
         .ok_or_else(|| "127.0.0.1:7421-7430 are all in use".to_string())?;
-    let port = l.local_addr().map_err(|e| e.to_string())?.port();
+    listen_external_on(l, TcpListener::local_addr, sink, status)
+}
+fn listen_external_on(l: TcpListener, address: fn(&TcpListener) -> std::io::Result<std::net::SocketAddr>, sink: Sink, status: StatusSink) -> Result<External, String> {
+    let port = address(&l).map_err(|e| e.to_string())?.port();
     let stop = Arc::new(AtomicBool::new(false));
     let st2 = stop.clone();
-    let n = Arc::new(AtomicU32::new(0));
     status(format!("listening 127.0.0.1:{port}"));
-    std::thread::spawn(move || {
-        for s in l.incoming() {
-            if st2.load(Ordering::SeqCst) { break; }
-            let Ok(mut s) = s else { continue };
-            if s.write_all(HELLO).is_err() { continue; }
-            let conn = n.fetch_add(1, Ordering::SeqCst) + 1;
-            let (sink, status) = (sink.clone(), status.clone());
-            status("live".into());
-            std::thread::spawn(move || {
-                pump(s, Source::External { conn }, sink, Some(status.clone()));
-                status(format!("listening 127.0.0.1:{port}"));
-            });
-        }
-    });
+    std::thread::spawn(move || accept_external(&mut l.incoming(), &st2, port, sink, status));
     Ok(External { port, stop })
+}
+
+fn accept_external(incoming: &mut dyn Iterator<Item = std::io::Result<TcpStream>>, stop: &AtomicBool, port: u16, sink: Sink, status: StatusSink) {
+    let n = AtomicU32::new(0);
+    for s in incoming {
+        if stop.load(Ordering::SeqCst) { break; }
+        let Ok(mut s) = s else { continue };
+        if s.write_all(HELLO).is_err() { continue; }
+        let conn = n.fetch_add(1, Ordering::SeqCst) + 1;
+        let (sink, status) = (sink.clone(), status.clone());
+        status("live".into());
+        std::thread::spawn(move || {
+            pump(s, Source::External { conn }, sink, Some(status.clone()));
+            status(format!("listening 127.0.0.1:{port}"));
+        });
+    }
 }
 
 #[cfg(test)]
@@ -86,9 +94,50 @@ mod tests {
     use std::io::Read;
     use std::sync::Mutex;
     use std::time::Duration;
+    fn recorded_events() -> (Sink, std::sync::mpsc::Receiver<(Source, Value)>) {
+        let (send, receive) = std::sync::mpsc::channel();
+        (Arc::new(move |source, value| send.send((source, value)).unwrap()), receive)
+    }
+    fn recorded_status() -> (StatusSink, std::sync::mpsc::Receiver<String>) {
+        let (send, receive) = std::sync::mpsc::channel();
+        (Arc::new(move |value| send.send(value).unwrap()), receive)
+    }
+    #[test]
+    fn bind_and_address_failures_release_the_port_without_announcing_a_listener() {
+        fn unavailable(_: &TcpListener) -> std::io::Result<std::net::SocketAddr> { Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "fixture address unavailable")) }
+        let (sink, events) = recorded_events(); let (status, statuses) = recorded_status();
+        let error = listen_private_on(Err(std::io::Error::from(std::io::ErrorKind::AddrInUse)), TcpListener::local_addr, sink.clone()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        let private = TcpListener::bind(("127.0.0.1", 0)).unwrap(); let private_address = private.local_addr().unwrap();
+        assert_eq!(listen_private_on(Ok(private), unavailable, sink.clone()).unwrap_err().kind(), std::io::ErrorKind::NotConnected);
+        assert!(TcpListener::bind(private_address).is_ok());
+        let external = TcpListener::bind(("127.0.0.1", 0)).unwrap(); let external_address = external.local_addr().unwrap();
+        assert_eq!(listen_external_on(external, unavailable, sink, status).err().as_deref(), Some("fixture address unavailable"));
+        assert!(TcpListener::bind(external_address).is_ok());
+        assert!(events.try_recv().is_err()); assert!(statuses.try_recv().is_err());
+    }
+    #[test]
+    fn accept_and_greeting_failures_preserve_the_next_connection() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let failed = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (closed, _) = listener.accept().unwrap(); closed.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (valid, _) = listener.accept().unwrap();
+        client.write_all(b"{\"rev\":8}\n").unwrap(); client.shutdown(std::net::Shutdown::Write).unwrap();
+        let (sink, events) = recorded_events(); let (status, statuses) = recorded_status();
+        let mut incoming = vec![Err(std::io::Error::from(std::io::ErrorKind::Interrupted)), Ok(closed), Ok(valid)].into_iter();
+        accept_external(&mut incoming, &AtomicBool::new(false), port, sink, status);
+        let mut hello = [0; 17]; client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.read_exact(&mut hello).unwrap(); assert_eq!(&hello, HELLO);
+        assert_eq!(events.recv_timeout(Duration::from_secs(2)).unwrap(), (Source::External { conn: 1 }, serde_json::json!({"rev":8})));
+        assert_eq!(statuses.recv_timeout(Duration::from_secs(2)).unwrap(), "live");
+        assert_eq!(statuses.recv_timeout(Duration::from_secs(2)).unwrap(), format!("listening 127.0.0.1:{port}"));
+        assert!(events.try_recv().is_err()); drop(failed);
+    }
     #[test]
     fn private_and_external_are_tagged() {
-        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let got: Arc<Mutex<Vec<(Source, Value)>>> = Arc::new(Mutex::new(vec![]));
         let g2 = got.clone();
         let sink: Sink = Arc::new(move |s, v| g2.lock().unwrap().push((s, v)));
@@ -118,12 +167,14 @@ mod tests {
     }
     #[test]
     fn binds_loopback_only() {
-        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(|e| e.into_inner());
-        let ext = listen_external(Arc::new(|_, _| {}), Arc::new(|_| {})).unwrap();
+        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (sink, events) = recorded_events();
+        let ext = listen_external(sink, Arc::new(|_| {})).unwrap();
         assert!(GUI_PORTS.contains(&ext.port));
         // nothing listens on the wildcard address for that port from this listener
         assert!(TcpListener::bind(("127.0.0.1", ext.port)).is_err());
         ext.stop();
+        assert!(events.try_recv().is_err());
     }
     #[test]
     fn malformed_and_blank_lines_do_not_replace_valid_events() {
@@ -150,19 +201,24 @@ mod tests {
 
     #[test]
     fn all_public_ports_occupied_is_an_error_without_starting_a_listener() {
-        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _ports = crate::testutil::PORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut retry_fixture = Some(TcpListener::bind(("127.0.0.1", *GUI_PORTS.end())).unwrap());
         let held: Vec<_> = GUI_PORTS.clone().map(|port| loop {
             match TcpListener::bind(("127.0.0.1", port)) {
                 Ok(listener) => break listener,
                 Err(error) => {
+                    drop(retry_fixture.take());
                     assert!(std::time::Instant::now() < deadline, "test requires free port {port}: {error}");
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
         }).collect();
-        let result = listen_external(Arc::new(|_, _| panic!("no listener should deliver events")), Arc::new(|_| panic!("no listener should report live status")));
+        assert!(retry_fixture.is_none(), "the owned busy port must exercise the retry");
+        let (sink, events) = recorded_events(); let (status, statuses) = recorded_status();
+        let result = listen_external(sink, status);
         assert_eq!(result.err().as_deref(), Some("127.0.0.1:7421-7430 are all in use"));
+        assert!(events.try_recv().is_err()); assert!(statuses.try_recv().is_err());
         drop(held);
     }
 

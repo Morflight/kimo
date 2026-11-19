@@ -39,11 +39,13 @@ impl Kind {
 }
 
 /// Where each CLI usually lives besides PATH (GUI apps on macOS/Linux often start with a short PATH).
+fn environment_dir(key: &str) -> Option<PathBuf> { std::env::var_os(key).map(PathBuf::from) }
+
 fn extra_dirs(k: Kind) -> Vec<PathBuf> {
-    extra_dirs_for(k, cfg!(windows), home_dir().as_deref(), |key| std::env::var_os(key).map(PathBuf::from))
+    extra_dirs_for(k, cfg!(windows), home_dir().as_deref(), &environment_dir)
 }
 
-fn extra_dirs_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
+fn extra_dirs_for(k: Kind, windows: bool, home: Option<&Path>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
     let mut v = vec![];
     if let Some(h) = home {
         v.push(h.join(".local").join("bin"));
@@ -69,24 +71,13 @@ fn extra_dirs_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str
 /// Copies that other apps install and keep up to date, outside PATH: the Claude desktop app's own Claude Code, npm's
 /// package folder when its `claude`/`codex` shortcut is missing, and the Codex app's CLI. Newest version first.
 fn bundled(k: Kind) -> Vec<PathBuf> {
-    bundled_for(k, cfg!(windows), home_dir().as_deref(), |key| std::env::var_os(key).map(PathBuf::from))
+    bundled_for(k, cfg!(windows), home_dir().as_deref(), &environment_dir)
 }
 
-fn bundled_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
+fn bundled_for(k: Kind, windows: bool, home: Option<&Path>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = vec![];
     let exe = |n: &str| if windows { format!("{n}.exe") } else { n.to_string() };
-    // <root>/<version>/<build>/<bin> and <root>/<version>/<bin>, newest version first
-    let versions = |root: PathBuf, bin: &str| -> Vec<PathBuf> {
-        let mut ds: Vec<_> = std::fs::read_dir(&root).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
-        ds.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-        ds.reverse();
-        let mut out = vec![];
-        for d in ds {
-            out.push(d.join(bin));
-            if let Ok(sub) = std::fs::read_dir(&d) { for s in sub.flatten() { out.push(s.path().join(bin)); } }
-        }
-        out
-    };
+    let versions = |root: PathBuf, bin: &str| version_candidates(root, bin, |path| std::fs::read_dir(path));
     match k {
         Kind::ClaudeCode => {
             // Claude desktop app: <LOCALAPPDATA>/Claude-Data/<profile>/claude-code/<version>/<build>/claude.exe (Windows),
@@ -119,6 +110,19 @@ fn bundled_for(k: Kind, windows: bool, home: Option<&Path>, env: impl Fn(&str) -
         }
     }
     v.into_iter().filter(|p| p.is_file()).collect()
+}
+
+/// Candidate layouts remain usable when a version directory disappears or cannot be listed.
+fn version_candidates(root: PathBuf, bin: &str, read: fn(&Path) -> std::io::Result<std::fs::ReadDir>) -> Vec<PathBuf> {
+    let mut ds: Vec<_> = read(&root).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+    ds.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    ds.reverse();
+    let mut out = vec![];
+    for d in ds {
+        out.push(d.join(bin));
+        if let Ok(sub) = read(&d) { for s in sub.flatten() { out.push(s.path().join(bin)); } }
+    }
+    out
 }
 
 /// A copy counts only when it actually runs (`--version` answers): a half-finished install is skipped, not shown as
@@ -160,9 +164,9 @@ fn run_short(bin: &Path, args: &[&str], secs: u64) -> Option<(bool, String)> {
     quiet(&mut c).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().ok()?;
     // drain both pipes while it runs: a big answer (a model catalog) would otherwise fill the pipe and stall the child
-    let drain = |p: Option<Box<dyn Read + Send>>| std::thread::spawn(move || { let mut s = String::new(); if let Some(mut r) = p { let _ = r.read_to_string(&mut s); } s });
-    let ho = drain(child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>));
-    let he = drain(child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>));
+    let drain = |mut pipe: Box<dyn Read + Send>| std::thread::spawn(move || { let mut s = String::new(); let _ = pipe.read_to_string(&mut s); s });
+    let ho = drain(Box::new(child.stdout.take().expect("stdout was configured as piped")));
+    let he = drain(Box::new(child.stderr.take().expect("stderr was configured as piped")));
     let t0 = std::time::Instant::now();
     loop {
         match child.try_wait() {
@@ -199,6 +203,9 @@ fn first_line(s: &str) -> Option<String> { s.lines().map(str::trim).find(|l| !l.
 
 /// Read-only: never opens a credential file, only checks that it exists.
 pub fn status(k: Kind) -> Status {
+    status_for_platform(k, cfg!(target_os = "macos"))
+}
+fn status_for_platform(k: Kind, macos: bool) -> Status {
     let path = find(k);
     let version = path.as_ref().and_then(|p| run_short(p, &["--version"], 8)).and_then(|(_, o)| first_line(&o));
     let home = home_dir();
@@ -207,7 +214,7 @@ pub fn status(k: Kind) -> Status {
         Kind::ClaudeCode => {
             if std::env::var_os("ANTHROPIC_API_KEY").is_some() { (Some(true), "Signed in through ANTHROPIC_API_KEY in your environment (that bills the API, not your plan).".to_string()) }
             else if exists(&[".claude", ".credentials.json"]) { (Some(true), "Signed in (Claude Code's own login).".into()) }
-            else if cfg!(target_os = "macos") && path.is_some() { (None, "Claude Code keeps its login in the macOS Keychain; press Test to check.".into()) }
+            else if macos && path.is_some() { (None, "Claude Code keeps its login in the macOS Keychain; press Test to check.".into()) }
             else { (Some(false), "Not signed in yet. Sign in once with your Claude plan.".into()) }
         }
         Kind::Codex => match path.as_ref().and_then(|p| run_short(p, &["login", "status"], 10)) {
@@ -296,7 +303,7 @@ fn spawn_desktop_command(plan: DesktopCommand) -> Result<Child, String> {
     command.spawn().map_err(|error| error.to_string())
 }
 
-fn terminal_command_for(os: &str, cmdline: &str, find: impl Fn(&str) -> Option<PathBuf>) -> Result<DesktopCommand, String> {
+fn terminal_command_for(os: &str, cmdline: &str, find: &dyn Fn(&str) -> Option<PathBuf>) -> Result<DesktopCommand, String> {
     match os {
         "windows" => {
             let mut plan = desktop_command("cmd", &[]);
@@ -323,7 +330,7 @@ fn terminal_command_for(os: &str, cmdline: &str, find: impl Fn(&str) -> Option<P
 
 /// Open a visible terminal running `cmdline` (sign in / install). The user sees and drives it.
 pub fn open_terminal(cmdline: &str) -> Result<(), String> {
-    terminal_command_for(std::env::consts::OS, cmdline, which).and_then(spawn_desktop_command).map(drop)
+    terminal_command_for(std::env::consts::OS, cmdline, &which).and_then(spawn_desktop_command).map(drop)
 }
 
 fn url_command_for(os: &str, url: &str) -> Result<DesktopCommand, String> {
@@ -459,8 +466,8 @@ pub fn parse_codex(v: &Value) -> Vec<Ev> {
             "agent_message" => out.push(Ev::Text { text: item["text"].as_str().unwrap_or("").into() }),
             "reasoning" => out.push(Ev::Thinking { text: item["text"].as_str().unwrap_or("").into() }),
             "mcp_tool_call" => {
-                let failed = item["status"] == "failed" || !item["error"].is_null() && item.get("error").is_some();
-                let output = if !item["error"].is_null() && item.get("error").is_some() { text_of(&item["error"]["message"]) } else { text_of(&item["result"]["content"]) };
+                let failed = item["status"] == "failed" || !item["error"].is_null();
+                let output = if !item["error"].is_null() { text_of(&item["error"]["message"]) } else { text_of(&item["result"]["content"]) };
                 out.push(Ev::ToolEnd { id, ok: !failed, output: cut(&output, 600) });
             }
             "command_execution" => out.push(Ev::ToolEnd { id, ok: item["exit_code"].as_i64() == Some(0), output: cut(item["aggregated_output"].as_str().unwrap_or(""), 600) }),
@@ -603,16 +610,16 @@ pub fn run(t: &Turn, slot: &Slot, emit: &mut dyn FnMut(Ev)) -> Outcome {
         .env("NO_COLOR", "1").env("CI", "1");
     let mut child = match c.spawn() { Ok(ch) => ch, Err(e) => return Outcome { session: None, reply: String::new(), error: Some(format!("Could not start {}: {e}", t.kind.name())) } };
     if let (Some(p), Some(mut w)) = (stdin, child.stdin.take()) { let _ = w.write_all(p.as_bytes()); drop(w); }
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    // Both pipes belong to this successful spawn; an absent pipe is an internal invariant violation.
+    let stdout = child.stdout.take().expect("stdout was configured as piped");
+    let stderr = child.stderr.take().expect("stderr was configured as piped");
     *slot.lock().unwrap() = Some(child);
     let err_buf = Arc::new(Mutex::new(String::new()));
     let eb = err_buf.clone();
-    let et = std::thread::spawn(move || { if let Some(e) = stderr { for l in BufReader::new(e).lines().map_while(Result::ok) { let mut b = eb.lock().unwrap(); if b.len() < 8000 { b.push_str(&l); b.push('\n'); } } } });
+    let et = std::thread::spawn(move || { for l in BufReader::new(stderr).lines().map_while(Result::ok) { let mut b = eb.lock().unwrap(); if b.len() < 8000 { b.push_str(&l); b.push('\n'); } } });
     let mut o = Outcome { session: t.session.map(String::from), reply: String::new(), error: None };
     let mut streamed = String::new();
-    if let Some(out) = stdout {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
             let evs = match t.kind { Kind::ClaudeCode => parse_claude(&v), Kind::Codex => parse_codex(&v), Kind::Antigravity => parse_agy(&v) };
             for ev in evs {
@@ -626,7 +633,6 @@ pub fn run(t: &Turn, slot: &Slot, emit: &mut dyn FnMut(Ev)) -> Outcome {
                 }
                 emit(ev);
             }
-        }
     }
     let status = slot.lock().unwrap().take().map(|mut ch| ch.wait());
     let _ = et.join();
@@ -702,6 +708,23 @@ pub fn parse_codex_models(text: &str) -> Vec<ModelOpt> {
     }).collect()
 }
 
+#[cfg(test)]
+mod model_catalog_edge_tests {
+    use super::*;
+    #[test]
+    fn incomplete_catalog_entries_are_not_offered_as_models() {
+        assert!(parse_codex_models("prefix {broken").is_empty());
+        assert!(parse_codex_models("{}").is_empty());
+        let models = parse_codex_models(r#"{"models":[{}, {"slug":7}, {"slug":"fallback","supported_reasoning_levels":["low",{}, {"effort":"high"}]}, {"slug":"shown","visibility":"list"}]} trailing diagnostic"#);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "fallback"); assert_eq!(models[0].label, "fallback");
+        assert_eq!(models[0].efforts, vec!["low", "high"]); assert_eq!(models[0].default_effort, None);
+        assert_eq!(models[1].id, "shown"); assert!(models[1].efforts.is_empty());
+        let models = parse_agy_models("\tlabel without id\nnot an id\tLabel\n valid-id\t Label \n");
+        assert_eq!(models.len(), 1); assert_eq!(models[0].id, "valid-id"); assert_eq!(models[0].label, "Label");
+    }
+}
+
 /// The models a signed-in CLI offers. Claude Code has no list command, so its documented aliases are offered (each
 /// always means the newest model of that family); any full model name can still be typed.
 pub fn models(k: Kind) -> Models {
@@ -730,7 +753,7 @@ pub fn models(k: Kind) -> Models {
 /// Stop the running turn (if any).
 pub fn stop(slot: &Slot) -> bool { stop_with(slot, Child::kill) }
 
-fn stop_with(slot: &Slot, kill: impl FnOnce(&mut Child) -> std::io::Result<()>) -> bool {
+fn stop_with(slot: &Slot, kill: fn(&mut Child) -> std::io::Result<()>) -> bool {
     let mut child = {
         let mut running = slot.lock().unwrap();
         let Some(child) = running.as_mut() else { return false };
@@ -920,11 +943,12 @@ warning: something on stderr"#);
         assert_eq!(parse_codex(&json!({"type":"error"})),vec![Ev::Error{message:"Codex error".into()}]);
         assert_eq!(parse_codex(&json!({"type":"error","message":"specific"})),vec![Ev::Error{message:"specific".into()}]);
         assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"mcp_tool_call","status":"failed"}})),vec![Ev::ToolEnd{id:"".into(),ok:false,output:"".into()}]);
+        assert_eq!(parse_codex(&json!({"type":"item.completed","item":{"type":"mcp_tool_call","status":"completed","error":null,"result":{"content":"ok"}}})),vec![Ev::ToolEnd{id:"".into(),ok:true,output:"ok".into()}]);
     }
 
     #[test]
     fn antigravity_sparse_states_and_cancellations_are_not_successes() {
-        for input in [json!({}),json!({"event":"init"}),json!({"event":"step_update"}),json!({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":""}})] {assert!(parse_agy(&input).is_empty());}
+        for input in [json!({}),json!({"event":"init"}),json!({"event":"step_update"}),json!({"event":"step_update","step_update":{"step_type":"agent_response"}}),json!({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":""}})] {assert!(parse_agy(&input).is_empty());}
         for kind in ["thinking","planner_thinking"] {
             assert_eq!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":kind,"text_delta":"plan"}})),vec![Ev::Thinking{text:"plan".into()}]);
             assert!(parse_agy(&json!({"event":"step_update","step_update":{"step_type":kind}})).is_empty());
@@ -950,21 +974,21 @@ warning: something on stderr"#);
     #[test]
     fn desktop_launch_plans_preserve_arguments_and_platform_policy() {
         let args=|plan:&DesktopCommand| plan.args.iter().map(|x| x.to_string_lossy().into_owned()).collect::<Vec<_>>();
-        let windows=terminal_command_for("windows","agent login", |_|None).unwrap();
+        let windows=terminal_command_for("windows","agent login", &|_|None).unwrap();
         assert_eq!(windows.program,Path::new("cmd"));assert!(windows.args.is_empty());
         assert_eq!(windows.raw.as_deref(),Some("/c start \"kimo\" cmd /k \"agent login\""));assert!(!windows.quiet);
-        let mac=terminal_command_for("macos",r#"agent "a\b""#, |_|None).unwrap();
+        let mac=terminal_command_for("macos",r#"agent "a\b""#, &|_|None).unwrap();
         assert_eq!(mac.program,Path::new("osascript"));
         assert_eq!(args(&mac),vec!["-e",r#"tell application "Terminal" to do script "agent \"a\\b\""
 tell application "Terminal" to activate"#]);
         for (name,flag) in [("x-terminal-emulator",Some("-e")),("gnome-terminal",Some("--")),("konsole",Some("-e")),("xfce4-terminal",Some("-x")),("kitty",None),("alacritty",Some("-e")),("xterm",Some("-e"))] {
-            let plan=terminal_command_for("linux","agent login",|candidate| (candidate==name).then(||PathBuf::from(name))).unwrap();
+            let plan=terminal_command_for("linux","agent login",&|candidate| (candidate==name).then(||PathBuf::from(name))).unwrap();
             assert_eq!(plan.program,Path::new(name));
             let mut expected:Vec<&str>=flag.into_iter().collect();expected.extend(["sh","-c","agent login; echo; read -p 'Press Enter to close'"]);
             assert_eq!(args(&plan),expected);assert!(plan.raw.is_none());assert!(!plan.quiet);
         }
-        assert_eq!(terminal_command_for("linux","agent",|_|Some("present".into())).unwrap().program,Path::new("x-terminal-emulator"));
-        assert_eq!(terminal_command_for("linux","agent",|_|None).err().unwrap(),"No terminal app found. Run this yourself: agent");
+        assert_eq!(terminal_command_for("linux","agent",&|_|Some("present".into())).unwrap().program,Path::new("x-terminal-emulator"));
+        assert_eq!(terminal_command_for("linux","agent",&|_|None).err().unwrap(),"No terminal app found. Run this yourself: agent");
         for (os,program) in [("windows","rundll32"),("macos","open"),("linux","xdg-open")] {
             let plan=url_command_for(os,"https://example.invalid/a b").unwrap();
             assert_eq!(plan.program,Path::new(program));assert_eq!(plan.quiet,os=="windows");assert!(plan.raw.is_none());
@@ -984,9 +1008,14 @@ tell application "Terminal" to activate"#]);
 
     #[test]
     fn real_child_streams_preserve_prompts_results_errors_and_stop() {
+        fn collect(t: &Turn, slot: &Slot) -> (Outcome, Vec<Ev>) {
+            let mut events = vec![];
+            let outcome = run(t, slot, &mut |event| events.push(event));
+            (outcome, events)
+        }
         let dir=std::env::temp_dir().join(format!("kimo-cli-process-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
-        let source=dir.join("fixture.rs");let bin=dir.join(if cfg!(windows){"fixture.exe"}else{"fixture"});
+        let source=dir.join("fixture.rs");let bin=dir.join("fixture").with_extension(std::env::consts::EXE_EXTENSION);
         std::fs::write(&source,r#"
 use std::io::{Read,Write};
 fn main() {
@@ -1027,8 +1056,8 @@ fn main() {
             std::fs::write(dir.join("stdout"),format!("not json\n{}\n",events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"))).unwrap();
             std::fs::write(dir.join("stderr"),"fixture diagnostic\n").unwrap();std::fs::write(dir.join("exit"),"0").unwrap();
             let turn=Turn{kind,bin:&bin,prompt:"Éditer sans shell",session:None,model:Some("fixture-model"),effort:Some("high"),launch:&launch,workdir:&dir};
-            let expected=command(&turn).unwrap();let mut got=vec![];
-            let result=run(&turn,&slot,&mut |e|got.push(e));
+            let expected=command(&turn).unwrap();
+            let (result,got)=collect(&turn,&slot);
             assert_eq!(result.session.as_deref(),Some("session"));assert_eq!(result.reply,"final");assert_eq!(result.error,None);
             assert!(got.iter().any(|e|matches!(e,Ev::Session{id} if id=="session")));
             assert_eq!(std::fs::read_to_string(dir.join("stdin")).unwrap(),expected.1.unwrap_or_default());
@@ -1041,19 +1070,23 @@ fn main() {
             std::fs::write(dir.join("stdout"),events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n").unwrap();
             std::fs::write(dir.join("stderr"),"diagnostic\n".repeat(1000)).unwrap();
             let fallback=Turn{kind:Kind::ClaudeCode,bin:&bin,prompt:"fixture",session:None,model:None,effort:None,launch:&launch,workdir:&dir};
-            let mut got=vec![];let result=run(&fallback,&slot,&mut |e|got.push(e));
+            let (result,got)=collect(&fallback,&slot);
             assert_eq!(result.reply,"streamed fallback");assert!(result.error.is_none());
             assert!(matches!(&got[0],Ev::Delta{text} if text=="streamed fallback"));
         }
+        std::fs::write(dir.join("stdout"),concat!("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"kept reply\"}]}}\n", "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"\"}\n")).unwrap();
+        let completed=Turn{kind:Kind::ClaudeCode,bin:&bin,prompt:"fixture",session:None,model:None,effort:None,launch:&launch,workdir:&dir};
+        let (result,events)=collect(&completed,&slot);
+        assert_eq!(result.reply,"kept reply"); assert!(result.error.is_none()); assert_eq!(events.len(),2);
         let turn=Turn{kind:Kind::Codex,bin:&bin,prompt:"fixture",session:Some("previous"),model:None,effort:None,launch:&launch,workdir:&dir};
         for (stderr,expected) in [("Please login","not signed in"),("quota exceeded","usage limit"),("fixture failure","fixture failure")] {
             std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),stderr).unwrap();std::fs::write(dir.join("exit"),"7").unwrap();
-            let mut got=vec![];let result=run(&turn,&slot,&mut |e|got.push(e));
+            let (result,got)=collect(&turn,&slot);
             assert!(result.error.unwrap().contains(expected));assert_eq!(result.session.as_deref(),Some("previous"));assert!(result.reply.is_empty());assert!(got.is_empty());
         }
         std::fs::write(dir.join("stdout"),json!({"type":"error","message":"provider refused"}).to_string()+"\n").unwrap();
         std::fs::write(dir.join("stderr"),"login").unwrap();
-        let mut got=vec![];let result=run(&turn,&slot,&mut |e|got.push(e));assert_eq!(result.error.as_deref(),Some("provider refused"));assert_eq!(got,vec![Ev::Error{message:"provider refused".into()}]);
+        let (result,got)=collect(&turn,&slot);assert_eq!(result.error.as_deref(),Some("provider refused"));assert_eq!(got,vec![Ev::Error{message:"provider refused".into()}]);
         std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),"").unwrap();std::fs::write(dir.join("exit"),"0").unwrap();
         for kind in Kind::all() {
             assert_eq!(register(kind,&bin,&launch).unwrap(),"Added kimo.");
@@ -1064,16 +1097,21 @@ fn main() {
                 assert_eq!(config["command"],"fixture-kimo");assert_eq!(config["env"]["FIXTURE"],"one two");
             } else {assert!(argv.contains("FIXTURE=one two"));assert!(argv.contains("--client"));}
         }
+        let plain_launch=KimoLaunch{command:"fixture-kimo".into(),env:vec![]};
+        assert_eq!(register(Kind::ClaudeCode,&bin,&plain_launch).unwrap(),"Added kimo.");
+        let argv=std::fs::read_to_string(dir.join("argv")).unwrap();
+        let config:Value=serde_json::from_str(argv.split('\0').last().unwrap()).unwrap();
+        assert!(config.get("env").is_none());assert_eq!(config["args"],json!(["mcp","--client","claude-code"]));
         std::fs::write(dir.join("stdout"),"registered ").unwrap();std::fs::write(dir.join("stderr"),"fixture").unwrap();
         assert_eq!(run_register(&bin,&[]).unwrap(),"registered fixture");
         std::fs::write(dir.join("exit"),"4").unwrap();assert_eq!(run_register(&bin,&[]).unwrap_err(),"registered fixture");
         std::fs::write(dir.join("stdout"),"").unwrap();std::fs::write(dir.join("stderr"),"").unwrap();
         assert!(run_register(&bin,&[]).unwrap_err().contains("exited with"));assert!(run_register(&dir.join("absent"),&[]).is_err());
         let missing=dir.join("absent");let invalid=Turn{bin:&missing,..turn};
-        let mut got=vec![];assert!(run(&invalid,&slot,&mut |e|got.push(e)).error.unwrap().contains("Could not start Codex"));assert!(got.is_empty());
+        let (result,got)=collect(&invalid,&slot);assert!(result.error.unwrap().contains("Could not start Codex"));assert!(got.is_empty());
         let unwritable=Turn{kind:Kind::ClaudeCode,workdir:&missing,..turn};
-        assert!(run(&unwritable,&slot,&mut |e|got.push(e)).error.unwrap().contains("could not write"));assert!(got.is_empty());
-        for scenario in ["models","signin","invalid"] {
+        let (result,got)=collect(&unwritable,&slot);assert!(result.error.unwrap().contains("could not write"));assert!(got.is_empty());
+        for scenario in ["models","signin","rediscover-path","rediscover-extra","invalid"] {
             let home=dir.join(format!("home-{scenario}"));std::fs::create_dir_all(&home).unwrap();
             let output=Command::new(std::env::current_exe().unwrap())
                 .args(["--exact","cli_agents::tests::discovery_models_and_signin_child","--nocapture"])
@@ -1103,7 +1141,7 @@ fn main() {
     #[test]
     fn discovery_models_and_signin_child() {
         let Some(root)=std::env::var_os("KIMO_CLI_FIXTURE_DIR").map(PathBuf::from) else { return };
-        let home=home_dir().unwrap();let bin=root.join(if cfg!(windows){"fixture.exe"}else{"fixture"});
+        let home=home_dir().unwrap();let bin=root.join("fixture").with_extension(std::env::consts::EXE_EXTENSION);
         let response=|text:&str,code:&str| {std::fs::write(root.join("stdout"),text).unwrap();std::fs::write(root.join("stderr"),"").unwrap();std::fs::write(root.join("exit"),code).unwrap();};
         let file=|name:&str,text:&str| {let path=home.join(name);std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,text).unwrap();};
         response("fixture CLI 1.0\n","0");
@@ -1119,7 +1157,8 @@ fn main() {
             }
             "signin" => {
                 let claude=status(Kind::ClaudeCode);assert!(claude.installed);assert_eq!(claude.version.as_deref(),Some("fixture CLI 1.0"));
-                if !cfg!(target_os="macos") {assert_eq!(claude.signed_in,Some(false));}
+                assert_eq!(status_for_platform(Kind::ClaudeCode,false).signed_in,Some(false));
+                let keychain=status_for_platform(Kind::ClaudeCode,true);assert_eq!(keychain.signed_in,None);assert!(keychain.sign_in_note.contains("macOS Keychain"));
                 std::env::set_var("ANTHROPIC_API_KEY","fixture-never-sent");assert!(status(Kind::ClaudeCode).sign_in_note.contains("ANTHROPIC_API_KEY"));std::env::remove_var("ANTHROPIC_API_KEY");
                 file(".claude/.credentials.json","not a credential document");assert_eq!(status(Kind::ClaudeCode).signed_in,Some(true));
                 response("","0");let codex=status(Kind::Codex);assert_eq!(codex.signed_in,Some(true));assert_eq!(codex.sign_in_note,"Signed in");assert_eq!(codex.version,None);
@@ -1139,6 +1178,19 @@ fn main() {
                 }
                 std::env::remove_var("HOME");std::env::remove_var("USERPROFILE");for k in Kind::all(){assert!(!registered(k));}
             }
+            scenario @ ("rediscover-path" | "rediscover-extra") => {
+                let path=scenario=="rediscover-path";
+                let directory=if path {home.join("shims")} else {home.join(".local/bin")};
+                std::fs::create_dir_all(&directory).unwrap();
+                let replacement=directory.join("codex").with_extension(std::env::consts::EXE_EXTENSION);
+                std::fs::copy(&bin,&replacement).unwrap();
+                for (name,contents) in [("stdout","replacement fixture"),("stderr",""),("exit","0")] {std::fs::write(directory.join(name),contents).unwrap();}
+                if path {std::env::set_var("PATH",&directory);}
+                std::fs::remove_file(&bin).unwrap();
+                let found=find(Kind::Codex);
+                std::fs::copy(&replacement,&bin).unwrap();
+                assert_eq!(found,Some(replacement));
+            }
             other => panic!("unknown fixture scenario: {other}"),
         }
         println!("fixture scenario passed");
@@ -1156,7 +1208,7 @@ fn main() {
             let exe=|name:&str|if windows {format!("{name}.exe")} else {name.to_string()};
             for k in Kind::all() {
                 assert_eq!(Kind::from_id(k.id()),Some(k));assert_eq!(Kind::from_id("Unknown"),None);
-                let dirs=extra_dirs_for(k,windows,Some(&home),env);
+                let dirs=extra_dirs_for(k,windows,Some(&home),&env);
                 if k==Kind::ClaudeCode {assert!(dirs.contains(&home.join(".claude/local")));}
                 if k==Kind::Antigravity {assert!(dirs.contains(&home.join(".antigravity/bin")));assert!(dirs.contains(&home.join(".gemini/antigravity-cli/bin")));}
                 assert!(dirs.contains(&home.join(".local/bin")));assert!(dirs.contains(&home.join(".npm-global/bin")));
@@ -1182,18 +1234,32 @@ fn main() {
             ];
             for path in &expected {write(path.clone());}
             write(home.join(".config/Claude/claude-code/not-a-version-file"));
-            let found=bundled_for(Kind::ClaudeCode,windows,Some(&home),env);for path in expected {assert!(found.contains(&path),"{}",path.display());}
+            let found=bundled_for(Kind::ClaudeCode,windows,Some(&home),&env);for path in expected {assert!(found.contains(&path),"{}",path.display());}
             let codex=exe("codex");
             let expected=[home.join(format!(".codex/plugins/.plugin-appserver/{codex}")),home.join(format!(".codex/bin/{codex}")),local.join(format!("Programs/Codex/resources/{codex}")),local.join(format!("Programs/codex/resources/{codex}"))];
             for path in &expected {write(path.clone());}
-            let found=bundled_for(Kind::Codex,windows,Some(&home),env);for path in expected {assert!(found.contains(&path));}
+            let found=bundled_for(Kind::Codex,windows,Some(&home),&env);for path in expected {assert!(found.contains(&path));}
             let agy=write(home.join(format!(".gemini/antigravity-cli/bin/{}",exe("agy"))));
-            assert_eq!(bundled_for(Kind::Antigravity,windows,Some(&home),env),vec![agy]);
-            for k in Kind::all() {let dirs=extra_dirs_for(k,windows,None,|_|None);assert_eq!(dirs.len(),if windows{0}else{3});}
-            assert!(bundled_for(Kind::ClaudeCode,windows,None,|_|None).is_empty());
-            assert!(bundled_for(Kind::Antigravity,windows,None,|_|None).is_empty());
-            assert!(!bundled_for(Kind::Codex,windows,None,|_|None).contains(&home.join(format!(".codex/bin/{}",exe("codex")))));
+            assert_eq!(bundled_for(Kind::Antigravity,windows,Some(&home),&env),vec![agy]);
+            for k in Kind::all() {let dirs=extra_dirs_for(k,windows,None,&|_|None);assert_eq!(dirs.len(),if windows{0}else{3});}
+            assert!(bundled_for(Kind::ClaudeCode,windows,None,&|_|None).is_empty());
+            assert!(bundled_for(Kind::Antigravity,windows,None,&|_|None).is_empty());
+            assert!(!bundled_for(Kind::Codex,windows,None,&|_|None).contains(&home.join(format!(".codex/bin/{}",exe("codex")))));
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_version_children_keep_the_direct_binary_candidate() {
+        let root=std::env::temp_dir().join(format!("kimo-unreadable-cli-version-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("restricted/sub")).unwrap();
+        std::fs::write(root.join("plain-file"),b"fixture").unwrap();
+        fn listing(path:&Path)->std::io::Result<std::fs::ReadDir> {
+            if path.file_name()==Some(std::ffi::OsStr::new("restricted")) {return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));}
+            std::fs::read_dir(path)
+        }
+        assert_eq!(version_candidates(root.clone(),"cli",listing),vec![root.join("restricted/cli")]);
+        assert!(version_candidates(root.join("missing"),"cli",listing).is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

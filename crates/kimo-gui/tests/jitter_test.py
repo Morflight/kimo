@@ -26,7 +26,7 @@ SAMPLE_JS = """() => {
   document.querySelectorAll('.kv .row').forEach((e, i) => e.closest('[data-anim]') || o.rows.push({ key: (e.querySelector('.k') || {}).textContent + '#' + i, h: e.getBoundingClientRect().height }));
   document.querySelectorAll('.trk').forEach((e, i) => e.closest('[data-anim]') || o.trks.push({ key: i, h: e.getBoundingClientRect().height }));
   o.cells = []; document.querySelectorAll('[data-panel=renders] .tr:not(.h)').forEach((e, i) => { const nm = (e.querySelector('.cream') || {}).textContent || i; o.cells.push({ key: nm, h: e.getBoundingClientRect().height, xs: [...e.children].map(c => c.getBoundingClientRect().x), th: (() => { const t = e.querySelector('.rthumb'); return t ? R(t) : null; })() }); });
-  o.meta = [...document.querySelectorAll('.vmeta')].map(e => [...e.children].map(c => c.getBoundingClientRect().x)[0] ?? null);
+  o.meta = [...document.querySelectorAll('.vmeta')].map(e => e.closest('[data-anim]') ? null : ([...e.children].map(c => c.getBoundingClientRect().x)[0] ?? null));
   o.bar = (() => { const v = document.querySelector('[data-panel=viewer]'); const b = v && [...v.children].find(c => c.style && c.style.height && c.style.height.endsWith('px') && c.firstElementChild && c.style.borderRadius); return b ? R(b) : null; })();
   return o; }"""
 class Q(http.server.SimpleHTTPRequestHandler):
@@ -76,10 +76,20 @@ async def run(evfiles):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f'http://127.0.0.1:{srv.server_address[1]}/ui/index.html'
     scen = [s['id'] for s in json.loads((CRATE / 'demo' / 'scenarios.json').read_text())]
-    worst = 0.0; out = {}
+    worst = 0.0; out = {}; measurement_errors = []
     async with async_playwright() as p:
         b = await p.chromium.launch(); pg = await b.new_page(viewport={'width': 1376, 'height': 768})
         errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        # The same spring exemption as panels/rows, while a real one-pixel shift must still fail.
+        await pg.set_content('<section id="probe"><div class="vmeta"><span>fixture</span></div></section>')
+        before = await pg.evaluate(SAMPLE_JS)
+        await pg.evaluate("document.querySelector('#probe').style.transform='translateX(1px)'")
+        shifted = await pg.evaluate(SAMPLE_JS)
+        assert diff([before, shifted])[0]['meta_x'] == 1
+        await pg.evaluate("document.querySelector('#probe').dataset.anim='1'")
+        springing = await pg.evaluate(SAMPLE_JS)
+        assert springing['meta'] == [None]
+        assert diff([springing, shifted])[0]['meta_x'] == 0
         async def one(sid):
             await pg.goto(f'{base}?feed=sim&scenario={sid}', wait_until='domcontentloaded', timeout=8000); await pg.wait_for_timeout(300)
             S = []
@@ -89,6 +99,7 @@ async def run(evfiles):
         for sid in scen:
             try: out[sid] = diff(await asyncio.wait_for(one(sid), 25)); print('.', end='', flush=True)
             except Exception as e:
+                measurement_errors.append(f'{sid}: {type(e).__name__}: {e}')
                 print(f'\n{sid}: no measurement ({type(e).__name__})', flush=True); pg = await b.new_page(viewport={'width': 1376, 'height': 768}); pg.on('pageerror', lambda e: errs.append(str(e)))
         for f in evfiles:
             evs = json.loads(Path(f).read_text())
@@ -159,8 +170,10 @@ async def run(evfiles):
         m = max(v for n, v in J.items() if not n.startswith('_')); worst = max(worst, m)
         print(f"{'PASS' if m <= 0.5 else 'JITTER'}  {k:<16} " + '  '.join(f'{n} {v:.1f}' for n, v in J.items() if not n.startswith('_')) + (f"   (panel move on a call event {J['_panel_on_event']:.1f})" if J.get('_panel_on_event') else '') + (f"   worst: {max(where.items(), key=lambda kv: J[kv[0]])}" if m > 0.5 else ''))
     if errs: print('page errors:', errs[:3])
-    print(f"\nRESULT: {'no layout jitter' if worst <= 0.5 else f'jitter up to {worst:.1f} px'}")
-    return 0 if worst <= 0.5 and not errs else 1
+    if measurement_errors: print('missing scenario measurements:', measurement_errors)
+    result = 'missing scenario measurements' if measurement_errors else 'page errors' if errs else 'no layout jitter' if worst <= 0.5 else f'jitter up to {worst:.1f} px'
+    print(f"\nRESULT: {result}")
+    return 0 if worst <= 0.5 and not errs and not measurement_errors else 1
 
 if __name__ == '__main__':
     sys.exit(asyncio.run(run(sys.argv[1:])))

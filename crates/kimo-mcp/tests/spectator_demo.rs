@@ -129,7 +129,14 @@ fn demo_mode_gives_every_call_its_own_frame() {
 fn demo_mode_over_the_gui_transport() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
-    let rx = std::thread::spawn(move || { let (mut s, _) = l.accept().unwrap(); let mut b = String::new(); s.read_to_string(&mut b).unwrap(); b });
+    let rx = std::thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap(); let mut b = String::new();
+        // Process exit may close Winsock with a reset. The full frame/event checks below
+        // still require every call, complete JSON lines and the exact delivery order.
+        if let Err(error) = s.read_to_string(&mut b) { assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset); }
+        assert!(b.ends_with('\n'), "transport must end with a complete JSON line");
+        b
+    });
     let mut m = Mcp::spawn(&[("KIMO_SPECTATOR", &format!("tcp://127.0.0.1:{port}")), ("KIMO_SPECTATOR_DEMO", "on")], &[]);
     let sent = m.burst(&calls());
     m.finish();

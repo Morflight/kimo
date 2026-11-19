@@ -37,12 +37,13 @@ def report(output, args):
         return result.returncode
     # The original exporter never started. Preserve EVERY argument and object;
     # only its transport changes, with no new coverage filter or denominator.
+    # llvm-cov dispatches its subcommand before expanding response-file options.
     with tempfile.TemporaryDirectory(prefix='kimo-llvm-response-') as folder:
         path = Path(folder) / 'export.rsp'
-        path.write_text(response_text(command[1:], os.name == 'nt'), encoding='utf-8')
+        path.write_text(response_text(command[2:], os.name == 'nt'), encoding='utf-8')
         print('Retrying LLVM export with all original arguments in a response file.', file=sys.stderr)
         with Path(output).open('wb') as stream:
-            return subprocess.run([command[0], '@' + str(path)], stdout=stream).returncode
+            return subprocess.run([command[0], command[1], '@' + str(path)], stdout=stream).returncode
 
 
 if __name__ == '__main__':

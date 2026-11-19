@@ -174,7 +174,10 @@ fn every_call_one_start_one_terminal_over_the_gui_transport() {
     let rx = std::thread::spawn(move || {
         let (mut s, _) = l.accept().unwrap();
         let mut buf = String::new();
-        s.read_to_string(&mut buf).unwrap();
+        // Winsock can report reset when the sender process exits after draining.
+        // Keep all bytes and require zero malformed lines and every start/terminal pair.
+        if let Err(error) = s.read_to_string(&mut buf) { assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset); }
+        assert!(buf.ends_with('\n'), "transport must end with a complete JSON line");
         buf
     });
     let mut m = Mcp::spawn(&format!("tcp://127.0.0.1:{port}"));
