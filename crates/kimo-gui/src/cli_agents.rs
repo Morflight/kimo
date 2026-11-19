@@ -688,11 +688,13 @@ pub fn models(k: Kind) -> Models {
 }
 
 /// Stop the running turn (if any).
-pub fn stop(slot: &Slot) -> bool {
+pub fn stop(slot: &Slot) -> bool { stop_with(slot, Child::kill) }
+
+fn stop_with(slot: &Slot, kill: impl FnOnce(&mut Child) -> std::io::Result<()>) -> bool {
     let mut child = {
         let mut running = slot.lock().unwrap();
         let Some(child) = running.as_mut() else { return false };
-        if child.kill().is_err() { return false; }
+        if kill(child).is_err() { return false; }
         // Removing the killed child lets run distinguish an explicit Stop from a provider failure.
         // Reap it here: run no longer owns a handle to wait on.
         running.take().unwrap()
@@ -973,11 +975,75 @@ fn main() {
         let mut got=vec![];assert!(run(&invalid,&slot,&mut |e|got.push(e)).error.unwrap().contains("Could not start Codex"));assert!(got.is_empty());
         let unwritable=Turn{kind:Kind::ClaudeCode,workdir:&missing,..turn};
         assert!(run(&unwritable,&slot,&mut |e|got.push(e)).error.unwrap().contains("could not write"));assert!(got.is_empty());
+        for scenario in ["models","signin","invalid"] {
+            let home=dir.join(format!("home-{scenario}"));std::fs::create_dir_all(&home).unwrap();
+            let output=Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","cli_agents::tests::discovery_models_and_signin_child","--nocapture"])
+                .env("KIMO_CLI_FIXTURE_DIR",&dir).env("KIMO_CLI_FIXTURE_SCENARIO",scenario)
+                .env("HOME",&home).env("USERPROFILE",&home).env("APPDATA",home.join("roaming")).env("LOCALAPPDATA",home.join("local"))
+                .env("CODEX_HOME",home.join(".codex")).env("PATH","").env_remove("ANTHROPIC_API_KEY")
+                .env("KIMO_CLAUDE_BIN",&bin).env("KIMO_CODEX_BIN",&bin).env("KIMO_AGY_BIN",&bin).output().unwrap();
+            if scenario=="invalid" {
+                assert!(!output.status.success());assert!(format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr)).contains("unknown fixture scenario"));
+            } else {
+                assert!(output.status.success(),"{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+                assert!(String::from_utf8_lossy(&output.stdout).contains("fixture scenario passed"));
+            }
+        }
         std::fs::write(dir.join("stdout"),json!({"type":"thread.started","thread_id":"stopping"}).to_string()+"\n").unwrap();
         std::fs::write(dir.join("stderr"),"").unwrap();std::fs::write(dir.join("wait"),"").unwrap();
-        let result=run(&turn,&slot,&mut |e|{assert!(matches!(e,Ev::Session{..}));assert!(stop(&slot));});
+        let result=run(&turn,&slot,&mut |e|{
+            assert!(matches!(e,Ev::Session{..}));
+            assert!(!stop_with(&slot,|_| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,"fixture kill refusal"))));
+            assert!(slot.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none(),"failed kill must preserve the running child");
+            assert!(stop(&slot));
+        });
         assert_eq!(result.error.as_deref(),Some("Stopped."));assert!(slot.lock().unwrap().is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn discovery_models_and_signin_child() {
+        let Some(root)=std::env::var_os("KIMO_CLI_FIXTURE_DIR").map(PathBuf::from) else { return };
+        let home=home_dir().unwrap();let bin=root.join(if cfg!(windows){"fixture.exe"}else{"fixture"});
+        let response=|text:&str,code:&str| {std::fs::write(root.join("stdout"),text).unwrap();std::fs::write(root.join("stderr"),"").unwrap();std::fs::write(root.join("exit"),code).unwrap();};
+        let file=|name:&str,text:&str| {let path=home.join(name);std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,text).unwrap();};
+        response("fixture CLI 1.0\n","0");
+        for k in Kind::all() {assert_eq!(find(k),Some(bin.clone()));assert_eq!(find(k),Some(bin.clone()));}
+        match std::env::var("KIMO_CLI_FIXTURE_SCENARIO").unwrap().as_str() {
+            "models" => {
+                let claude=models(Kind::ClaudeCode);assert!(claude.models.iter().any(|m|m.id=="sonnet"));assert_eq!(models(Kind::ClaudeCode).models.len(),claude.models.len());
+                for (kind,catalog,id) in [(Kind::Codex,"{\"models\":[{\"slug\":\"fixture-codex\",\"display_name\":\"Fixture Codex\"}]}","fixture-codex"),(Kind::Antigravity,"fixture-agy\tFixture Agy\n","fixture-agy")] {
+                    response("not a catalog","0");let empty=models(kind);assert!(empty.models.is_empty());assert!(empty.source.contains("did not list"));
+                    response(catalog,"0");let found=models(kind);assert_eq!(found.models.len(),1);assert_eq!(found.models[0].id,id);assert!(found.source.starts_with("from your"));
+                    response("invalid after cached success","0");assert_eq!(models(kind).models[0].id,id);
+                }
+            }
+            "signin" => {
+                let claude=status(Kind::ClaudeCode);assert!(claude.installed);assert_eq!(claude.version.as_deref(),Some("fixture CLI 1.0"));
+                if !cfg!(target_os="macos") {assert_eq!(claude.signed_in,Some(false));}
+                std::env::set_var("ANTHROPIC_API_KEY","fixture-never-sent");assert!(status(Kind::ClaudeCode).sign_in_note.contains("ANTHROPIC_API_KEY"));std::env::remove_var("ANTHROPIC_API_KEY");
+                file(".claude/.credentials.json","not a credential document");assert_eq!(status(Kind::ClaudeCode).signed_in,Some(true));
+                response("","0");let codex=status(Kind::Codex);assert_eq!(codex.signed_in,Some(true));assert_eq!(codex.sign_in_note,"Signed in");assert_eq!(codex.version,None);
+                response("","1");let codex=status(Kind::Codex);assert_eq!(codex.signed_in,Some(false));assert_eq!(codex.sign_in_note,"Not signed in");
+                response("Sign in refused\nmore diagnostics","1");assert_eq!(status(Kind::Codex).sign_in_note,"Sign in refused");
+                file(".codex/auth.json","not a credential document");
+                let executable=std::fs::read(&bin).unwrap();std::fs::write(&bin,b"invalid executable fixture").unwrap();
+                assert_eq!(status(Kind::Codex).signed_in,Some(true));std::fs::remove_file(home.join(".codex/auth.json")).unwrap();assert_eq!(status(Kind::Codex).signed_in,Some(false));std::fs::write(&bin,executable).unwrap();
+                response("fixture","0");assert_eq!(status(Kind::Antigravity).signed_in,Some(false));
+                file(".gemini/oauth_creds.json","not a credential document");assert_eq!(status(Kind::Antigravity).signed_in,Some(true));std::fs::remove_file(home.join(".gemini/oauth_creds.json")).unwrap();
+                file(".gemini/google_accounts.json","not an account document");assert_eq!(status(Kind::Antigravity).signed_in,Some(true));
+                for k in Kind::all(){assert!(!registered(k));}
+                file(".claude.json","{\"mcpServers\":{\"kimo\":{\"command\":\"fixture\"}}}");assert!(registered(Kind::ClaudeCode));
+                file(".codex/config.toml","[mcp_servers.kimo]\ncommand = \"fixture\"\n");assert!(registered(Kind::Codex));
+                for name in [".gemini/config/mcp_config.json",".gemini/antigravity/mcp_config.json",".gemini/antigravity-cli/mcp_config.json",".gemini/settings.json"] {
+                    file(name,"{\"mcpServers\":{\"kimo\":{\"command\":\"fixture\"}}}");assert!(registered(Kind::Antigravity));std::fs::remove_file(home.join(name)).unwrap();
+                }
+                std::env::remove_var("HOME");std::env::remove_var("USERPROFILE");for k in Kind::all(){assert!(!registered(k));}
+            }
+            other => panic!("unknown fixture scenario: {other}"),
+        }
+        println!("fixture scenario passed");
     }
 
 }

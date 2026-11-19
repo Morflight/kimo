@@ -123,3 +123,7 @@ The shipping IPC registry is shared with mock-webview tests. Required arguments 
 CLI process-contract tests compile a small local fixture executable with the test toolchain. They verify prompt delivery, exact argv, streamed session/final replies, authentication/quota errors, registration output and cancellation, without running an installed agent or changing its configuration.
 
 Stopping an active agent kills and reaps only that turn’s child, removes its running slot and reports `Stopped.` rather than a provider exit failure. A failed kill retains the child for normal completion and reports that no stop occurred. The process fixture reproduces the former signal-9 error and asserts the corrected cancellation result.
+
+The stop regression also injects an OS kill refusal, checks that the same child remains alive and owned, and then stops it normally. Only the kill syscall is substituted for this error case.
+
+Discovery/model-cache/sign-in tests run in isolated child processes with fixture CLI overrides and synthetic home/config directories. They test retry after an empty model catalog, caching after success, authentication-status fallbacks and supported configuration locations. Credential fixtures intentionally contain invalid documents: only file existence is checked.
