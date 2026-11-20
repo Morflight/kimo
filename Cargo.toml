@@ -7,6 +7,12 @@ version = "9.0.0"
 edition = "2021"
 license = "MIT"
 
+# Test builds: CI and the local coverage runner set CARGO_PROFILE_TEST_OPT_LEVEL=1 for the workspace crates
+# (faster to compile under coverage); dependencies stay at opt-level 2 so the media/ML libraries keep running
+# fast in tests and their build cache is not invalidated.
+[profile.test.package."*"]
+opt-level = 2
+
 [profile.release]
 opt-level = 3
 lto = "thin"

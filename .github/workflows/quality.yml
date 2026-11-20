@@ -135,8 +135,9 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      # Keep debug assertions and every test, but avoid unoptimized renderer overhead.
-      CARGO_PROFILE_TEST_OPT_LEVEL: "2"
+      # Keep debug assertions and every test, but avoid unoptimized renderer overhead. Level 1 for the
+      # workspace crates (faster coverage compiles); dependencies stay at 2 via [profile.test.package."*"].
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Reclaim unused hosted-runner SDK space

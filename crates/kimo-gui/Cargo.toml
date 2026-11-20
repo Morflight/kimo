@@ -39,6 +39,10 @@ sha2 = "0.10"
 # OS credential store for "remember on this computer" (Windows Credential Manager / macOS Keychain / Secret Service)
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
+# Test builds: CI sets CARGO_PROFILE_TEST_OPT_LEVEL=1 for this crate; dependencies stay at opt-level 2.
+[profile.test.package."*"]
+opt-level = 2
+
 [profile.release]
 strip = true
 
