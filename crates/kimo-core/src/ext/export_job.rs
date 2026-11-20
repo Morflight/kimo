@@ -123,6 +123,23 @@ fn read_json(path: &std::path::Path) -> Option<Value> { serde_json::from_slice(&
 fn file_sha(p: &std::path::Path) -> Option<String> { deps::hash_file(p, true).ok().map(|x| x.0) }
 fn chunk_name(i: u64) -> String { format!("chunk_{i:05}.mp4") }
 
+/// Retries of a chunk rename (RENAME_TRIES x RENAME_WAIT, about 1 s): on Windows a media file that was just closed can stay
+/// locked for a moment (an antivirus scanning the freshly written file), and a rename refused then must neither fail a
+/// finished chunk nor leave an unfinished one looking like an encode in progress.
+const RENAME_TRIES: u32 = 50;
+const RENAME_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+fn rename_retrying(from: &std::path::Path, to: &std::path::Path, tries: u32, wait: std::time::Duration) -> std::io::Result<()> {
+    let mut n = 1;
+    loop { match std::fs::rename(from, to) { Ok(()) => return Ok(()), Err(e) if n >= tries => return Err(e), Err(_) => { n += 1; std::thread::sleep(wait); } } }
+}
+/// An unfinished chunk file `from` becomes `<stem>.mp4.partial`, next to a `<stem>.mp4.partial.marker` holding `info`
+/// (plus `rename_error` if the file could not be renamed even after retrying, so the failure is never silent).
+fn mark_unfinished(dir: &std::path::Path, from: &std::path::Path, stem: &str, mut info: Value) {
+    let pf = dir.join(format!("{stem}.mp4.partial")); let _ = std::fs::remove_file(&pf);
+    if let Err(e) = rename_retrying(from, &pf, RENAME_TRIES, RENAME_WAIT) { info["rename_error"] = json!(e.to_string()); }
+    let _ = write_atomic(&dir.join(format!("{stem}.mp4.partial.marker")), &info);
+}
+
 fn status_json(j: &Job) -> Value {
     let s = j.st.lock().unwrap_or_else(|e| e.into_inner()); let remaining = s.to_render.saturating_sub(s.rendered_secs.len() as u64);
     let fps_r = { let secs: f64 = s.rendered_secs.iter().sum(); let fr = s.frames_rendered; if secs > 0.0 && fr > 0 { Some((fr as f64 / secs * 10.0).round() / 10.0) } else { None } };
@@ -154,8 +171,7 @@ fn quarantine(dir: &std::path::Path, old: &Option<Value>) -> Vec<Value> {
         let stem = if let Some(s) = n.strip_suffix(".partial.mp4") { Some(s.to_string()) } else if let Some(s) = n.strip_suffix(".mp4").filter(|s| s.starts_with("chunk_")) {
             let i = s.trim_start_matches("chunk_").parse::<u64>().ok(); if i.map_or(false, |i| old.as_ref().map_or(false, |o| o["chunks"].get(i.to_string()).is_some())) { None } else { Some(s.to_string()) } } else { None };
         let Some(stem) = stem else { continue };
-        let pf = dir.join(format!("{stem}.mp4.partial")); let _ = std::fs::remove_file(&pf); let _ = std::fs::rename(dir.join(&n), &pf);
-        let _ = write_atomic(&dir.join(format!("{stem}.mp4.partial.marker")), &json!({"file": n, "reason": "crash_or_unverified"}));
+        mark_unfinished(dir, &dir.join(&n), &stem, json!({"file": n, "reason": "crash_or_unverified"}));
         out.push(json!({"file": n, "reason": "crash_or_unverified"}));
     }
     out
@@ -261,8 +277,8 @@ fn run(j: Arc<Job>, p: crate::model::Project, dir: std::path::PathBuf, out: Stri
                     // finished chunk_N.mp4 that the index does not vouch for, which the next run quarantines and re-renders. The job's own
                     // token is restored when this block ends, and the loop checks it before the next chunk.
                     let _commit = crate::guard::install_token(&crate::guard::new_token());
-                    match r { Ok(_) => { sync_file(&part)?; std::fs::rename(&part, &file).map_err(|e| e.to_string())?; sync_dir(&dir); }
-                        Err(e) => { let e = format!("chunk {} ({:.1}-{:.1} s): {e}", idx + 1, range[0] as f64 / fps, range[1] as f64 / fps); let pf = dir.join(format!("{}.partial", chunk_name(idx))); let _ = std::fs::rename(&part, &pf); let _ = write_atomic(&dir.join(format!("{}.partial.marker", chunk_name(idx))), &json!({"range": range, "key": c["key"], "error": e})); return Err(e); } }
+                    match r { Ok(_) => { sync_file(&part)?; rename_retrying(&part, &file, RENAME_TRIES, RENAME_WAIT).map_err(|e| e.to_string())?; sync_dir(&dir); }
+                        Err(e) => { let e = format!("chunk {} ({:.1}-{:.1} s): {e}", idx + 1, range[0] as f64 / fps, range[1] as f64 / fps); mark_unfinished(&dir, &part, &format!("chunk_{idx:05}"), json!({"range": range, "key": c["key"], "error": e})); return Err(e); } }
                     rendered.push(json!({"index": idx, "reason": why})); set(&j, |s| { s.rendered_secs.push(t0.elapsed().as_secs_f64()); s.frames_rendered += range[1] - range[0]; });
                     json!({"file": chunk_name(idx), "frames": range[1] - range[0], "key": c["key"], "range": range, "crf": crf, "sha256": file_sha(&file), "bytes": std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0)}) }
             };
@@ -276,7 +292,7 @@ fn run(j: Arc<Job>, p: crate::model::Project, dir: std::path::PathBuf, out: Stri
         Ok(json!({"path": out, "duration": dur, "verified": joined["verified"], "verify": joined["verify"], "reverified": {"ok": reused.len(), "re_rendered": re, "reasons": reasons}, "quarantined": quarantined, "reused": reused, "rendered": rendered, "project_hash": m["project_hash"], "forced": force}))
     }));
     let cancelled = j.cancel.load(std::sync::atomic::Ordering::Relaxed);
-    if !matches!(res, Ok(Ok(_))) { if let Ok(rd) = std::fs::read_dir(&dir) { for e in rd.flatten() { let n = e.file_name().to_string_lossy().into_owned(); if let Some(stem) = n.strip_suffix(".partial.mp4") { let pf = dir.join(format!("{stem}.mp4.partial")); let _ = std::fs::rename(e.path(), &pf); let _ = write_atomic(&dir.join(format!("{stem}.mp4.partial.marker")), &json!({"error": "interrupted before the chunk finished", "cancelled": cancelled})); } } } }
+    if !matches!(res, Ok(Ok(_))) { if let Ok(rd) = std::fs::read_dir(&dir) { for e in rd.flatten() { let n = e.file_name().to_string_lossy().into_owned(); if let Some(stem) = n.strip_suffix(".partial.mp4") { mark_unfinished(&dir, &e.path(), stem, json!({"error": "interrupted before the chunk finished", "cancelled": cancelled})); } } } }
     // Release job.lock BEFORE publishing the terminal state: cancel_job and job_status report cancelled/done/failed only once the
     // directory is free, so a resume_job issued right after them never meets this job's own (live-pid) lock.
     drop(lock);
@@ -396,6 +412,38 @@ pub fn commands() -> Vec<Command> { vec![
         schema: obj(vec![("path", s("output .mp4 path")), ("dir", s("chunk directory, default <path>.chunks")), ("crf", n("quality 0..51, default 18")), ("chunk_s", n("default: the original job's"))], &["path"]),
         run: |ss, a| start(ss, a, true) },
 ] }
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    fn dir(name: &str) -> std::path::PathBuf { let d = std::env::temp_dir().join(format!("kimo-rename-{}-{name}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }
+    #[test]
+    fn rename_retrying_moves_the_file_or_returns_the_last_error_after_every_try() {
+        let d = dir("retry"); let (a, b) = (d.join("a"), d.join("b"));
+        std::fs::write(&a, b"x").unwrap();
+        rename_retrying(&a, &b, 3, std::time::Duration::from_millis(1)).unwrap();
+        assert!(!a.exists() && std::fs::read(&b).unwrap() == b"x");
+        let t0 = std::time::Instant::now();
+        let e = rename_retrying(&d.join("missing"), &b, 3, std::time::Duration::from_millis(5)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(10), "3 tries wait twice between them");
+        std::fs::remove_dir_all(&d).ok();
+    }
+    #[test]
+    fn an_unfinished_chunk_is_renamed_and_marked_and_a_failed_rename_is_recorded() {
+        let d = dir("mark"); let part = d.join("chunk_00001.partial.mp4"); std::fs::write(&part, b"half").unwrap();
+        std::fs::write(d.join("chunk_00001.mp4.partial"), b"stale").unwrap();
+        mark_unfinished(&d, &part, "chunk_00001", json!({"error": "cancelled"}));
+        assert!(!part.exists(), "never a finished-looking file for an unfinished chunk");
+        assert_eq!(std::fs::read(d.join("chunk_00001.mp4.partial")).unwrap(), b"half", "the new partial replaces a stale one");
+        assert_eq!(read_json(&d.join("chunk_00001.mp4.partial.marker")).unwrap(), json!({"error": "cancelled"}));
+        // the file is gone (nothing to rename): the marker still lands and says why the rename failed
+        mark_unfinished(&d, &d.join("chunk_00002.partial.mp4"), "chunk_00002", json!({"error": "cancelled"}));
+        let m = read_json(&d.join("chunk_00002.mp4.partial.marker")).unwrap();
+        assert_eq!(m["error"], "cancelled"); assert!(m["rename_error"].as_str().is_some_and(|e| !e.is_empty()), "{m}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
 
 #[cfg(test)]
 mod first_frame_row_tests {

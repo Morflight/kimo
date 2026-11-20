@@ -218,7 +218,9 @@ fn bt2020_primaries_with_no_transfer_tag_is_still_treated_as_hdr() {
     let hlg = hdr_fixture("q8110_fallback_src.mp4", "arib-std-b67");
     let untagged = fixture_dir().join("q8110_fallback_untagged.mp4");
     if !untagged.exists() {
-        ffmpeg(&["-i", &hlg, "-c:v", "copy", "-bsf:v", "h264_metadata=transfer_characteristics=2", untagged.to_str().unwrap()]);
+        // the bitstream filter strips the tag in the h264 VUI; -color_trc clears the stream's own field too, which newer
+        // FFmpeg (9.x) otherwise carries over into the MP4 container's colr atom, where ffprobe still reads the HLG tag
+        ffmpeg(&["-i", &hlg, "-c:v", "copy", "-bsf:v", "h264_metadata=transfer_characteristics=2", "-color_trc", "unspecified", untagged.to_str().unwrap()]);
     }
     let probe = |p: &str, field: &str| -> String {
         let out = Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", &format!("stream={field}"), "-of", "default=nw=1:nk=1", p]).output().unwrap();

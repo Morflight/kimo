@@ -8,14 +8,14 @@ use serde_json::{json, Value};
 fn c(s: &mut Session, n: &str, a: Value) -> Value { dispatch(s, n, &a).unwrap_or_else(|e| panic!("{n}: {e}")) }
 
 fn silent_fixture(name: &str) -> String {
-    let p = format!("/tmp/kimo-findassets-{}-{name}.mp4", std::process::id());
+    let p = crate::tmp(&format!("kimo-findassets-{}-{name}.mp4", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=1", "-pix_fmt", "yuv420p", &p])
         .status().unwrap().success());
     p
 }
 fn audio_fixture(name: &str) -> String {
-    let p = format!("/tmp/kimo-findassets-{}-{name}.mp4", std::process::id());
+    let p = crate::tmp(&format!("kimo-findassets-{}-{name}.mp4", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=1", "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
                "-pix_fmt", "yuv420p", "-shortest", &p])

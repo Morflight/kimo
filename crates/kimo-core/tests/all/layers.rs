@@ -29,18 +29,18 @@ fn png(ss: &mut Session, extra: Value, path: &str) -> Vec<u8> { let mut a = json
 #[test] fn render_frame_describe_and_contact_sheet_accept_the_override_and_leave_the_project_alone() {
     let (mut ss, _ids) = scene(); let (mut del, ids2) = scene(); c(&mut del, "delete_clip", json!({"clip_id": ids2[0]})); c(&mut del, "delete_clip", json!({"clip_id": ids2[2]}));
     let h = pj(&ss); let u = ss.undo.len();
-    let (p1, p2, p3) = ("/tmp/n1_iso.png", "/tmp/n1_del.png", "/tmp/n1_full.png");
+    let (p1, p2, p3) = (crate::tmp("n1_iso.png"), crate::tmp("n1_del.png"), crate::tmp("n1_full.png")); let (p1, p2, p3) = (p1.as_str(), p2.as_str(), p3.as_str());
     let a = png(&mut ss, json!({"isolate": ["@box"]}), p1); let b = png(&mut del, json!({}), p2); assert_eq!(a, b, "tool output equals the deleted-project render");
     let full = png(&mut ss, json!({}), p3); assert_ne!(full, a); assert_eq!(png(&mut ss, json!({"hide": ["@title", "@bg"]}), p1), b);
     assert_eq!(pj(&ss), h); assert_eq!(ss.undo.len(), u);
     let d = c(&mut ss, "describe_frame", json!({"time": 1.0, "isolate": ["@box"]})); assert_eq!(d["visible_clips_total"], 1); assert_eq!(c(&mut ss, "describe_frame", json!({"time": 1.0}))["visible_clips_total"], 3);
-    let r = c(&mut ss, "contact_sheet", json!({"path": "/tmp/n1_sheet.png", "times": [0.5, 1.0], "hide": ["@bg"]})); assert!(r["view"]["hide"].is_array()); assert_eq!(pj(&ss), h);
+    let r = c(&mut ss, "contact_sheet", json!({"path": crate::tmp("n1_sheet.png"), "times": [0.5, 1.0], "hide": ["@bg"]})); assert!(r["view"]["hide"].is_array()); assert_eq!(pj(&ss), h);
     assert_eq!(png(&mut ss, json!({}), p3), full, "caches and project are restored: a plain render afterwards is unchanged");
 }
 #[test] fn override_errors_change_nothing() {
     let (mut ss, _ids) = scene(); let h = pj(&ss);
     for (args, want) in [(json!({"isolate": []}), "at least one"), (json!({"isolate": "box"}), "array"), (json!({"hide": [5]}), "array"), (json!({"isolate": ["@nope"]}), "name_not_found"), (json!({"hide": ["clip999"]}), "no clip")] {
-        let mut a = json!({"time": 1.0, "path": "/tmp/n1_err.png"}); for (k, v) in args.as_object().unwrap() { a[k] = v.clone(); } let m = e(&mut ss, "render_frame", a); assert!(m.contains(want), "{m}"); }
+        let mut a = json!({"time": 1.0, "path": crate::tmp("n1_err.png")}); for (k, v) in args.as_object().unwrap() { a[k] = v.clone(); } let m = e(&mut ss, "render_frame", a); assert!(m.contains(want), "{m}"); }
     assert_eq!(pj(&ss), h);
 }
 #[test] fn isolated_child_keeps_its_resolved_pose_and_hiding_a_parent_leaves_its_children() {
@@ -62,7 +62,7 @@ fn png(ss: &mut Session, extra: Value, path: &str) -> Vec<u8> { let mut a = json
     c(&mut ss, "set_property", json!({"clip_id": ids[1], "property": "x", "value": 40.0})); let (h, u) = (pj(&ss), ss.undo.len());
     let d = c(&mut ss, "diff_frames", json!({"a": {"time": 1.0, "source": "snapshot:checkpoint:v1"}, "b": {"time": 1.0, "source": "snapshot:current"}})); assert!(d["metrics"]["changed_ratio"].as_f64().unwrap() > 0.0, "{d}"); assert_eq!(same["delta"]["bit_identical"], true); assert!(d["delta"]["changed_pixels"].as_u64().unwrap() > 0 && d["delta"]["bbox"].is_array(), "{d}");
     let back = c(&mut ss, "diff_frames", json!({"a": {"time": 1.0, "source": "snapshot:undo:1"}, "b": {"time": 1.0}})); assert!(back["metrics"]["changed_ratio"].as_f64().unwrap() > 0.0, "undo:1 is the state before the edit, composite is current");
-    let path = "/tmp/n1_rev.kimo"; let v1: Value = serde_json::to_value(&ss.undo[ss.undo.len() - 1]).unwrap(); std::fs::write(path, v1.to_string()).unwrap();
+    let path = crate::tmp("n1_rev.kimo"); let path = path.as_str(); let v1: Value = serde_json::to_value(&ss.undo[ss.undo.len() - 1]).unwrap(); std::fs::write(path, v1.to_string()).unwrap();
     let f = c(&mut ss, "diff_frames", json!({"a": {"time": 1.0, "source": format!("file:{path}")}, "b": {"time": 1.0, "source": "snapshot:checkpoint:v1"}})); assert_eq!(f["metrics"]["changed_ratio"].as_f64().unwrap(), 0.0, "a saved file of the same revision is identical");
     assert_eq!(pj(&ss), h); assert_eq!(ss.undo.len(), u, "read-only");
     assert!(e(&mut ss, "diff_frames", json!({"a": {"time": 1.0, "source": "snapshot:nope"}, "b": {"time": 1.0}})).contains("Valid:"));

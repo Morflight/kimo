@@ -7,6 +7,9 @@
 #[allow(unused_imports)]
 use kimo_core::{color, effects, guard};
 
+/// Path of a test fixture in the OS temp directory (std::env::temp_dir()); a hard-coded /tmp does not exist on Windows.
+pub(crate) fn tmp(name: &str) -> String { std::env::temp_dir().join(name).to_string_lossy().into_owned() }
+
 mod add_arrow;
 mod add_keyword_pops;
 mod add_pip;

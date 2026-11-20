@@ -13,7 +13,7 @@ fn fixture(name: &str, dur: f64) -> String {
     // Every test calls `project()` -> `fixture(...)`, and cargo runs tests in this binary on multiple threads
     // concurrently, so pid+name alone collided across tests writing the same path at once (a torn moov atom).
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let p = format!("/tmp/kimo-io-edit-{}-{n}-{name}.mp4", std::process::id());
+    let p = crate::tmp(&format!("kimo-io-edit-{}-{n}-{name}.mp4", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size=64x48:rate=25:duration={dur}"), "-pix_fmt", "yuv420p", &p])
         .status().unwrap().success());

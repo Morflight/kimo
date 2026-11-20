@@ -2,7 +2,7 @@
 //!
 //! `KIMO_SPECTATOR` picks the sink:
 //!   unset or empty (the default; `on`, `1` and `gui` mean the same): the spectator GUI. The engine tries
-//!     127.0.0.1:7421..=7430 in order and keeps only a peer that greets it with the spectator's hello line
+//!     127.0.0.1:7421..=7430 (all at once; the lowest port that greets wins) and keeps only a peer that greets it with the spectator's hello line
 //!     (`HELLO`, a versioned line, `KIMO-SPECTATOR/1`; any other line, an older or newer version included, is a failed
 //!     handshake; sent by crates/kimo-gui/src/main.rs as soon as it accepts), so a foreign app holding one of those ports
 //!     never gets a byte of telemetry; with no spectator there it retries quietly (nothing is ever printed);
@@ -346,9 +346,20 @@ fn peek_open(s: &std::net::TcpStream) -> bool {
     }
 }
 
+/// The spectator on the first of `ports` (in the given order) that greets, every port probed at once; the other
+/// connections are closed unwritten when the scope ends. Probing the ports in turn cost up to 250 ms per port that does
+/// not answer, and on Windows a refused loopback connect only fails at its timeout: a pass over 7421..=7430 took about
+/// 2.5 s there, so a spectator that had just opened was found late and the events in between were dropped.
+fn first_greeting(ports: impl Iterator<Item = u16>) -> Option<std::net::TcpStream> {
+    std::thread::scope(|sc| {
+        let probes: Vec<_> = ports.map(|p| kimo_core::guard::scope_spawn(sc, move || greeted(p))).collect();
+        probes.into_iter().filter_map(|h| h.join().ok().flatten()).next()
+    })
+}
+
 fn open(dest: &Dest) -> Option<Conn> {
     match dest {
-        Dest::Gui => GUI_PORTS.clone().find_map(|p| greeted(p).map(Conn::Tcp)),
+        Dest::Gui => first_greeting(GUI_PORTS).map(Conn::Tcp),
         Dest::File(p) => std::fs::OpenOptions::new().create(true).append(true).open(p).ok().map(Conn::File),
         Dest::Tcp(a) => {
             use std::net::ToSocketAddrs;
@@ -808,6 +819,35 @@ mod tests {
     }
 
     use super::*;
+    /// A loopback listener on an ephemeral port that accepts once and, when `hello` is set, greets with it.
+    fn peer(hello: Option<&'static str>) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); let port = l.local_addr().unwrap().port();
+        let _ = kimo_core::guard::spawn_with_token(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                use std::io::Write;
+                if let Some(h) = hello { let _ = s.write_all(format!("{h}\n").as_bytes()); }
+                std::thread::sleep(Duration::from_millis(1500)); // hold the connection past every hello wait
+            }
+        });
+        port
+    }
+    #[test]
+    fn the_first_port_that_greets_wins_and_silent_ports_are_waited_on_together() {
+        // four silent squatters ahead of two spectators: the earlier spectator wins, whatever order the probes finish in
+        let silent: Vec<u16> = (0..4).map(|_| peer(None)).collect();
+        let (first, second) = (peer(Some(HELLO)), peer(Some(HELLO)));
+        let ports: Vec<u16> = silent.iter().copied().chain([first, second]).collect();
+        let t0 = Instant::now();
+        let s = first_greeting(ports.into_iter()).expect("a spectator greets");
+        let took = t0.elapsed();
+        assert_eq!(s.peer_addr().unwrap().port(), first, "the first port in order that greets is kept");
+        // probed in turn, each silent port costs a full HELLO_WAIT (4 x 250 ms = 1 s); probed together they cost one
+        assert!(took < HELLO_WAIT * 3, "silent ports must be waited on concurrently, took {took:?}");
+        // a wrong greeting, or nobody at all, is no spectator
+        assert!(first_greeting([peer(Some("SSH-2.0-OpenSSH_9.2"))].into_iter()).is_none());
+        let dead = { let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); l.local_addr().unwrap().port() };
+        assert!(first_greeting([dead].into_iter()).is_none());
+    }
     #[test]
     fn nobody_listening_serializes_nothing() {
         // telemetry on (a loopback sink nobody listens on): once the writer has found nobody, events are dropped

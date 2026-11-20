@@ -159,11 +159,13 @@ fn stub_as(lang_auto: &str, tag: &str) -> (PathBuf, PathBuf) {
     let response=json!({"result":{"language":"__LANG__"},"transcription":[{"offsets":{"from":0,"to":2000},"text":" one two three.","tokens":serde_json::from_str::<Value>(&body).unwrap()}]}).to_string();
     let _=std::fs::remove_file(&log); (whisper_fixture::build(&bin,&response,lang_auto,Some(&log)),log)
 }
-/// 2 s of 360x640 video with three 1 kHz tone bursts (speech stand-ins) starting at 0.55, 1.05 and 1.60 s.
+/// 2 s of 360x640 video with three 1 kHz tone bursts (speech stand-ins) starting at 0.55, 1.05 and 1.60 s. The audio is
+/// PCM, not AAC: AAC's encoder delay is trimmed differently across FFmpeg versions (tens of ms on FFmpeg 9 against 6.1),
+/// which would move the onsets this fixture defines.
 fn bursts() -> PathBuf {
-    let p = dir().join("bursts.mp4"); if !p.exists() {
+    let p = dir().join("bursts.mov"); if !p.exists() {
         let st = Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=360x640:r=30:d=2", "-f", "lavfi", "-i",
-            "aevalsrc='0.5*sin(2*PI*1000*t)*(between(t,0.55,0.85)+between(t,1.05,1.40)+between(t,1.60,1.95))':s=48000:d=2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            "aevalsrc='0.5*sin(2*PI*1000*t)*(between(t,0.55,0.85)+between(t,1.05,1.40)+between(t,1.60,1.95))':s=48000:d=2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-shortest"])
             .arg(&p).stdin(Stdio::null()).status().unwrap(); assert!(st.success()); }
     p
 }

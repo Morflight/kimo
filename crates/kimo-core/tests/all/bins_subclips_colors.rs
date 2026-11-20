@@ -6,7 +6,7 @@ fn c(s: &mut Session, n: &str, a: Value) -> Value { dispatch(s, n, &a).unwrap_or
 fn err(s: &mut Session, n: &str, a: Value) -> String { dispatch(s, n, &a).unwrap_err() }
 
 fn fixture(name: &str, dur: f64) -> String {
-    let p = format!("/tmp/kimo-binsub-{}-{name}.mp4", std::process::id());
+    let p = crate::tmp(&format!("kimo-binsub-{}-{name}.mp4", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size=64x48:rate=25:duration={dur}"), "-pix_fmt", "yuv420p", &p])
         .status().unwrap().success());

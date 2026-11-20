@@ -13,7 +13,7 @@ fn track(s: &mut Session) -> String {
     c(s, "add_track", json!({}))["track_id"].as_str().unwrap().into()
 }
 fn fixture(name: &str, src: &str) -> String {
-    let p = format!("/tmp/kimo-panfix-{}-{name}.wav", std::process::id());
+    let p = crate::tmp(&format!("kimo-panfix-{}-{name}.wav", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-ac", "2", &p])
         .status()

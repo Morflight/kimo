@@ -7,7 +7,7 @@ fn c(ss: &mut Session, n: &str, v: Value) -> Value { dispatch(ss, n, &v).unwrap_
 fn e(ss: &mut Session, n: &str, v: Value) -> String { dispatch(ss, n, &v).unwrap_err() }
 
 fn solid_fixture(name: &str, color: &str, secs: f64) -> String {
-    let p = format!("/tmp/kimo-explaincut-{}-{name}.mp4", std::process::id());
+    let p = crate::tmp(&format!("kimo-explaincut-{}-{name}.mp4", std::process::id()));
     assert!(std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c={color}:size=64x48:rate=25:duration={secs}"), "-pix_fmt", "yuv420p", &p])
         .status().unwrap().success());
