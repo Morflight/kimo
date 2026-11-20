@@ -295,7 +295,7 @@ fn refd_zero(v: &f64) -> bool { *v == 0.0 }
         let mut f = Frame::new(64, 36); render(&burst(), &mut f, 0.1, &Camera::default(), 25.0, 2.0); let same = take_probe();
         assert!(!same.is_empty()); assert!(take_probe().is_empty(), "take_probe empties the probe");
         // render on a worker thread (as the renderer does), read here: was always empty with a thread_local probe
-        std::thread::spawn(|| { let mut f = Frame::new(64, 36); render(&burst(), &mut f, 0.1, &Camera::default(), 25.0, 2.0); }).join().unwrap();
+        crate::guard::spawn_with_token(|| { let mut f = Frame::new(64, 36); render(&burst(), &mut f, 0.1, &Camera::default(), 25.0, 2.0); }).join().unwrap();
         let other = take_probe(); assert_eq!(other.len(), same.len());
         for (a, b) in same.iter().zip(&other) { assert_eq!(a.id, b.id); assert_eq!(a.bbox, b.bbox); }
     }
