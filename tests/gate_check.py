@@ -13,7 +13,9 @@ for n, line in enumerate(open(os.path.join(root, "tests/gate_manifest.txt")), 1)
     k = (f[0], f[1])
     if k in seen: errs.append(f"line {n}: {f[1]} listed twice (lines {seen[k][0]} and {n})")
     seen[k] = (n, f[2])
-have = {("rust", os.path.basename(p)[:-3]) for p in glob.glob(os.path.join(root, "crates/kimo-core/tests/*.rs"))} | {("py", os.path.basename(p)) for p in glob.glob(os.path.join(root, "tests/*.py"))}
+# kimo-core integration tests: modules of the single `all` binary (tests/all/<name>.rs) plus the few separate binaries (tests/<name>.rs)
+rust_tests = glob.glob(os.path.join(root, "crates/kimo-core/tests/*.rs")) + [p for p in glob.glob(os.path.join(root, "crates/kimo-core/tests/all/*.rs")) if os.path.basename(p) != "main.rs"]
+have = {("rust", os.path.basename(p)[:-3]) for p in rust_tests} | {("py", os.path.basename(p)) for p in glob.glob(os.path.join(root, "tests/*.py"))}
 for k in sorted(have - set(seen)): errs.append(f"unclassified: {k[0]} {k[1]} (add it to tests/gate_manifest.txt)")
 for k in sorted(set(seen) - have): errs.append(f"listed but missing on disk: {k[0]} {k[1]}")
 n = {t: sum(1 for v in seen.values() if v[1] == t) for t in ("fast", "full", "helper", "skip")}

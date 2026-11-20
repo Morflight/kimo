@@ -1,5 +1,6 @@
 # One line per test binary or python proof. tier = fast | full | helper | skip. A skip or helper line needs a reason after '#'.
-# tests/gate_check.py fails if any crates/kimo-core/tests/*.rs or tests/*.py is missing here or listed twice.
+# tests/gate_check.py fails if any kimo-core integration test (crates/kimo-core/tests/all/<name>.rs, or a separate
+# binary crates/kimo-core/tests/<name>.rs) or tests/*.py is missing here or listed twice.
 # fast = runs on every push; full = fast + these, runs at phase boundaries and on hot-set pushes (see tests/gate_full.sh).
 rust arc_sharing full
 rust build_identity fast
@@ -456,3 +457,20 @@ rust vfx_look_library full
 rust vignette_shaped full
 rust vr_suite_v7 full
 rust whip_transition full
+# functional tests added with the testing strategy (tiny synthetic media)
+rust audio_mix full
+rust command_handlers full
+rust contact_sheet full
+rust fracture_glass_effect full
+rust hud_overlays full
+rust lighting_model full
+rust motion_tracking full
+rust observe_expect full
+rust particle_emitter full
+rust particle_flow_motion full
+rust planar_tracking full
+rust post_effects_backdrop full
+rust render_compositor full
+rust track_diag_tools full
+rust track_long_gap full
+rust vector_paths full
