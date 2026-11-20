@@ -414,7 +414,6 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     let estimate=raw_fs.max(fs).checked_mul(if p.color_pipeline.enabled{8}else{1}).ok_or("decode allocation overflow")?.checked_mul(n.max(1)).ok_or("decode allocation overflow")?;
     if estimate>limit{return Err("decode request exceeds bounded cache; reduce size/duration or use windowed timing".into())}
     crate::guard::reserve(estimate);
-    let exr_args:Vec<&str>=if path.to_lowercase().ends_with(".exr"){vec!["-apply_trc","linear"]}else{vec![]};
     let vf=if native_fit{format!("setpts=PTS/{},{},trim=start_frame={a_rel}:end_frame={},setpts=PTS-STARTPTS,format={pix}",speed.max(0.01),fps_filter,a_rel+n)}else{vf};
     let mut command=Command::new("ffmpeg");
     if background {
@@ -424,7 +423,7 @@ fn decode(p: &Project, c: &Clip, path: &str, a: usize, n: usize, seek_base: Opti
     // The filter chain already conforms the rate (`fps=`) and the buffer is indexed frame by frame, so
     // every filtered frame must be written exactly once. FFmpeg 7+ `setpts` no longer forwards the frame
     // rate; without passthrough the CLI then assumes 25 fps for rawvideo and duplicates frames to fill it.
-    command.args(["-v","error"]).args(&loop_args).args(&exr_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-fps_mode","passthrough","-f","rawvideo","-pix_fmt",pix,"-"]);
+    command.args(["-v","error"]).args(&loop_args).args(["-ss",&format!("{in_pt}"),"-t",&format!("{span}"),"-i",path,"-vf",&vf,"-frames:v",&output_n.max(1).to_string(),"-fps_mode","passthrough","-f","rawvideo","-pix_fmt",pix,"-"]);
     if background { let args:Vec<_>=command.get_args().map(|x|x.to_os_string()).collect();command=Command::new("ffmpeg");command.args(&args[..args.len()-1]);
         command.args(["-threads:v","1"]);
         command.arg("-");

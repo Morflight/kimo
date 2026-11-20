@@ -2162,3 +2162,5 @@ The spectator connection probes all ten GUI ports (127.0.0.1:7421-7430) at once 
 Export jobs retry a chunk rename for up to about one second, since on Windows a media file that was just closed can stay locked for a moment. An unfinished chunk that still cannot be renamed keeps its `.partial.marker`, which now records the reason as `rename_error` instead of failing silently.
 
 A failed FFmpeg capture (header inspection, image decode) reports the command's exit status and the last 2 KB of its stderr instead of a bare "capture command failed".
+
+EXR stills decode on FFmpeg 9. The decode no longer passes `-apply_trc linear`: FFmpeg 9 removed that EXR decoder option, so every EXR import failed there, and on earlier FFmpeg it changed nothing (the decoder's default is the identity and the file is tagged linear; decoded pixels are byte-identical with and without it on FFmpeg 7.1).
