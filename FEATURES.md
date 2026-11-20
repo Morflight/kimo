@@ -2156,3 +2156,9 @@ Code-clip parameter edits now flash the affected timeline clip and show the para
 A flash expiring while a clean frame is pending defers its full refresh even if the next clip edit has not arrived yet. The next edit still paints only the timeline and rail; the inspector and header catch up on the following non-edit frame.
 
 Studio clears usage metadata when a new agent turn begins. A reply without cost or turn-count metadata no longer inherits those values from the previous reply.
+
+The spectator connection probes all ten GUI ports (127.0.0.1:7421-7430) at once and keeps the lowest port that greets with the spectator hello, as before. Probing them one after another cost up to 250 ms per port that did not answer, and on Windows a refused loopback connect only fails at its timeout, so a pass took about 2.5 s there and a spectator that had just opened was found late. A unit test on ephemeral ports checks the port order and that four silent ports are waited on together.
+
+Export jobs retry a chunk rename for up to about one second, since on Windows a media file that was just closed can stay locked for a moment. An unfinished chunk that still cannot be renamed keeps its `.partial.marker`, which now records the reason as `rename_error` instead of failing silently.
+
+A failed FFmpeg capture (header inspection, image decode) reports the command's exit status and the last 2 KB of its stderr instead of a bare "capture command failed".
