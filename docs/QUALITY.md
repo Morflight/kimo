@@ -20,7 +20,7 @@ The catalog's `legacy-unverified` state explicitly records inherited documentati
 
 - Documentation: existing links, classified first-party source files, implementation changes accompanied by contract and test changes.
 - Tests: successful exit, nonzero executed tests, no unexpected skips/ignored tests, exact target/platform/features, complete logs.
-- Coverage: reports for all first-party runtime files, 100% executable lines/functions, and branch coverage when available. Files missing from reports are failures. Rust conditional code requires Windows and Linux evidence; neither target substitutes for the other.
+- Coverage: reports for all first-party runtime files, 100% executable lines/functions, and branch coverage when available. Files missing from reports are failures. The supported Rust test target is Windows (x86_64-pc-windows-msvc): Rust coverage and native tests run on Windows only. The owner dropped the Linux Rust jobs on 2026-11-20 (kimo is built and used on Windows). Linux release artifacts are still produced by the release workflow but are not tested; Linux-only (`cfg(unix)`/`cfg(target_os = "linux")`) code has no coverage evidence and must not be claimed as verified.
 - Product acceptance: synthetic end-to-end editing/playback/export cases; native presentation and physical sound are separately reported. Controller simulations do not certify real audio/video playback.
 
 ## Existing commands and limitations
@@ -95,7 +95,7 @@ The rules (what is fast, what is heavy, when each runs, how to register a heavy 
 
 Native tests run under cargo-nextest 0.9.152 (`cargo llvm-cov nextest`), which executes every test in its own process. Inherited tests that change process-wide model, cache and resource environment variables therefore cannot overwrite one another’s configuration, and tests run in parallel instead of the former serial `--test-threads=1` execution. A test that relies on state shared between processes (a fixed cache path, a port) and fails under parallel execution exposes a concurrency defect to fix, not a reason to serialize. The one deliberate exception is kimo's fixed default spectator port range 127.0.0.1:7421-7430, a real system resource: the tests that bind it (`kimo-mcp` `spectator_default` and four `kimo-gui` telemetry/live-feed tests) form the nextest group `spectator-ports`, which runs them one at a time across processes. Their former in-process mutexes could not serialize separate processes. The desktop crate is a separate Cargo workspace, so it has its own `crates/kimo-gui/.config/nextest.toml` with the same two profiles and port group; its heavy set has not been measured yet, so its `fast` profile runs every non-ignored desktop test under the same 30 s per-test limit.
 
-The quality workflow's Rust jobs are the single native test execution on Linux and Windows. The former `ci.yml` workflow re-ran the same Rust suite on every push in an optimized build without coverage; it was removed as a duplicate, since the coverage jobs execute the same tests with debug assertions and overflow checks enabled.
+The quality workflow's Rust jobs (Windows: workspace and desktop) are the single native test execution. The former `ci.yml` workflow re-ran the same Rust suite on every push in an optimized build without coverage; it was removed as a duplicate, since the coverage jobs execute the same tests with debug assertions and overflow checks enabled.
 
 `.config/nextest.toml` splits one suite into two required profiles; no test is removed:
 

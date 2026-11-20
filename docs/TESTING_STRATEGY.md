@@ -9,7 +9,7 @@ This document is normative. It applies to every contributor, human or AI agent. 
 | **Fast** | `fast` | every push, on every branch | every test except the registered heavy tests and `#[ignore]` proofs | fast feedback while iterating; full behavioral coverage |
 | **Heavy** | `heavy` | pull requests to `main`, pushes to `main`, manual dispatch | every test, including heavy tests and `#[ignore]` proofs (`--run-ignored all`) | accuracy and performance on realistic media; last safeguard before `main` changes |
 
-Both suites run under LLVM coverage on Linux and Windows (`.github/workflows/quality.yml`). JavaScript (Node + Chromium) and Python suites run on every push, as before.
+Both suites run under LLVM coverage on Windows, the supported Rust target (`.github/workflows/quality.yml`; Linux Rust jobs dropped by the owner on 2026-11-20, see docs/QUALITY.md). JavaScript (Node + Chromium) and Python suites run on every push, as before.
 
 ## 2. Development lifecycle
 
