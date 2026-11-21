@@ -1149,6 +1149,89 @@ mod tests {
         let fmax = 4.0 * 4.0 * 1.0 * 2.0; // conservative: field_accel * worst-case bound(4*A*f*octaves-ish)
         assert!(vmax.is_finite() && vmax < fmax, "bounded terminal velocity: {vmax} < {fmax}");
     }
+    #[test]
+    fn simulation_new_names_each_invalid_setting() {
+        let e = || flow().emitter;
+        let cases: Vec<(Flow, &str)> = vec![
+            (Flow { emitter: Emitter { count: 0, ..e() }, ..flow() }, "emitter count 1..100000"),
+            (Flow { emitter: Emitter { origin: [1e10, 0.0, 0.0], ..e() }, ..flow() }, "finite bounded origin/spread/base_velocity required"),
+            (Flow { emitter: Emitter { velocity_jitter: -1.0, ..e() }, ..flow() }, "velocity_jitter 0..1e6"),
+            (Flow { emitter: Emitter { birth_rate: 0.0, ..e() }, ..flow() }, "birth_rate (0, 1e6]"),
+            (Flow { emitter: Emitter { lifetime: [2.0, 1.0], ..e() }, ..flow() }, "lifetime 0<min<=max<=1e4"),
+            (Flow { emitter: Emitter { color_stops: vec![ColorStop { offset: 0.0, rgb: [0.0; 3] }], ..e() }, ..flow() }, "color_stops 2..=8"),
+            (Flow { emitter: Emitter { color_stops: vec![ColorStop { offset: 0.0, rgb: [0.0; 3] }, ColorStop { offset: 0.9, rgb: [0.0; 3] }], ..e() }, ..flow() }, "color stop offsets strictly ascending, first 0, last 1"),
+            (Flow { emitter: Emitter { color_stops: vec![ColorStop { offset: 0.0, rgb: [2.0, 0.0, 0.0] }, ColorStop { offset: 1.0, rgb: [0.0; 3] }], ..e() }, ..flow() }, "color stop rgb 0..1"),
+            (Flow { emitter: Emitter { alpha_end: 1.5, ..e() }, ..flow() }, "alpha 0..1"),
+            (Flow { emitter: Emitter { fade_in: 0.0, ..e() }, ..flow() }, "fade_in/fade_out (0, 0.5]"),
+            (Flow { emitter: Emitter { size_end: 0.0, ..e() }, ..flow() }, "sizes (0, 1e6] world units"),
+            (Flow { emitter: Emitter { hardness: 0.0, ..e() }, ..flow() }, "hardness (0, 1e4]"),
+            (Flow { gravity: [0.0, 1e10, 0.0], ..flow() }, "finite bounded gravity required"),
+            (Flow { drag: -1.0, ..flow() }, "drag/coupling nonnegative finite (coupling<=1e6)"),
+            (Flow { field_accel: -1.0, ..flow() }, "field_accel 0..1e6"),
+            (Flow { dt: 0.0, ..flow() }, "dt (0, 1]"),
+        ];
+        for (f, want) in cases { assert_eq!(Simulation::new(f).err().unwrap(), want); }
+        let e = flow().emitter; for (got, want) in e.color_at(0.75).iter().zip([0.6, 0.2, 0.325]) { assert!((got - want).abs() < 1e-12, "color_at(0.75) {got} vs {want}"); } assert_eq!(e.color_at(f64::NAN), [0.2, 0.1, 0.6]);
+        let mut sim = Simulation::new(flow()).unwrap(); sim.advance(0.5).unwrap(); assert_eq!(sim.time(), 0.5); assert_eq!(sim.pool().len(), 64);
+        assert_eq!(sim.advance(0.25).unwrap_err(), "advance requires current<=to_time<=1e4");
+    }
+    #[test]
+    fn lights_and_style_validation_messages() {
+        let d = DirLight { direction: [0.0, 0.0, 1.0], color: [1.0; 3], intensity: 1.0 }; let p = PointLight { position: [0.0; 3], color: [1.0; 3], intensity: 1.0, radius: 1.0 };
+        let lights = |dir: Vec<DirLight>, point: Vec<PointLight>, ambient: [f64; 3]| Lights { directional: dir, point, ambient };
+        let cases = [(lights(vec![d.clone(); 9], vec![], [0.0; 3]), "max 8 lights per kind"), (lights(vec![DirLight { direction: [0.0; 3], ..d.clone() }], vec![], [0.0; 3]), "finite nonzero light direction required"),
+            (lights(vec![DirLight { intensity: 2000.0, ..d.clone() }], vec![], [0.0; 3]), "light color/intensity 0..1e3"), (lights(vec![], vec![PointLight { position: [1e10, 0.0, 0.0], ..p.clone() }], [0.0; 3]), "finite point light position required"),
+            (lights(vec![], vec![PointLight { color: [2000.0, 0.0, 0.0], ..p.clone() }], [0.0; 3]), "light color/intensity 0..1e3"), (lights(vec![], vec![PointLight { radius: 0.0, ..p.clone() }], [0.0; 3]), "point radius (0, 1e6]"),
+            (lights(vec![], vec![], [2000.0, 0.0, 0.0]), "ambient 0..1e3")];
+        for (l, want) in cases { assert_eq!(l.validate().unwrap_err(), want); }
+        let (mut sim, cam) = single_particle_sim(0.0, 0.0);
+        let rs = |sim: &mut Simulation, w: usize, st: Style, l: Option<&Lights>| render_styled(sim, &cam, w, 8, None, [0.5, 20.0], &st, l).err().unwrap();
+        assert_eq!(rs(&mut sim, 8, Style { shutter: 2.0, ..Style::default() }, None), "shutter 0..1 s");
+        assert_eq!(rs(&mut sim, 8, Style { exposure: 0.0, ..Style::default() }, None), "exposure (0, 1e4]");
+        assert_eq!(rs(&mut sim, 8, Style { bloom: Some(2.0), ..Style::default() }, None), "bloom amount 0..1 (conserve)");
+        assert_eq!(rs(&mut sim, 0, Style::default(), None), "target 1..1920x1080");
+        assert_eq!(rs(&mut sim, 8, Style::default(), Some(&lights(vec![], vec![], [-1.0, 0.0, 0.0]))), "ambient 0..1e3");
+        assert_eq!(render(&mut sim, &cam, 0, 8, None, [0.5, 20.0]).err().unwrap(), "target 1..1920x1080");
+    }
+    fn cam_at(z: f64) -> Camera { Camera { eye: [0.0, 0.0, z], pan: 0.0, tilt: 0.0, roll: 0.0, sensor_height: 24.0, focal_length: 35.0, near: 0.1 } }
+    #[test]
+    fn renders_reject_an_invalid_camera_and_mesh_depth_range() {
+        let (mut sim, cam) = single_particle_sim(0.0, 0.0);
+        let bad = Camera { focal_length: 0.0, ..cam };
+        let msg = "finite camera values, positive sensor_height/focal_length/near required";
+        assert_eq!(render(&mut sim, &bad, 16, 16, None, [0.5, 20.0]).err().unwrap(), msg);
+        assert_eq!(render_styled(&mut sim, &bad, 16, 16, None, [0.5, 20.0], &Style::default(), None).err().unwrap(), msg);
+        let cube = generate(&Primitive::Cube { size: [1.0, 1.0, 1.0], subdivisions: 1 }).unwrap();
+        let msg = "target1..4096 and0<depth_near<depth_far required";
+        assert_eq!(render(&mut sim, &cam, 16, 16, Some(&cube), [1.0, 0.5]).err().unwrap(), msg);
+        assert_eq!(render_styled(&mut sim, &cam, 16, 16, Some(&cube), [1.0, 0.5], &Style::default(), None).err().unwrap(), msg);
+    }
+    #[test]
+    fn zero_alpha_particles_are_active_but_leave_the_frame_black() {
+        let (mut sim, cam) = single_particle_sim(0.0, 0.0);
+        sim.flow.emitter.alpha_start = 0.0; sim.flow.emitter.alpha_end = 0.0;
+        let (f, out) = render(&mut sim, &cam, 32, 24, None, [0.5, 20.0]).unwrap();
+        assert_eq!((out.active, out.drawn), (1, 0)); assert!(f.d.iter().all(|v| *v == 0.0));
+        let (f, out) = render_styled(&mut sim, &cam, 32, 24, None, [0.5, 20.0], &Style { tonemap: Tonemap::None, ..Style::default() }, None).unwrap();
+        assert_eq!((out.active, out.drawn), (1, 0)); assert!(f.d.iter().all(|v| *v == 0.0));
+    }
+    #[test]
+    fn particles_behind_the_camera_are_counted_not_drawn() {
+        let (mut sim, _) = single_particle_sim(0.0, 0.0); let cam = cam_at(4.0); // looks down +z, the particle at the origin is behind it
+        let (_, out) = render(&mut sim, &cam, 32, 24, None, [0.5, 20.0]).unwrap(); assert_eq!((out.active, out.behind_camera, out.drawn), (1, 1, 0));
+        let (f, out) = render_styled(&mut sim, &cam, 32, 24, None, [0.5, 20.0], &Style { tonemap: Tonemap::None, ..Style::default() }, None).unwrap();
+        assert_eq!((out.active, out.behind_camera, out.drawn), (1, 1, 0)); assert!(f.d.iter().all(|v| *v == 0.0));
+    }
+    #[test]
+    fn styled_render_counts_mesh_occlusion_and_sorts_many_heads() {
+        let mut f = flow(); f.emitter.count = 8; f.emitter.origin = [0.0, 0.0, 2.0]; f.emitter.spread = [0.1; 3];
+        let cube = generate(&Primitive::Cube { size: [6.0, 6.0, 0.5], subdivisions: 1 }).unwrap();
+        let mut sim = Simulation::new(f).unwrap(); sim.advance(0.2).unwrap(); let alive = sim.alive_count(); assert!(alive >= 2);
+        let (_, out) = render_styled(&mut sim, &cam_at(-4.0), 64, 36, Some(&cube), [0.5, 10.0], &Style::default(), None).unwrap();
+        assert_eq!(out.active, alive); assert_eq!(out.drawn, 0, "all particles behind the cube"); assert_eq!(out.occluded_by_mesh, alive);
+        let (_, out) = render_styled(&mut sim, &cam_at(-4.0), 64, 36, None, [0.5, 10.0], &Style::default(), None).unwrap(); assert_eq!(out.drawn, alive);
+        let (_, out) = render(&mut sim, &cam_at(-4.0), 64, 36, None, [0.5, 10.0]).unwrap(); assert_eq!(out.drawn, alive);
+    }
     #[cfg(feature = "flat-sah")]
     #[test]
     #[ignore]

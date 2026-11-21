@@ -2137,7 +2137,7 @@ gaps, candidates for this pass:
   asset id is a clean 404, and a missing `asset_id` query param is a clean 400. All 84 prior kimo-cli tests
   stayed green (90 total).
 
-Fork CLI contracts (`crates/kimo-cli/tests/commands.rs`) run the real executable with isolated temporary projects. They assert stdout/stderr separation, identity and catalog output, argument aliases, usage/tool exit codes, atomic saves, `--no-save` preservation, grouped mutations and a five-frame 320×180 export verified by ffprobe. These focused checks do not establish full CLI or workspace coverage.
+Fork CLI contracts (`crates/kimo-cli/tests/all/commands.rs`) run the real executable with isolated temporary projects. They assert stdout/stderr separation, identity and catalog output, argument aliases, usage/tool exit codes, atomic saves, `--no-save` preservation, grouped mutations and a five-frame 320×180 export verified by ffprobe. These focused checks do not establish full CLI or workspace coverage.
 
 CLI parser tests cover JSON aliases, first-flag precedence, required values and object-only arguments. Redaction tests retain image paths while removing payloads recursively and preserve non-image data; repeated redaction is idempotent. Mutation-policy tests resolve grouped calls before deciding whether to save.
 
@@ -2156,3 +2156,11 @@ Code-clip parameter edits now flash the affected timeline clip and show the para
 A flash expiring while a clean frame is pending defers its full refresh even if the next clip edit has not arrived yet. The next edit still paints only the timeline and rail; the inspector and header catch up on the following non-edit frame.
 
 Studio clears usage metadata when a new agent turn begins. A reply without cost or turn-count metadata no longer inherits those values from the previous reply.
+
+The spectator connection probes all ten GUI ports (127.0.0.1:7421-7430) at once and keeps the lowest port that greets with the spectator hello, as before. Probing them one after another cost up to 250 ms per port that did not answer, and on Windows a refused loopback connect only fails at its timeout, so a pass took about 2.5 s there and a spectator that had just opened was found late. A unit test on ephemeral ports checks the port order and that four silent ports are waited on together.
+
+Export jobs retry a chunk rename for up to about one second, since on Windows a media file that was just closed can stay locked for a moment. An unfinished chunk that still cannot be renamed keeps its `.partial.marker`, which now records the reason as `rename_error` instead of failing silently.
+
+A failed FFmpeg capture (header inspection, image decode) reports the command's exit status and the last 2 KB of its stderr instead of a bare "capture command failed".
+
+EXR stills decode on FFmpeg 9. The decode no longer passes `-apply_trc linear`: FFmpeg 9 removed that EXR decoder option, so every EXR import failed there, and on earlier FFmpeg it changed nothing (the decoder's default is the identity and the file is tagged linear; decoded pixels are byte-identical with and without it on FFmpeg 7.1).

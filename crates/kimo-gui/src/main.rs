@@ -1246,6 +1246,8 @@ mod tests {
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => { std::thread::sleep(std::time::Duration::from_millis(5)); continue; },
                         Err(e) => panic!("owned update listener: {e}"),
                     };
+                    // Windows: an accepted socket inherits the listener's non-blocking mode; reads below must block (up to the timeout).
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
                     let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
                     let mut line = String::new(); reader.read_line(&mut line).unwrap();

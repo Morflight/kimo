@@ -1,0 +1,911 @@
+{
+ "_doc": "Register of tests excluded from the fast suite. See docs/TESTING_STRATEGY.md. Edit this file, then copy the filter printed by tools/quality/check_test_strategy.py into .config/nextest.toml.",
+ "tests": [
+  {
+   "binary": "kimo-core",
+   "test": "particle_flow::tests::pv3_frames",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core",
+   "test": "threed::csm::tests::dump_csm_frames",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core",
+   "test": "threed::lit_raster::tests::render_pbr_contact_sources",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core",
+   "test": "vision::tests::download::verified_download_and_resume",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core",
+   "test": "vision::tests::online_models_on_test_image",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "apply_review_fixes::applies_a_concrete_fix_and_the_transition_is_actually_gone",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "audio_transients::tool_path_mp4_clip_track_mix_fps_repeat_and_errors",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_captions::hinglish_variants_are_written_one_way_and_english_is_left_alone",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_chapters::a_single_continuous_shot_reports_it_cannot_chapter",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_chapters::detects_scene_cuts_then_chapters_when_no_markers_exist",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_chapters::dry_run_reports_the_plan_without_mutating_or_writing",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_chapters::uses_existing_markers_without_running_detection",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::auto_edit_cuts_dead_air_and_hits_the_loudness_target",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::broll_color_match_runs_by_default_and_can_be_turned_off",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::end_card_pill_is_scaled_up_and_dot_gap_still_holds",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::end_screen_background_freezes_early_blurs_gently_and_scales_up",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::end_screen_background_survives_auto_edits_own_review_pass",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::end_screen_is_on_by_default_for_platform_none_and_fades_out",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::end_screen_with_no_music_warns_about_the_silent_tail",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::exports_a_real_file_at_the_reported_duration",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::hook_text_adds_a_title_at_the_start",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::job2_forced_splits_skip_a_long_take_broll_fully_covers",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::job2_punch_max_static_is_configurable",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::job2_splits_a_long_uncut_dialogue_take_for_punch_ins",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::job3_caption_position_defaults_to_auto_and_avoids_a_low_face",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::job4_broll_gets_a_short_whip_transition_by_default",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::music_bed_also_gets_a_duck_timeline_envelope_on_top_of_finish_audios_level",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::music_bed_is_placed_and_ducked_under_speech",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::music_bed_keeps_playing_under_the_end_screen",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::music_bed_swells_under_the_end_card_once_dialogue_ends",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::no_hook_text_skips_the_title_honestly",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::no_music_means_no_duck_stage",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::punch_ins_never_land_on_a_clip_broll_fully_covers",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::punch_ins_still_apply_with_no_broll",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::push_in_animates_static_broll_by_default",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_edit::push_in_skips_very_short_broll",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_proxy::heavy_4k_import_returns_at_once_then_preview_uses_the_proxy_and_export_the_original",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "auto_reframe::proof_frames_walking_figure",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::abc_radial_plate",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::abc_tangential_plate",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::d_set_ground_plane_levels_the_scene",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::e2_placed_solid_shows_at_its_size_on_the_track",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::e_place_at_track_renders_on_the_track",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::i_defaults_are_unchanged",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "camera_tracker::refusals_leave_project_and_solve_unchanged",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "color_cache::nested_export_reduces_cache_batch",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "color_decode_phase::export_window_and_spot_frame_parity",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "color_ramp_window::ramp_windows_match_full_source_decode",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_prep::stabilize_takes_a_duration_written_to_six_decimals",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::broll_over_silence_does_not_flag_a_clip_placed_after_all_speech_has_ended",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_compress_strength_scales_the_stored_ratio",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_level_dynamics_narrows_loudness_range_within_a_clip",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_levels_speakers_and_hits_the_target",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_match_strength_defaults_to_full_match",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_match_strength_explicit_value_partially_matches",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::finish_audio_match_strength_zero_leaves_clip_averages_untouched_relative_to_each_other",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::lint_edit_finds_the_problems_and_its_fixes_clear_them",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::lint_edit_prepares_each_picture_scan_sample_exactly_once",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::lint_edit_scans_a_long_clip_without_rescanning_from_its_start_each_sample",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::place_broll_matches_the_clip_to_the_words_being_said",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::review_export_shows_the_exported_file",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::rough_cut_finds_repeated_shots",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::text_over_subject_fix_never_crosses_the_midline_into_the_other_half",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::text_over_subject_fixes_each_caption_page_on_its_own",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "director_small::timeline_summary_is_small_and_has_the_ids",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "export_job::unchanged_rerun_reuses_everything_and_an_edit_renders_only_its_chunk",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "export_job_errors::encoder_failure_and_disk_full_are_classified_keep_finished_chunks_and_resume_completes",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "export_job_kill::sigkill_mid_encode_at_several_chunks_then_a_fresh_process_resumes_to_identical_frames",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "flash_pin::boundary_pair_just_under_and_just_over_25_pct_of_a_field",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "focus_series::prereg_s_blur_ramp",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "glow_half_res_v7::half_res_speedup_benchmark",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "golden_frames::golden_frames_registry_and_projects",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "golden_frames::golden_scenes_cold_warm_cleared_equal_uncached",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "kimo_motion_v7::motion_diff_is_near_zero_for_identical_motion_and_large_for_different_motion",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "kimo_motion_v7::motion_extract_invert_flips_the_sign_like_a_stabiliser",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "lint_contrast_moving::no_times_grid_over_the_cap_is_refused_not_thinned_or_cut",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "lint_contrast_moving::no_times_multi_span_times_are_sorted_and_deduped",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "lint_contrast_moving::text_contrast_over_a_fading_video_passes_dark_frames_and_flags_light_ones",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "lint_contrast_moving::text_contrast_reads_the_exact_sampled_frame_of_a_moving_video",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "mask_raster_accuracy::curved_masks_meet_1e4_in_precision_mode",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "montage_tools::a_clean_clip_scores_high_and_is_kept",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "montage_tools::a_mixed_clip_is_split_so_only_its_good_half_survives",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "montage_tools::beat_sync_montage_cuts_land_exactly_on_real_beats_and_ends_on_a_phrase",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "montage_tools::best_segments_actually_cuts_the_junk_and_keeps_the_rest",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "montage_tools::blurry_dark_and_shaky_clips_are_scored_low_and_dropped",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "octree_mesh_bench_cp4::cp4_leaf_counts_planar_vs_curved",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "pixel_expr::cost_20ops_1080p_report",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "preview_range::measure_time_to_first_preview",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "preview_stream::bench_1080p_three_tracks_plays_at_25_fps_and_scrubs_under_150_ms",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8100::adaptive_denoise_false_adds_no_effect_to_a_genuinely_noisy_clip",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8100::adaptive_denoise_unset_defaults_to_true",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8100::clean_clip_gets_no_filter_noisy_clip_in_the_same_edit_does",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8100::edge_sharpness_does_not_collapse_under_denoise",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8100::noisy_clip_rendered_output_has_lower_noise_variance",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v8120::preset_byte_identity_report",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v870::auto_edit_turns_on_color_pipeline_as_its_last_step",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v880::auto_edit_turns_on_encoder_quality_and_color_tag_sanity_by_default",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v890::motion_blur_false_leaves_the_push_in_at_zero",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v890::push_in_ramp_gets_motion_blur_proportional_to_its_speed_punch_ins_stay_at_zero",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v890::stabilize_handheld_corrects_the_shaky_clip_and_leaves_the_locked_one_alone",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "quality_v890::stabilize_handheld_defaults_to_false",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "render_bench::cache_bench",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "render_bench::render_bench",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "render_purity::pipeline_flag_is_not_shared_between_concurrent_renders",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "render_state_leak::no_thread_local_state_leaks_between_renders",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "render_state_leak::thread_count_does_not_change_pixels",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "sfm_synthetic::distortion_model_is_harmless_without_distortion",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "sfm_synthetic::estimates_unknown_focal",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "sfm_synthetic::solves_known_camera_path",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "sfm_synthetic::solves_lens_distortion",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "sfm_synthetic::solves_pure_pan_rotation_only",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "shape_bound_equiv::bounded_shape_raster_is_bit_identical",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "shape_hint_equiv::bbox_hint_is_bit_identical",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::blur_similarity_gaussian",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::clean_similarity_gaussian",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::l1_clean",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::locked_clean_drift",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::locked_noise_drift",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::noise_similarity_gaussian",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::outliers_similarity_gaussian",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::perspective_plate_perspective_method",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::position_translation_only",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_accuracy::rolling_shutter_plate",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::classic_args_reach_the_classic_engine_unchanged",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::rolling_shutter_keys_a_mesh_pin_and_drops_the_rigid_keys",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::synthesize_edges_fills_borders_with_the_right_pixels",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::synthesize_edges_fills_borders_with_the_right_pixels_range_05",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::warp_crop_adds_the_stabilize_crop_mask",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::warp_perspective_keys_the_pin_corners",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "stabilize_tool::warp_similarity_keys_every_frame_and_beats_the_jitter_gate",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "track_mask_accuracy::gate_affine",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "track_mask_accuracy::gate_perspective",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "track_mask_accuracy::gate_similarity",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "track_mask_accuracy::gate_translation",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "track_mask_accuracy::noise_strict_iou_gate",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "transform_nodes::timing_1080p_parented_vs_flat_interleaved",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "transition_raw::render_1080p_contact_sources",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "transition_raw::render_1080p_crossfade_slide_sources",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "transition_raw::render_1080p_slide_policies",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "uv_math::render_1080p_uv_sources",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::all",
+   "test": "vad::aggressiveness_monotonic_200_random_fixtures",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-core::frame_live_peak",
+   "test": "peak_live_per_frame_is_within_the_planner_budget",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "frame_skip::a_burst_coalesces_and_every_queued_frame_is_accounted_for",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "frame_skip::a_spectator_that_stops_reading_drops_frames_off_the_lane_counted_and_reported",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "live_preview::live_frame_after_every_mutating_call_and_none_for_reads",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "live_preview::no_preview_work_when_off_unconnected_or_disabled",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "spectator_demo::a_stalled_spectator_loses_no_demo_frame",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "spectator_demo::demo_mode_from_the_command_line",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "spectator_demo::demo_mode_gives_every_call_its_own_frame",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "spectator_demo::demo_mode_over_the_gui_transport",
+   "category": "untriaged",
+   "fast_test": null
+  },
+  {
+   "binary": "kimo-mcp::all",
+   "test": "telemetry_one_to_one::every_call_one_start_one_terminal_over_the_gui_transport",
+   "category": "untriaged",
+   "fast_test": null
+  }
+ ]
+}

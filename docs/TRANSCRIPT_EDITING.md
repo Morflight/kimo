@@ -111,7 +111,7 @@ This feature does not add durable autosave or crash recovery.
 
 ## Verification
 
-`crates/kimo-core/tests/transcript_edit_apply.rs` covers source/keyframe continuity,
+`crates/kimo-core/tests/all/transcript_edit_apply.rs` covers source/keyframe continuity,
 repeated cuts, all-track ripple, captions/markers, full deletion, dry runs, undo and
 redo, revision drift, invalid indexes, locked tracks, unsupported mappings,
 overlapping words, phrase matching and limits. Its FFmpeg fixture compares actual
@@ -140,7 +140,7 @@ Validation on Windows/MSVC, 2026-10-23:
   CLI reports its version, and a real MCP stdio smoke check discovered both new
   tools among 441 flat entries and routed a search request to its handler.
 - The all-target gate is blocked on Windows by existing Unix-only imports in
-  `crates/kimo-core/tests/export_job_kill.rs` (including `PermissionsExt` and
+  `crates/kimo-core/tests/all/export_job_kill.rs` (including `PermissionsExt` and
   `process_group`). This is not a claim that the complete repository gate passes.
 
 The revision guards project state; it does not lock external media files. Use the

@@ -152,3 +152,74 @@ fn model1(f: &mut Frame, aux: &KeyerAux, key: [f32; 3], (m, o1, o2): (usize, usi
         let sp = despill(&mut fc, m, o1, o2, s);
         put(&mut f.d, o, fc, al, view, sp, raw[i]); }
 }
+
+#[cfg(test)]
+mod tests {
+    // keying::apply_keyer directly (converted from tests/keyer_legacy.rs keyer_direct): aux validation, views, despill modes/bias/replace, other key channels, matte morphology, model 1 plates
+    use super::*;
+    use crate::keyframe::Prop;
+    fn params(kv: &[(&str, f64)]) -> Params { kv.iter().map(|(k, v)| (k.to_string(), Prop::new(*v))).collect() }
+    const KEY: [f32; 3] = [0.0, 0.75, 0.1];
+    fn row(px: &[[f32; 3]]) -> Frame { Frame { w: px.len(), h: 1, d: px.iter().flat_map(|c| [c[0], c[1], c[2], 1.0]).collect() } }
+    fn key(f: &mut Frame, kv: &[(&str, f64)], aux: &KeyerAux) { let mut v = vec![("edge_soften", 0.0)]; v.extend_from_slice(kv); apply_keyer(&params(&v), f, 0.0, aux).unwrap(); }
+    fn px(f: &Frame, i: usize) -> [f32; 4] { [f.d[i * 4], f.d[i * 4 + 1], f.d[i * 4 + 2], f.d[i * 4 + 3]] }
+    fn close(a: f32, b: f32, what: &str) { assert!((a - b).abs() < 1e-5, "{what}: {a} vs {b}"); }
+
+    #[test] fn refusals_and_empty_frames() {
+        let mut f = row(&[KEY; 4]);
+        assert_eq!(apply_keyer(&params(&[]), &mut f, 0.0, &KeyerAux { garbage: Some(&[0.0; 3]), ..Default::default() }).unwrap_err(), "keyer: garbage matte has 3 values, expected 4 (4x1)");
+        assert_eq!(apply_keyer(&params(&[]), &mut f, 0.0, &KeyerAux { core: Some(&[0.0; 5]), ..Default::default() }).unwrap_err(), "keyer: core matte has 5 values, expected 4 (4x1)");
+        let bad = Frame { w: 0, h: 0, d: vec![] };
+        assert_eq!(apply_keyer(&params(&[]), &mut f, 0.0, &KeyerAux { clean_plate: Some(&bad), ..Default::default() }).unwrap_err(), "keyer: empty or malformed clean plate");
+        assert_eq!(apply4("chroma", &params(&[]), &mut f, 0.0, 0).unwrap_err(), "unknown effect 'chroma'");
+        let mut e = Frame { w: 0, h: 0, d: vec![] }; apply_keyer(&params(&[]), &mut e, 0.0, &KeyerAux::default()).unwrap(); assert!(e.d.is_empty());
+    }
+
+    #[test] fn views_garbage_core_and_non_finite() {
+        let src = || row(&[KEY, [1.0, 0.0, 0.0], [0.2, 0.8, 0.4], [f32::NAN; 3]]);
+        let mut f = src(); key(&mut f, &[], &KeyerAux::default());
+        assert_eq!(px(&f, 0)[3], 0.0, "screen keyed out"); assert_eq!(px(&f, 1), [1.0, 0.0, 0.0, 1.0], "red kept"); assert_eq!(px(&f, 3), [0.0, 0.0, 0.0, 1.0], "NaN colour is written as black (its difference matte reads as foreground)");
+        let mut m = src(); key(&mut m, &[("view", 1.0)], &KeyerAux::default()); assert_eq!(px(&m, 0), [0.0, 0.0, 0.0, 1.0]); assert_eq!(px(&m, 1), [1.0, 1.0, 1.0, 1.0]);
+        let mut s = src(); key(&mut s, &[("view", 3.0)], &KeyerAux::default());
+        assert_eq!(px(&s, 0), [0.0, 0.0, 0.0, 1.0], "status: background"); assert_eq!(px(&s, 1), [1.0, 1.0, 1.0, 1.0], "status: solid fg"); assert_eq!(px(&s, 2), [0.5, 0.5, 0.5, 1.0], "status: edge");
+        let mut r = src(); key(&mut r, &[("view", 4.0), ("screen_gain", 0.5)], &KeyerAux::default()); assert_eq!(px(&r, 0), [0.5, 0.5, 0.5, 1.0], "raw matte 1 - 0.5"); assert_eq!(px(&r, 1)[0], 1.0);
+        // status yellow: a solid pixel that lost spill.
+        let mut y = row(&[[0.6, 0.65, 0.6]]); key(&mut y, &[("view", 3.0), ("clip_white", 0.5)], &KeyerAux::default()); assert_eq!(px(&y, 0), [1.0, 1.0, 0.0, 1.0]);
+        // garbage forces transparent, core forces opaque.
+        let mut g = src(); key(&mut g, &[], &KeyerAux { garbage: Some(&[0.0, 1.0, 0.0, 0.0]), ..Default::default() }); assert_eq!(px(&g, 1)[3], 0.0);
+        let mut c = src(); key(&mut c, &[("view", 1.0)], &KeyerAux { core: Some(&[1.0, 0.0, 0.0, 0.0]), ..Default::default() }); assert_eq!(px(&c, 0), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test] fn despill_modes_bias_and_replace() {
+        // view 2 shows the despilled colour; edge_unmix 0 keeps it pure. Pixel (0.2, 0.8, 0.4) on green: o1 = (m+1)%3 = blue, o2 = red.
+        let ds = |kv: &[(&str, f64)]| { let mut f = row(&[[0.2, 0.8, 0.4]]); let mut v = vec![("view", 2.0), ("edge_unmix", 0.0)]; v.extend_from_slice(kv); key(&mut f, &v, &KeyerAux::default()); px(&f, 0) };
+        let a = ds(&[]); close(a[1], 0.3, "average"); close(a[0], 0.2 + 0.5 * 0.3 * 0.5, "half the spill back to red"); close(a[2], 0.4 + 0.075, "and to blue");
+        close(ds(&[("despill_mode", 1.0), ("spill_replace", 0.0)])[1], (2.0 * 0.4 + 0.2) / 3.0, "double weights o1 = blue on a green screen");
+        close(ds(&[("despill_mode", 2.0), ("spill_replace", 0.0)])[1], 0.4, "limit"); close(ds(&[("despill_mode", 3.0), ("spill_replace", 0.0)])[1], 0.2, "min");
+        let r = ds(&[("replace_mode", 1.0), ("spill_replace", 1.0), ("replace_r", 1.0), ("replace_g", 0.0), ("replace_b", 0.0)]); close(r[0], 0.2 + 0.5, "replace colour red"); close(r[2], 0.4, "blue untouched");
+        // Non-grey bias: work in bias-normalised units (x * lum(bias)/bias), then back.
+        let b = [0.6f32, 0.5, 0.4]; let yb = 0.2126 * b[0] + 0.7152 * b[1] + 0.0722 * b[2]; let k = [yb / b[0], yb / b[1], yb / b[2]];
+        let x = [0.2 * k[0], 0.8 * k[1], 0.4 * k[2]]; let lim = (x[0] + x[2]) * 0.5; let sp = x[1] - lim;
+        let want = [(x[0] + sp * 0.15) / k[0], lim / k[1], (x[2] + sp * 0.15) / k[2]];
+        let o = ds(&[("despill_bias_r", 0.6), ("despill_bias_g", 0.5), ("despill_bias_b", 0.4)]); for j in 0..3 { close(o[j], want[j], "bias"); }
+    }
+
+    #[test] fn other_screens_and_matte_morphology() {
+        // Blue and red screens key their own colour.
+        for k in [[0.1f32, 0.2, 0.9], [0.9, 0.1, 0.15]] { let mut f = row(&[k, [0.5, 0.5, 0.5]]); key(&mut f, &[("r", k[0] as f64), ("g", k[1] as f64), ("b", k[2] as f64)], &KeyerAux::default()); assert_eq!(f.d[3], 0.0, "{k:?}"); assert!(f.d[7] > 0.9); }
+        // A 3x3 red block in a 7x7 green screen: core_shrink 1 erodes it to its centre, -1 grows it, 0.3 rounds to no change.
+        let plate = || { let mut f = Frame { w: 7, h: 7, d: vec![0.0; 196] }; for i in 0..49 { let (x, y) = (i % 7, i / 7); let c = if (2..5).contains(&x) && (2..5).contains(&y) { [1.0, 0.0, 0.0] } else { KEY }; f.d[i * 4..i * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], 1.0]); } f };
+        let count = |kv: &[(&str, f64)]| { let mut f = plate(); key(&mut f, kv, &KeyerAux::default()); f.d.chunks_exact(4).filter(|p| p[3] > 0.5).count() };
+        assert_eq!(count(&[]), 9); assert_eq!(count(&[("core_shrink", 1.0)]), 1); assert_eq!(count(&[("core_shrink", -1.0)]), 25); assert_eq!(count(&[("core_shrink", 0.3)]), 9);
+        // Model 1 with a clean plate equal to the key colour, at the frame size or resampled from 2x2, matches the plain key; it also erodes and softens.
+        let base = { let mut f = plate(); key(&mut f, &[("matte_model", 1.0)], &KeyerAux::default()); f };
+        assert_eq!(base.d.chunks_exact(4).filter(|p| p[3] > 0.5).count(), 9);
+        let same = Frame { w: 7, h: 7, d: (0..49).flat_map(|_| [KEY[0], KEY[1], KEY[2], 1.0]).collect() }; let small = Frame { w: 2, h: 2, d: (0..4).flat_map(|_| [KEY[0], KEY[1], KEY[2], 1.0]).collect() };
+        for cp in [&same, &small] { let mut f = plate(); key(&mut f, &[("matte_model", 1.0)], &KeyerAux { clean_plate: Some(cp), ..Default::default() }); assert_eq!(f.d, base.d); }
+        let mut e = plate(); key(&mut e, &[("matte_model", 1.0), ("core_shrink", 1.0)], &KeyerAux::default()); assert!(e.d.chunks_exact(4).filter(|p| p[3] > 0.5).count() < 9);
+        let mut s = plate(); apply_keyer(&params(&[("matte_model", 1.0), ("edge_soften", 1.0)]), &mut s, 0.0, &KeyerAux::default()).unwrap(); assert!(s.d.chunks_exact(4).any(|p| p[3] > 0.05 && p[3] < 0.95), "softened edge");
+        // Model 1 with no foreground sample anywhere (all screen + a NaN): clip of the raw matte, NaN -> transparent.
+        let mut n = row(&[KEY, [f32::NAN; 3], [0.0, 0.4, 0.05]]); key(&mut n, &[("matte_model", 1.0)], &KeyerAux { garbage: Some(&[0.0; 3]), core: Some(&[0.0; 3]), ..Default::default() });
+        assert_eq!(n.d[3], 0.0); assert_eq!(n.d[7], 0.0); assert!(n.d[11] > 0.0 && n.d[11] < 1.0, "half-screen colour is partly transparent: {}", n.d[11]);
+    }
+}

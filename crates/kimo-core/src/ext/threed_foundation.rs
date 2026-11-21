@@ -15,3 +15,77 @@ pub fn commands()->Vec<Command>{vec![
  #[cfg(not(feature="mesh-import"))]{let _=a;Err("mesh-import feature not compiled".into())}
  }),
 ]}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ fn run(name:&str,a:Value)->Result<Value,String>{let c=commands().into_iter().find(|c|c.name==name).unwrap();(c.run)(&mut Session::new(),&a)}
+ fn tri()->Value{json!({"positions":[[0.,0.,0.],[2.,0.,0.],[0.,3.,0.]],"indices":[[0,1,2]]})}
+ fn translate(x:f64,y:f64,z:f64)->Value{json!([[1.,0.,0.,x],[0.,1.,0.,y],[0.,0.,1.,z],[0.,0.,0.,1.]])}
+ #[test]fn backend_report_is_cpu_reference_only(){
+  let r=run("inspect_threed_backend",json!({})).unwrap();
+  assert_eq!(r["cpu_reference"],true);assert_eq!(r["gpu_render_implemented"],false);
+ }
+ #[test]fn mesh_buffers_report_bounds_and_counts(){
+  assert_eq!(run("inspect_mesh_buffers",json!({"mesh":tri()})).unwrap(),json!({"bounds":[[0.,0.,0.],[2.,3.,0.]],"vertices":3,"triangles":1}));
+  assert_eq!(run("inspect_mesh_buffers",json!({})).unwrap_err(),"mesh required");
+  assert!(run("inspect_mesh_buffers",json!({"mesh":{"positions":[[0.,0.,0.]],"indices":[[0,1,2]]}})).is_err(),"index out of range");
+  assert!(run("inspect_mesh_buffers",json!({"mesh":{"positions":[],"indices":[],"extra":1}})).is_err(),"unknown field");
+ }
+ #[test]fn scene_matrices_compose_parent_translations(){
+  let nodes=json!([{"parent":null,"local":translate(1.,0.,0.),"mesh":0},{"parent":0,"local":translate(0.,2.,0.),"mesh":null}]);
+  let r=run("inspect_scene_matrices",json!({"nodes":nodes,"mesh_count":1})).unwrap();
+  assert_eq!(r["world"][0],translate(1.,0.,0.));assert_eq!(r["world"][1],translate(1.,2.,0.));
+  let cycle=json!([{"parent":0,"local":translate(0.,0.,0.),"mesh":null}]);
+  assert!(run("inspect_scene_matrices",json!({"nodes":cycle,"mesh_count":0})).is_err(),"self-parent cycle");
+  assert_eq!(run("inspect_scene_matrices",json!({"nodes":nodes})).unwrap_err(),"mesh_count required");
+ }
+ #[test]fn raycast_hits_the_triangle_at_the_expected_distance(){
+  let mesh=json!({"positions":[[0.,0.,0.],[1.,0.,0.],[0.,1.,0.]],"indices":[[0,1,2]]});
+  let r=run("raycast_mesh_raw",json!({"mesh":mesh,"ray":{"origin":[0.25,0.25,1.],"direction":[0.,0.,-1.],"t_min":0.,"t_max":10.}})).unwrap();
+  assert_eq!(r["hit"]["triangle"],0);assert!((r["hit"]["t"].as_f64().unwrap()-1.).abs()<1e-12);
+  // (0.25,0.25) = 0.5*A + 0.25*B + 0.25*C
+  let mut b:Vec<f64>=r["hit"]["barycentric"].as_array().unwrap().iter().map(|v|v.as_f64().unwrap()).collect();b.sort_by(f64::total_cmp);
+  for(g,w)in b.iter().zip([0.25,0.25,0.5]){assert!((g-w).abs()<1e-12,"{b:?}");}
+  assert!(r["nodes"].as_u64().unwrap()>=1);
+  let miss=run("raycast_mesh_raw",json!({"mesh":mesh,"ray":{"origin":[0.25,0.25,1.],"direction":[0.,0.,1.],"t_min":0.,"t_max":10.}})).unwrap();
+  assert!(miss["hit"].is_null(),"pointing away misses");
+  assert_eq!(run("raycast_mesh_raw",json!({"mesh":mesh})).unwrap_err(),"ray required");
+  assert!(run("raycast_mesh_raw",json!({"mesh":{"positions":[],"indices":[]},"ray":{}})).is_err());
+ }
+ #[test]fn sdf_sphere_distance_is_centre_distance_minus_radius(){
+  let f=json!({"kind":"sphere","center":[0.,0.,0.],"radius":1.});
+  assert_eq!(run("sample_sdf_raw",json!({"field":f,"point":[3.,0.,0.]})).unwrap(),json!({"distance_field":2.,"mesh_generated":false}));
+  assert_eq!(run("sample_sdf_raw",json!({"field":f,"point":[1e10,0.,0.]})).unwrap_err(),"SDF finite point abs<=1e9 required");
+  assert_eq!(run("sample_sdf_raw",json!({"point":[0.,0.,0.]})).unwrap_err(),"field required");
+ }
+ #[test]fn pbr_sample_is_black_below_the_horizon_and_validates_the_material(){
+  let m=json!({"albedo":[0.5,0.5,0.5],"metallic":0.,"roughness":0.5});
+  assert_eq!(run("sample_pbr_raw",json!({"material":m,"normal":[0.,0.,1.],"light":[0.,0.,-1.],"view":[0.,0.,1.]})).unwrap(),json!({"diffuse":[0.,0.,0.],"specular":[0.,0.,0.]}));
+  let lit=run("sample_pbr_raw",json!({"material":m,"normal":[0.,0.,1.],"light":[0.,0.,1.],"view":[0.,0.,1.]})).unwrap();
+  assert!(lit["diffuse"][0].as_f64().unwrap()>0.);
+  assert_eq!(run("sample_pbr_raw",json!({"material":{"albedo":[0.5,0.5,0.5],"metallic":0.,"roughness":0.},"normal":[0.,0.,1.],"light":[0.,0.,1.],"view":[0.,0.,1.]})).unwrap_err(),"albedo/metallic0..1 roughness0.001..1 required");
+ }
+ #[test]fn sh_irradiance_of_a_constant_term_is_its_basis_value(){
+  let mut c=vec![[0.;3];9];c[0]=[1.,2.,4.];
+  // Y00 = 0.2820947918 for every normal
+  let r=run("sample_diffuse_sh_raw",json!({"coefficients":c,"normal":[0.3,-0.2,0.9]})).unwrap();
+  for(j,k)in[1.,2.,4.].iter().enumerate(){assert!((r["irradiance"][j].as_f64().unwrap()-0.2820947918*k).abs()<1e-12);}
+  assert_eq!(r["specular_ibl"],false);
+  assert_eq!(run("sample_diffuse_sh_raw",json!({"coefficients":c,"normal":[0.,0.,0.]})).unwrap_err(),"direction nonzero required");
+ }
+ #[test]fn cpu_reference_render_writes_a_png(){
+  let dir=std::env::temp_dir().join(format!("kimo-threed-foundation-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();
+  let path=dir.join("ref.png");let p=path.to_str().unwrap();
+  let mesh=json!({"positions":[[-1.,-1.,0.5],[3.,-1.,0.5],[-1.,3.,0.5]],"indices":[[0,1,2]]});
+  let r=run("render_mesh_cpu_reference",json!({"mesh":mesh,"width":4,"height":4,"color":[1.,0.,0.,1.],"path":p})).unwrap();
+  let(_,d)=crate::threed::cpu::render(&serde_json::from_value(mesh).unwrap(),4,4,[1.,0.,0.,1.]).unwrap();
+  assert_eq!(r["covered_pixels"].as_u64(),Some(d.iter().filter(|v|v.is_finite()).count() as u64));
+  assert!(r["covered_pixels"].as_u64().unwrap()>0);assert!(std::fs::metadata(&path).unwrap().len()>0);
+  assert_eq!(run("render_mesh_cpu_reference",json!({"path":"ref.jpg"})).unwrap_err(),"PNG path required");
+  assert_eq!(run("render_mesh_cpu_reference",json!({"path":p,"width":4,"height":4,"color":[1.,0.,0.,1.]})).unwrap_err(),"mesh required");
+  std::fs::remove_dir_all(&dir).unwrap();
+ }
+ #[cfg(not(feature="mesh-import"))]
+ #[test]fn raw_mesh_import_reports_the_missing_feature(){assert_eq!(run("import_mesh_raw",json!({"format":"obj","text":""})).unwrap_err(),"mesh-import feature not compiled");}
+}

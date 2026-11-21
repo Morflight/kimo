@@ -88,6 +88,6 @@ crash. Discard deletes the autosave and its history.
 
 Tests:
 
-- `crates/kimo-core/tests/history_restore.rs` (engine)
+- `crates/kimo-core/tests/all/history_restore.rs` (engine)
 - `recovery::tests` and `recovery::real_engine::undo_works_after_a_crash_restore` (app; runs when `KIMO_MCP_BIN` is set)
 - `crash::tests`

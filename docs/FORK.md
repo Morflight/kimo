@@ -16,7 +16,7 @@ git switch main
 bash tools/fork/test-preview.sh
 ```
 
-This is a solo-maintainer repository: commit and push directly to `main`; feature branches and pull requests are optional. Run the relevant tests locally and inspect CI on every push. Fetch upstream with `git fetch upstream --tags`, then integrate a reviewed upstream revision and verify it with the same checks. Do not reset main onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
+Every change is developed on its own branch and merged into `main` through a pull request; never commit work directly to `main`. Every push runs the fast suite; pull requests to `main` run the heavy suite, which must pass before merging (`docs/TESTING_STRATEGY.md`). Run the relevant tests locally and inspect CI on every push. Fetch upstream with `git fetch upstream --tags`, then integrate a reviewed upstream revision and verify it with the same checks. Do not reset main onto upstream. Keep the full history and notices. The first two fork commits preserve the prior index/worktree split: delivery fixes, then the cumulative measured playback/preparation work and tests. The original temporary checkout was left untouched.
 
 Keep media, real editing projects/history, bridge credentials, caches and binaries outside this repository. Tests must use synthetic fixtures or explicitly supplied local paths. Two decoder capture artifacts inherited from upstream were removed from the maintained tree; upstream history is retained unchanged.
 

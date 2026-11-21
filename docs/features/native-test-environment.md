@@ -1,6 +1,6 @@
 # Native test environment
 
-The complete native suite executes on Linux and Windows, including explicitly ignored proofs: the per-push `ci` nextest profile runs every non-heavy test, the required `nightly` profile runs everything (see `docs/QUALITY.md`). Missing inputs, failed subprocesses and unmeasured files remain failures. Native tests mutate process-wide environment; nextest isolates each test in its own process so they run in parallel without changing their assertions or thresholds.
+The complete native suite executes on Linux and Windows, including explicitly ignored proofs: the `fast` nextest profile (every push) runs every test outside the heavy register, the `heavy` profile (pull requests and pushes to `main`) runs everything (see `docs/TESTING_STRATEGY.md`). Missing inputs, failed subprocesses and unmeasured files remain failures. Native tests mutate process-wide environment; nextest isolates each test in its own process so they run in parallel without changing their assertions or thresholds.
 
 Editorial audio, caption and synchronization fixtures use the operating system's temporary directory instead of a hard-coded `/tmp` prefix. The same ffmpeg generators, media contents and assertions execute on both platforms. Fixture filenames retain a process identifier and case name. This changes only test path portability, not production media behavior.
 
@@ -127,3 +127,5 @@ Clip decoding writes every filtered frame exactly once (`-fps_mode passthrough` 
 `montage_from_folder_v7` encodes its 4:2:0 H.264 fixtures at 16×10. FFmpeg 7+ refuses the former odd 16×9 size (`height not divisible by 2`) instead of rounding it, which failed fixture creation before kimo was called. Its montage assertions are unchanged.
 
 Linux desktop integration also starts the shipped binary with an owned Xvfb display and D-Bus session, verifies second-instance handoff and closes the native window through its window-manager protocol. The application receives owned XDG directories; the test checks clean recovery state and removal of its bridge file. CI installs `xvfb` and `dbus-x11` for this proof. Existing early-entry tests still verify `--version` and the deliberately generated crash report. These scoped desktop checks do not certify full-workspace coverage or eliminate the separate private-media prerequisite.
+
+The desktop updater test's local feed server keeps its listener non-blocking (so the accept loop can stop), but switches each accepted connection back to blocking before reading the request. On Windows an accepted socket inherits the listener's non-blocking mode, and the read failed with `WouldBlock` (os error 10035); Linux never inherited it. The feed cases and assertions are unchanged.

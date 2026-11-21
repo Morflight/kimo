@@ -101,7 +101,7 @@ pub fn apply(kind: &str, params: &Params, strings: &BTreeMap<String, String>, f:
     if kind == "relight" { return crate::lighting::apply_relight(params, strings, f, t); }
     if kind.starts_with("ls_") { return crate::layerstyles::apply(kind, params, strings, f, t); }
     if kind.starts_with("shape_") { return Ok(()); } // shape modifiers act on the vector source (shapemods.rs), not on pixels
-    if kind=="asc_cdl"{if strings.contains_key("wrapper_working_gamut")||strings.contains_key("ocio_domain"){return Err("ASC CDL owns declareddomain; noextra wrapper".into())}return crate::color::cdl_file::apply(strings,f)}
+    if kind=="asc_cdl"{if strings.contains_key("wrapper_working_gamut")||strings.contains_key("ocio_domain"){return Err("ASC CDL owns its declared domain; no extra wrapper".into())}return crate::color::cdl_file::apply(strings,f)}
     if kind=="acescct_primaries" {if strings.contains_key("wrapper_working_gamut")||strings.contains_key("ocio_domain"){return Err("ACEScctprimaries owns its native domain sandwich; no extra wrapper".into())}return crate::color::cct_grade::apply(params,strings,f,t)}
     if strings.contains_key("ocio_domain") {return crate::color::effect_domain::apply(kind,params,strings,f,t,seed)}
     if strings.contains_key("wrapper_working_gamut") {return crate::color::wrapper::apply(kind,params,strings,f,t,seed)}
@@ -361,4 +361,29 @@ pub(crate) fn rgb2hsl(c: [f32; 3]) -> (f32, f32, f32) {
 pub(crate) fn hsl2rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     let c = (1.0 - (2.0*l-1.0).abs()) * s; let x = c * (1.0 - ((h/60.0).rem_euclid(2.0) - 1.0).abs()); let m = l - c/2.0;
     let (r, g, b) = match (h/60.0) as u32 { 0 => (c,x,0.0), 1 => (x,c,0.0), 2 => (0.0,c,x), 3 => (0.0,x,c), 4 => (x,0.0,c), _ => (c,0.0,x) }; [r+m, g+m, b+m]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn strings(kv: &[(&str, &str)]) -> BTreeMap<String, String> { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+    #[test] fn native_domain_effects_refuse_an_extra_wrapper_with_readable_text() {
+        for key in ["wrapper_working_gamut", "ocio_domain"] {
+            let mut f = Frame::new(1, 1); let s = strings(&[(key, "3")]);
+            assert_eq!(apply("asc_cdl", &Params::new(), &s, &mut f, 0.0, 0).unwrap_err(), "ASC CDL owns its declared domain; no extra wrapper");
+            assert_eq!(apply("acescct_primaries", &Params::new(), &s, &mut f, 0.0, 0).unwrap_err(), "ACEScctprimaries owns its native domain sandwich; no extra wrapper");
+        }
+    }
+    #[test] fn frame_new_panics_with_the_overflow_reason() {
+        assert_eq!(Frame::try_new(usize::MAX, 2).err().unwrap(), format!("frame {}x2 overflows", usize::MAX));
+        let e = std::panic::catch_unwind(|| Frame::new(usize::MAX, 2)).err().unwrap(); assert_eq!(e.downcast_ref::<String>().unwrap(), &format!("frame {}x2 overflows", usize::MAX));
+    }
+    #[test] fn pixel_expr_reports_compile_aux_and_evaluation_errors() {
+        let mut f = Frame::new(2, 1);
+        assert!(apply("pixel_expr", &Params::new(), &strings(&[("expr", "1 2")]), &mut f, 0.0, 0).unwrap_err().contains("trailing token"));
+        assert_eq!(apply("pixel_expr", &Params::new(), &strings(&[("expr", "aux1(u,v)")]), &mut f, 0.0, 0).unwrap_err(), "aux1 requires strings.aux_path (native pixel asset path)");
+        assert_eq!(apply("pixel_expr", &Params::new(), &strings(&[("r", "1/0")]), &mut f, 0.0, 0).unwrap_err(), "invalid_argument: pixel_expr produced nonfinite output");
+        let mut pr = Params::new(); pr.insert("p2".into(), Prop::new(0.5)); apply("pixel_expr", &pr, &strings(&[("g", "p2"), ("a", "1")]), &mut f, 0.0, 0).unwrap();
+        assert_eq!(&f.d[..4], &[0.0, 0.5, 0.0, 1.0]);
+    }
 }

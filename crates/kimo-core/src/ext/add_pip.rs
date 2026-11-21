@@ -218,7 +218,7 @@ fn run(ss: &mut Session, a: &Value) -> Result<Value, String> {
 
     let dir = if x_off >= 0.0 { 1.0 } else { -1.0 };
     let slide_enter = (animate_in == "slide").then_some((x_off + dir * box_w, "out_quart"));
-    let slide_exit = (animate_out == "slide").then_some((x_off + dir * box_w, "in_quart"));
+    let slide_exit = (animate_out == "slide").then_some((x_off + dir * box_w, "in"));
     animate_prop(ss, &pip_clip_id, "x", x_off, duration_s, slide_enter, slide_exit)?;
     call(ss, "set_property", &json!({"clip_id": pip_clip_id, "property": "y", "value": y_off}))?;
 
@@ -263,4 +263,80 @@ pub fn commands() -> Vec<Command> {
         ], &["source", "at_s", "duration_s"]),
         run,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// 64x36 canvas plus an 8x8 PNG still in a test-unique directory.
+    fn setup(tag: &str) -> (Session, std::path::PathBuf, String) {
+        let mut ss = Session::new(); ss.project.width = 64; ss.project.height = 36;
+        let dir = std::env::temp_dir().join(format!("kimo-add-pip-{}-{tag}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("still.png"); let p = png.to_str().unwrap().to_string();
+        crate::render::write_image(&crate::effects::Frame { w: 8, h: 8, d: vec![0.5; 8 * 8 * 4] }, &p).unwrap();
+        (ss, dir, p)
+    }
+    fn close(a: &Value, b: f64) { assert!((a.as_f64().unwrap() - b).abs() < 1e-9, "{a} vs {b}"); }
+    #[test]
+    fn corners_and_normalized_positions_place_the_box_inside_a_margin() {
+        let (mut ss, dir, p) = setup("place");
+        // size 0.5 of 64x36 = 32x18 box; margin 0.03*36 = 1.08
+        let r = run(&mut ss, &json!({"source": p, "at_s": 0.0, "duration_s": 1.5, "size": 0.5, "position": "bottom_left", "shape": "circle", "border_px": 2.0, "border_color": [1.0, 0.0, 0.0], "shadow": false, "animate_in": "slide", "animate_out": "pop", "mute_source": false})).unwrap();
+        close(&r["box_width_px"], 32.0); close(&r["box_height_px"], 18.0);
+        close(&r["x"], -32.0 + 16.0 + 1.08); close(&r["y"], 18.0 - 9.0 - 1.08);
+        assert!(r["shadow_clip_id"].is_null()); assert!(r["border_clip_id"].is_string());
+        assert!(ss.project.find_clip(r["border_clip_id"].as_str().unwrap()).is_some());
+        // reuse the clip just placed as the source: same asset, a new clip
+        let again = run(&mut ss, &json!({"source": r["clip_id"], "at_s": 0.5, "duration_s": 1.0, "position": "top_left", "shape": "rect", "animate_in": "none", "animate_out": "slide"})).unwrap();
+        assert_eq!(again["asset_id"], r["asset_id"]); assert_ne!(again["clip_id"], r["clip_id"]);
+        // default size 0.3: 19.2x10.8 box
+        close(&again["x"], -32.0 + 9.6 + 1.08); close(&again["y"], -18.0 + 5.4 + 1.08);
+        assert!(again["shadow_clip_id"].is_string(), "shadow defaults on"); assert!(again["border_clip_id"].is_null());
+        // {x,y}: the inset centre at that fraction of the canvas
+        let norm = run(&mut ss, &json!({"source": r["clip_id"], "at_s": 0.0, "duration_s": 1.0, "position": {"x": 0.25, "y": 1.0}, "border_px": 1.0, "border_color": [0.0, 1.0, 0.0, 0.5]})).unwrap();
+        close(&norm["x"], -16.0); close(&norm["y"], 18.0);
+        for (pos, x, y) in [("top_right", 32.0 - 9.6 - 1.08, -18.0 + 5.4 + 1.08), ("bottom_right", 32.0 - 9.6 - 1.08, 18.0 - 5.4 - 1.08), ("center", 0.0, 0.0)] {
+            let o = run(&mut ss, &json!({"source": r["clip_id"], "at_s": 0.0, "duration_s": 1.0, "position": pos})).unwrap();
+            close(&o["x"], x); close(&o["y"], y);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn every_bad_argument_is_refused_before_anything_is_added() {
+        let (mut ss, dir, p) = setup("refuse");
+        let base = json!({"source": p, "at_s": 0.0, "duration_s": 1.0});
+        let with = |k: &str, v: Value| { let mut a = base.clone(); a[k] = v; a };
+        let tracks = ss.project.tracks.len();
+        assert_eq!(run(&mut ss, &json!([1])).unwrap_err(), "add_pip: arguments must be an object");
+        assert_eq!(run(&mut ss, &with("colour", json!(1))).unwrap_err(), "add_pip: unknown argument 'colour'");
+        for (k, v, e) in [
+            ("at_s", json!(-1.0), "add_pip: at_s must be a finite number >= 0"),
+            ("duration_s", json!(0.0), "add_pip: duration_s must be a finite number > 0"),
+            ("size", json!(1.5), "add_pip: size must be a finite number in (0, 1]"),
+            ("shape", json!("star"), "add_pip: shape must be rect, rounded or circle, got 'star'"),
+            ("border_px", json!(-1.0), "add_pip: border_px must be a finite number >= 0"),
+            ("border_color", json!("red"), "add_pip: 'border_color' must be an RGB or RGBA array, channels 0..1"),
+            ("border_color", json!([1.0, 1.0]), "add_pip: 'border_color' must have 3 or 4 channels"),
+            ("border_color", json!([2.0, 0.0, 0.0]), "add_pip: 'border_color' channels must be finite numbers in 0..1"),
+            ("animate_in", json!("spin"), "add_pip: animate_in must be pop, slide, fade or none, got 'spin'"),
+            ("animate_out", json!("spin"), "add_pip: animate_out must be pop, slide, fade or none, got 'spin'"),
+            ("source_in_s", json!(-0.5), "add_pip: source_in_s must be a finite number >= 0"),
+            ("source", json!("  "), "add_pip: source must not be empty"),
+            ("position", json!("middle"), "add_pip: unknown position 'middle'; use top_right, top_left, bottom_right, bottom_left, center, or {x,y} normalized"),
+            ("position", json!({"x": "left", "y": 0.5}), "add_pip: position.x must be a finite number"),
+            ("position", json!({"x": 0.5}), "add_pip: position.y must be a finite number"),
+            ("position", json!({"x": 1.5, "y": 0.5}), "add_pip: position.x and position.y must be within 0..1"),
+            ("position", json!(3), "add_pip: position must be a string (top_right|top_left|bottom_right|bottom_left|center) or {x,y} normalized 0..1"),
+        ] { assert_eq!(run(&mut ss, &with(k, v)).unwrap_err(), e, "{k}"); }
+        // wrong JSON types go through the shared argument error, naming the field
+        for (k, v) in [("size", json!("big")), ("border_px", json!(true)), ("source_in_s", json!("0")), ("shape", json!(5)), ("animate_in", json!(1)), ("animate_out", json!(1)), ("shadow", json!("yes")), ("mute_source", json!(0))] {
+            assert!(run(&mut ss, &with(k, v)).unwrap_err().contains(k), "{k}");
+        }
+        assert_eq!(ss.project.tracks.len(), tracks, "nothing was added");
+        // an existing non-media clip is not a valid source
+        let t = call(&mut ss, "add_track", &json!({})).unwrap()["track_id"].clone();
+        let shape = call(&mut ss, "add_shape", &json!({"track_id": t, "shape": "rect", "start": 0.0, "duration": 1.0, "width": 4.0, "height": 4.0})).unwrap()["clip_id"].as_str().unwrap().to_string();
+        assert_eq!(run(&mut ss, &with("source", json!(shape))).unwrap_err(), format!("add_pip: clip '{shape}' is not a media clip; source must be a media clip id or a file path"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -55,7 +55,9 @@ before = git_state()
 for kind, name, _ in ent:
     if kind == "rust":
         if pyonly: continue
-        rc, out, sec = sh(["cargo", "test", "--profile", PROFILE, "-p", "kimo-core", "--test", name]); p, f = counts(out)
+        # integration tests share one binary (`all`, module = former file name); a few stay separate binaries
+        target = ["--test", name] if os.path.exists(f"crates/kimo-core/tests/{name}.rs") else ["--test", "all", f"{name}::"]
+        rc, out, sec = sh(["cargo", "test", "--profile", PROFILE, "-p", "kimo-core", *target]); p, f = counts(out)
         rows.append((f"rust {name}", "pass" if rc == 0 else "fail", sec, f"{p} passed {f} failed"))
         if rc: print("\n".join(l for l in out.splitlines() if "FAILED" in l or "panicked" in l)[:1500])
     else:

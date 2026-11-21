@@ -327,6 +327,56 @@ pub fn dispatch_ex(ss: &mut Session, name: &str, args: &Value) -> Result<Value, 
     })
 }
 
+/// Fixtures shared by the handler unit tests (commands/tools_0..4.rs, edit.rs, ext/*_tools.rs): a 64x32, 10 fps project
+/// driven through `dispatch`, no media files unless a test writes one.
+#[cfg(test)]
+pub(crate) mod test_util {
+    pub(crate) use super::{dispatch, Session};
+    pub(crate) use serde_json::{json, Value};
+    /// A call that must succeed.
+    pub(crate) fn c(s: &mut Session, n: &str, a: Value) -> Value { dispatch(s, n, &a).unwrap_or_else(|e| panic!("{n} {a}: {e}")) }
+    /// A call that must fail and leave the project exactly as it was; returns the error text.
+    pub(crate) fn err(s: &mut Session, n: &str, a: Value) -> String {
+        let before = serde_json::to_string(&s.project).unwrap();
+        let e = dispatch(s, n, &a).err().unwrap_or_else(|| panic!("{n} {a} should fail"));
+        assert_eq!(serde_json::to_string(&s.project).unwrap(), before, "{n} {a}: a refused call changed the project"); e
+    }
+    /// `err` with the expected text: `want` ending in '*' is a prefix, otherwise the exact text.
+    pub(crate) fn refuse(s: &mut Session, n: &str, a: Value, want: &str) {
+        let e = err(s, n, a.clone());
+        match want.strip_suffix('*') { Some(p) => assert!(e.starts_with(p), "{n} {a}: '{e}' does not start with '{p}'"), None => assert_eq!(e, want, "{n} {a}") }
+    }
+    pub(crate) fn session() -> (Session, String) { let mut s = Session::new(); c(&mut s, "project_set", json!({"width": 64, "height": 32, "fps": 10})); let t = c(&mut s, "add_track", json!({}))["track_id"].as_str().unwrap().to_string(); (s, t) }
+    pub(crate) fn shape(s: &mut Session, t: &str, start: f64, dur: f64) -> String { c(s, "add_shape", json!({"track_id": t, "shape": "rect", "width": 8, "height": 8, "start": start, "duration": dur}))["clip_id"].as_str().unwrap().to_string() }
+    pub(crate) fn text(s: &mut Session, t: &str) -> String { c(s, "add_text", json!({"track_id": t, "text": "ab", "start": 0, "duration": 2}))["clip_id"].as_str().unwrap().to_string() }
+    pub(crate) fn solid(s: &mut Session, t: &str, col: [f64; 3], start: f64, dur: f64) -> String { c(s, "add_clip", json!({"track_id": t, "source_type": "solid", "color": col, "start": start, "duration": dur}))["clip_id"].as_str().unwrap().to_string() }
+    pub(crate) fn keys(s: &Session, id: &str, prop: &str) -> Vec<(f64, f64)> { s.project.find_clip(id).unwrap().props.get(prop).map(|p| p.keys.iter().map(|k| (k.t, k.v)).collect()).unwrap_or_default() }
+    pub(crate) fn close(a: f64, b: f64, tol: f64, what: &str) { assert!((a - b).abs() <= tol, "{what}: {a} vs {b}"); }
+    pub(crate) fn cj(s: &Session, id: &str) -> Value { serde_json::to_value(s.project.find_clip(id).unwrap()).unwrap() }
+    pub(crate) fn mask(s: &mut Session, id: &str, a: Value) -> String { let mut a = a; a["clip_id"] = json!(id); c(s, "add_mask", a)["mask_id"].as_str().unwrap().to_string() }
+    pub(crate) fn layer(s: &Session, id: &str, mid: &str) -> Value { cj(s, id)["mask"]["layers"].as_array().unwrap().iter().find(|l| l["id"] == mid).cloned().unwrap() }
+    /// A path in the system temp dir unique to this process and call.
+    pub(crate) fn tmp(name: &str) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        std::env::temp_dir().join(format!("kimo_unit_{}_{}_{name}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+    /// Loads `project` (a project JSON) through load_project; media assets point at files that do not exist.
+    pub(crate) fn load(project: Value) -> Session {
+        let p = tmp("p.kimo"); std::fs::write(&p, project.to_string()).unwrap();
+        let mut s = Session::new(); c(&mut s, "load_project", json!({"path": p.to_str().unwrap()})); let _ = std::fs::remove_file(&p); s
+    }
+    /// One media asset a1 (2 s, 64x32, file absent) and an empty track1.
+    pub(crate) fn with_asset() -> (Session, String) {
+        (load(json!({"name": "t", "markers": [], "width": 64, "height": 32, "fps": 10, "tracks": [{"id": "track1", "clips": []}], "assets": {"a1": {"id": "a1", "path": "/nonexistent/kimo_clip.mkv", "width": 64, "height": 32, "duration": 2.0, "fps": 10.0}}})), "track1".into())
+    }
+    /// Assets of known length (files absent): a1 2 s, a5 5 s, a0 unknown (a still); clip9 is a 2 s media clip of a1 with speed 0.
+    pub(crate) fn media_session() -> Session {
+        let asset = |id: &str, d: f64| json!({"id": id, "path": format!("/nonexistent/{id}.mkv"), "width": 64, "height": 32, "duration": d, "fps": 10.0});
+        load(json!({"name": "t", "markers": [], "width": 64, "height": 32, "fps": 10, "assets": {"a1": asset("a1", 2.0), "a5": asset("a5", 5.0), "a0": asset("a0", 0.0)},
+            "tracks": [{"id": "track1", "clips": [{"id": "clip9", "source": {"type": "media", "asset": "a1"}, "start": 0, "duration": 2, "in_point": 0, "speed": 0, "effects": [], "blend": "normal", "props": {}}]}]}))
+    }
+}
+
 #[cfg(test)]
 mod color_arg_tests {
     use super::{color, color_alpha};

@@ -105,8 +105,11 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
                 else { (parse_pts(v)?, closed) } } else { return Err("give points or shape".into()) };
             if pts.len() < 2 { return Err("need at least 2 points".into()); }
             let mp = crate::motion::MotionPath { points: pts, closed, auto_orient: a.get("auto_orient").and_then(|v| v.as_bool()).unwrap_or(false), orient_offset: opt_num(a, "orient_offset", 0.0), constant_speed: a.get("constant_speed").and_then(|v| v.as_bool()).unwrap_or(true), orient_smooth: opt_num(a, "orient_smooth", 0.0) };
-            let c = clip(&mut ss.project, a)?; c.motion_path = Some(mp);
-            if let Some(an) = a.get("animate") { let g = |k: &str, d: f64| an.get(k).and_then(|v| v.as_f64()).unwrap_or(d); let e: Ease = serde_json::from_value(an.get("ease").cloned().unwrap_or(json!("in_out"))).map_err(|e| e.to_string())?;
+            let c = clip(&mut ss.project, a)?;
+            // the ease is read before the clip changes, so a bad one is refused with the clip untouched
+            let anim = match a.get("animate") { Some(an) => Some((an, serde_json::from_value::<Ease>(an.get("ease").cloned().unwrap_or(json!("in_out"))).map_err(|e| e.to_string())?)), None => None };
+            c.motion_path = Some(mp);
+            if let Some((an, e)) = anim { let g = |k: &str, d: f64| an.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
                 let (t0, t1) = (g("start", 0.0), g("end", c.duration)); let pr = c.props.entry("path".to_string()).or_insert(Prop::new(0.0)); pr.set_key(t0, g("from", 0.0), e.clone()); pr.set_key(t1, g("to", 1.0), e); }
             Ok(json!({"ok":true})) } },
     Command { name: "remove_motion_path", description: "Remove a clip's motion path.", mutates: true,
@@ -183,4 +186,244 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
             while let Some((i, j)) = st.pop() { let (a0, b0) = (&orig.keys[i], &orig.keys[j]); let (mut md, mut mi) = (-1.0f64, i); for k in i + 1..j { let u = (orig.keys[k].t - a0.t) / (b0.t - a0.t).max(1e-9); let d = (orig.keys[k].v - (a0.v + (b0.v - a0.v) * u)).abs(); if d > md { md = d; mi = k; } } if md > tol { keep[mi] = true; st.push((i, mi)); st.push((mi, j)); } }
             let mut i = 0; pr.keys.retain(|_| { let k = keep[i]; i += 1; k }); let mut me = 0f64; for k in &orig.keys { me = me.max((pr.at(k.t) - k.v).abs()); } Ok(json!({"before":n,"after":pr.keys.len(),"max_error":me})) } },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_util::*;
+
+    #[test] fn mask_layer_tools_refuse_unknown_kinds_modes_and_ids() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "add_mask", json!({"clip_id": id, "kind": "zz"}), "bad kind 'zz', one of*");
+        refuse(&mut s, "add_mask", json!({"clip_id": id, "kind": "rect", "mode": "bogus"}), "bad mode 'bogus', one of*");
+        refuse(&mut s, "add_mask", json!({"clip_id": id}), "missing string 'kind'");
+        refuse(&mut s, "add_mask", json!({"clip_id": "zz", "kind": "rect"}), "no such clip 'zz'");
+        let m = mask(&mut s, &id, json!({"kind": "rect"}));
+        refuse(&mut s, "update_mask", json!({"clip_id": id, "mask_id": "nope"}), "no such mask");
+        refuse(&mut s, "update_mask", json!({"clip_id": id}), "missing string 'mask_id'");
+        refuse(&mut s, "update_mask", json!({"clip_id": "zz", "mask_id": m}), "no such clip 'zz'");
+        refuse(&mut s, "update_mask", json!({"clip_id": id, "mask_id": m, "mode": "q"}), "bad mode 'q', one of*");
+        assert!(err(&mut s, "update_mask", json!({"clip_id": id, "mask_id": m, "points": 5})).starts_with("bad points: "));
+        refuse(&mut s, "reorder_mask", json!({"clip_id": id, "mask_id": "nope", "index": 0}), "no such mask");
+        refuse(&mut s, "reorder_mask", json!({"clip_id": id, "index": 0}), "missing string 'mask_id'");
+        refuse(&mut s, "reorder_mask", json!({"clip_id": id, "mask_id": m}), "missing number 'index'");
+        refuse(&mut s, "reorder_mask", json!({"clip_id": "zz", "mask_id": m, "index": 0}), "no such clip 'zz'");
+        refuse(&mut s, "remove_mask_layer", json!({"clip_id": id, "mask_id": "nope"}), "no such mask");
+        refuse(&mut s, "remove_mask_layer", json!({"clip_id": id}), "missing string 'mask_id'");
+        refuse(&mut s, "remove_mask_layer", json!({"clip_id": "zz", "mask_id": m}), "no such clip 'zz'");
+        refuse(&mut s, "list_masks", json!({"clip_id": "zz"}), "no such clip 'zz'");
+    }
+    #[test] fn malformed_scribble_points_are_dropped() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let m = mask(&mut s, &id, json!({"kind": "scribble"}));
+        c(&mut s, "update_mask", json!({"clip_id": id, "mask_id": m, "fg": [[0.5, 0.5], ["a", 1], [1, "b"], [], 3], "bg": [[2, "x"]]}));
+        let l = layer(&s, &id, &m); assert_eq!(l["fg"], json!([[0.5, 0.5]])); assert_eq!(l["bg"], json!([]));
+    }
+
+    #[test] fn track_matte_refuses_bad_sources_modes_and_spaces() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0); let other = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "set_track_matte", json!({"clip_id": id, "matte_clip_id": "zz"}), "no such matte clip");
+        refuse(&mut s, "set_track_matte", json!({"clip_id": id, "matte_clip_id": id}), "a clip cannot matte itself");
+        refuse(&mut s, "set_track_matte", json!({"clip_id": id, "matte_clip_id": other, "mode": "weird"}), "bad mode");
+        refuse(&mut s, "set_track_matte", json!({"clip_id": id, "matte_clip_id": other, "luma_space": "log"}), "bad luma_space: linear or display");
+        refuse(&mut s, "set_track_matte", json!({"clip_id": id}), "missing string 'matte_clip_id'");
+        refuse(&mut s, "set_track_matte", json!({"matte_clip_id": other}), "missing string 'clip_id'");
+        refuse(&mut s, "set_track_matte", json!({"clip_id": "zz", "matte_clip_id": other}), "no such clip 'zz'");
+        refuse(&mut s, "remove_track_matte", json!({"clip_id": "zz"}), "no such clip 'zz'");
+        c(&mut s, "set_track_matte", json!({"clip_id": id, "matte_clip_id": other, "mode": "alpha_inverted", "luma_space": "linear"}));
+        assert_eq!(cj(&s, &id)["mask"]["matte"], json!({"source": other, "mode": "inv_alpha", "hide_source": true}), "linear luma space is the default and not stored");
+    }
+    #[test] fn effect_masks_need_a_layer_and_an_effect_of_the_same_clip() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0); let other = shape(&mut s, &t, 0.0, 1.0);
+        let fx = c(&mut s, "add_effect", json!({"clip_id": id, "kind": "blur", "params": {"radius": 2}}))["effect_id"].as_str().unwrap().to_string();
+        let m = mask(&mut s, &id, json!({"kind": "luma", "mode": "none"}));
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": id, "effect_id": fx, "mask_id": "nope"}), "no such mask layer on this clip");
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": id, "effect_id": "nofx", "mask_id": m}), "no such effect");
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": other, "effect_id": fx, "mask_id": m}), "no such mask layer on this clip");
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": id, "mask_id": m}), "missing string 'effect_id'");
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": id, "effect_id": fx}), "missing string 'mask_id'");
+        refuse(&mut s, "set_effect_mask", json!({"clip_id": "zz", "effect_id": fx, "mask_id": m}), "no such clip 'zz'");
+        c(&mut s, "set_effect_mask", json!({"clip_id": id, "effect_id": fx, "mask_id": m}));
+        assert_eq!(cj(&s, &id)["effects"][0]["strings"]["mask_layer"], m.as_str());
+        c(&mut s, "set_effect_mask", json!({"clip_id": id, "effect_id": fx, "mask_id": ""}));
+        assert!(cj(&s, &id)["effects"][0]["strings"].get("mask_layer").is_none());
+    }
+
+    #[test] fn mask_prop_keys_check_ids_eases_and_kind_specific_params() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0); let r = mask(&mut s, &id, json!({"kind": "rect"}));
+        refuse(&mut s, "set_mask_prop_key", json!({"clip_id": id, "mask_id": "nope", "property": "cx", "time": 0, "value": 1}), "no such mask");
+        assert!(err(&mut s, "set_mask_prop_key", json!({"clip_id": id, "mask_id": r, "property": "cx", "time": 0, "value": 1, "ease": "bogus"})).contains("bogus"));
+        refuse(&mut s, "set_mask_prop_key", json!({"clip_id": id, "mask_id": r, "property": "hue_soft", "time": 0, "value": 1}), "mask param 'hue_soft' only applies to kind [\"hsl\"], not 'rect'");
+        for (a, w) in [(json!({"property": "cx", "time": 0, "value": 1}), "missing string 'mask_id'"), (json!({"mask_id": r, "time": 0, "value": 1}), "missing string 'property'"),
+            (json!({"mask_id": r, "property": "cx", "value": 1}), "missing number 'time'"), (json!({"mask_id": r, "property": "cx", "time": 0}), "missing number 'value'")] {
+            let mut a = a; a["clip_id"] = json!(id); refuse(&mut s, "set_mask_prop_key", a, w); }
+        refuse(&mut s, "set_mask_prop_key", json!({"clip_id": "zz", "mask_id": r, "property": "cx", "time": 0, "value": 1}), "no such clip 'zz'");
+        c(&mut s, "set_mask_prop_key", json!({"clip_id": id, "mask_id": r, "property": "w", "time": 0.5, "value": 0.2, "ease": "hold"}));
+        assert_eq!(layer(&s, &id, &r)["props"]["w"]["keys"][0]["v"], 0.2);
+    }
+
+    #[test] fn mask_motion_blur_checks_each_argument_in_order() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let r = mask(&mut s, &id, json!({"kind": "rect"})); let l = mask(&mut s, &id, json!({"kind": "luma"}));
+        for (a, e) in [(json!({"shutter_angle": 800}), "shutter_angle must be 0..720 degrees, got 800"), (json!({"shutter_angle": "x"}), "shutter_angle must be 0..720 degrees, got \"x\""),
+            (json!({"shutter_phase": 400}), "shutter_phase must be -360..360 degrees, got 400"), (json!({"shutter_phase": true}), "shutter_phase must be -360..360 degrees, got true"),
+            (json!({"samples": 3.5}), "samples must be 0 (auto) or an integer 2..256, got 3.5"), (json!({"samples": "a"}), "samples must be 0 (auto) or an integer 2..256, got \"a\""),
+            (json!({"shutter_curve": 5}), "shutter_curve must be box, triangle, gaussian or custom, got 5"), (json!({"curve_points": [[0, 1]]}), "curve_points must be [[s,w],..] with s in 0..1, w >= 0, at least 2 points and one w > 0")] {
+            let mut a = a; a["clip_id"] = json!(id); a["mask_id"] = json!(r); refuse(&mut s, "set_mask_motion_blur", a, e); }
+        refuse(&mut s, "set_mask_motion_blur", json!({"clip_id": id, "mask_id": "nope"}), "no such mask");
+        refuse(&mut s, "set_mask_motion_blur", json!({"clip_id": id, "mask_id": l}), "motion blur needs an animated shape mask (path, rect, ellipse, linear, radial); 'luma' is a selection");
+        refuse(&mut s, "set_mask_motion_blur", json!({"clip_id": id}), "missing string 'mask_id'");
+        refuse(&mut s, "set_mask_motion_blur", json!({"clip_id": "zz", "mask_id": r}), "no such clip 'zz'");
+    }
+    #[test] fn mask_motion_blur_angle_comes_from_the_argument_the_clip_or_the_default() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0); let r = mask(&mut s, &id, json!({"kind": "rect"}));
+        let o = c(&mut s, "set_mask_motion_blur", json!({"clip_id": id, "mask_id": r, "shutter_phase": -90, "samples": 8, "curve_points": [[0, 0], [0.5, 1], [1, 0]]}));
+        assert_eq!(o, json!({"shutter_angle": 180.0, "shutter_phase": -90.0, "samples": 8, "source": "default", "shutter_curve": "custom"}));
+        let lp = layer(&s, &id, &r)["props"].clone(); assert_eq!((lp["shutter"]["base"].as_f64(), lp["shutter_phase"]["base"].as_f64(), lp["shutter_curve"]["base"].as_f64()), (Some(180.0), Some(-90.0), Some(3.0)));
+        assert_eq!(lp["shutter_curve_pts"]["keys"].as_array().unwrap().len(), 3);
+        c(&mut s, "set_motion_blur", json!({"clip_id": id, "shutter_angle": 90}));
+        let o = c(&mut s, "set_mask_motion_blur", json!({"clip_id": id, "mask_id": r, "shutter_curve": "triangle"}));
+        assert_eq!((o["source"].as_str(), o["shutter_angle"].as_f64(), o["shutter_curve"].as_str()), (Some("clip"), Some(90.0), Some("triangle")));
+        assert!(layer(&s, &id, &r)["props"].get("shutter_phase").is_none(), "phase omitted = centred");
+        let o = c(&mut s, "set_mask_motion_blur", json!({"clip_id": id, "mask_id": r, "shutter_angle": 0}));
+        assert_eq!(o, json!({"shutter_angle": 0.0, "shutter_phase": null, "samples": 0, "source": "arg"}));
+        let lp = layer(&s, &id, &r)["props"].clone(); for k in ["shutter", "samples", "shutter_curve", "shutter_curve_pts"] { assert!(lp.get(k).is_none(), "{k} removed when off"); }
+    }
+
+    #[test] fn mask_path_keys_need_a_path_layer_and_matching_point_counts() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let r = mask(&mut s, &id, json!({"kind": "rect"})); let p = mask(&mut s, &id, json!({"kind": "path", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 1}]}));
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0}), "missing points");
+        assert!(err(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0, "points": 3})).starts_with("bad points: "));
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": "nope", "time": 0, "points": []}), "no such mask");
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": r, "time": 0, "points": []}), "not a path mask");
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "time": 0, "points": []}), "missing string 'mask_id'");
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "points": []}), "missing number 'time'");
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": "zz", "mask_id": p, "time": 0, "points": []}), "no such clip 'zz'");
+        let pts = json!([{"x": 0, "y": 0}, {"x": 1, "y": 1}]);
+        assert_eq!(c(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0.5, "points": pts, "hold": true})), json!({"keys": 1}));
+        assert_eq!(c(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0.2, "points": pts})), json!({"keys": 2}));
+        assert_eq!(c(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0.5, "points": pts})), json!({"keys": 2}), "same time replaces");
+        let ks = layer(&s, &id, &p)["path_keys"].clone(); assert_eq!((ks[0]["t"].as_f64(), ks[1]["t"].as_f64(), ks[1]["hold"].as_bool()), (Some(0.2), Some(0.5), Some(false)));
+        refuse(&mut s, "set_mask_path_key", json!({"clip_id": id, "mask_id": p, "time": 0.9, "points": [{"x": 0, "y": 0}]}), "point count 1 != existing keys 2");
+    }
+    #[test] fn roto_and_mask_tracking_need_a_path_layer() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let r = mask(&mut s, &id, json!({"kind": "rect"})); let p = mask(&mut s, &id, json!({"kind": "path"}));
+        refuse(&mut s, "roto_propagate", json!({"clip_id": id, "mask_id": r}), "not a path mask");
+        refuse(&mut s, "roto_propagate", json!({"clip_id": id, "mask_id": "nope"}), "no such mask");
+        refuse(&mut s, "roto_propagate", json!({"clip_id": id}), "missing string 'mask_id'");
+        refuse(&mut s, "roto_propagate", json!({"mask_id": p}), "missing string 'clip_id'");
+        refuse(&mut s, "roto_propagate", json!({"clip_id": "zz", "mask_id": p}), "no such clip 'zz'");
+        assert!(!err(&mut s, "roto_propagate", json!({"clip_id": id, "mask_id": p})).is_empty(), "a path without keys on a shape cannot propagate");
+        refuse(&mut s, "track_mask", json!({"clip_id": id, "mask_id": "nope"}), "no such mask 'nope'");
+        refuse(&mut s, "track_mask", json!({"clip_id": id, "mask_id": r}), &format!("track_mask needs a path mask; '{r}' is rect"));
+        refuse(&mut s, "track_mask", json!({"clip_id": id, "mask_id": p, "motion": "warp"}), "unknown motion 'warp' (valid: *");
+        refuse(&mut s, "track_mask", json!({"clip_id": id}), "missing string 'mask_id'");
+        refuse(&mut s, "track_mask", json!({"mask_id": p}), "missing string 'clip_id'");
+        refuse(&mut s, "track_mask", json!({"clip_id": "zz", "mask_id": p}), "no such clip 'zz'");
+    }
+    #[test] fn render_mask_names_missing_arguments() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "render_mask", json!({"clip_id": id, "time": 0.5}), "missing string 'path'");
+        refuse(&mut s, "render_mask", json!({"time": 0.5, "path": "/tmp/kimo_never_m.png"}), "missing string 'clip_id'");
+        refuse(&mut s, "render_mask", json!({"clip_id": id, "path": "/tmp/kimo_never_m.png"}), "missing number 'time'");
+    }
+
+    #[test] fn set_motion_path_refusals_leave_the_clip_unchanged() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 2.0);
+        refuse(&mut s, "set_motion_path", json!({"clip_id": id}), "give points or shape");
+        refuse(&mut s, "set_motion_path", json!({"clip_id": id, "shape": "blob"}), "bad shape");
+        refuse(&mut s, "set_motion_path", json!({"clip_id": id, "points": [[0.5, 0.5]]}), "need at least 2 points");
+        refuse(&mut s, "set_motion_path", json!({"clip_id": id, "points": [{"x": 0.5, "y": 0.5}]}), "need at least 2 points");
+        assert!(err(&mut s, "set_motion_path", json!({"clip_id": id, "points": [{"x": "a"}]})).starts_with("bad points: "));
+        refuse(&mut s, "set_motion_path", json!({"clip_id": "zz", "shape": "circle"}), "no such clip 'zz'");
+        refuse(&mut s, "remove_motion_path", json!({"clip_id": "zz"}), "no such clip 'zz'");
+        // regression: the new path used to be stored before the bad ease was refused
+        assert!(err(&mut s, "set_motion_path", json!({"clip_id": id, "shape": "wave", "animate": {"ease": "nah"}})).contains("nah"));
+        assert!(cj(&s, &id)["motion_path"].is_null());
+    }
+
+    #[test] fn flow_blur_checks_mode_phase_and_curve_before_the_clip() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "set_flow_blur", json!({"clip_id": id}), "missing number 'amount'");
+        for (a, e) in [(json!({"mode": "blend"}), "mode must be smear or vector, got blend"), (json!({"mode": 3}), "mode must be smear or vector, got 3"),
+            (json!({"mode": "vector", "shutter_phase": 500}), "shutter_phase must be -360..360 degrees, got 500"), (json!({"mode": "vector", "shutter_phase": "x"}), "shutter_phase must be -360..360 degrees, got \"x\""),
+            (json!({"shutter_phase": 10}), "shutter_phase, shutter_curve and curve_points need mode vector"), (json!({"mode": "smear", "shutter_curve": "gaussian"}), "shutter_phase, shutter_curve and curve_points need mode vector"),
+            (json!({"mode": "vector", "curve_points": [[0, 1], [1, 1]]}), "flow blur needs a media clip"), (json!({"mode": "vector", "shutter_curve": "nope"}), "shutter_curve must be box, triangle, gaussian or custom, got nope"),
+            (json!({"mode": "vector", "shutter_curve": 7}), "shutter_curve must be box, triangle, gaussian or custom, got 7"),
+            (json!({"mode": "vector", "curve_points": [[0, 1]]}), "curve_points must be [[s,w],..] with s in 0..1, w >= 0, at least 2 points and one w > 0")] {
+            let mut a = a; a["clip_id"] = json!(id); a["amount"] = json!(0.5); refuse(&mut s, "set_flow_blur", a, e); }
+        refuse(&mut s, "set_flow_blur", json!({"clip_id": "zz", "amount": 0.5}), "no such clip 'zz'");
+    }
+    #[test] fn render_flow_refuses_bad_stats_and_non_footage() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let p = tmp("flow.png"); let ps = p.to_str().unwrap();
+        assert!(!err(&mut s, "render_flow", json!({"clip_id": id, "time": 0.1, "path": ps, "stats": "yes"})).is_empty());
+        refuse(&mut s, "render_flow", json!({"clip_id": id, "time": 0.1}), "missing string 'path'");
+        refuse(&mut s, "render_flow", json!({"time": 0.1, "path": ps}), "missing string 'clip_id'");
+        assert!(!err(&mut s, "render_flow", json!({"clip_id": id, "time": 0.1, "path": ps})).is_empty(), "a shape has no footage for flow");
+        assert!(!p.exists());
+    }
+
+    #[test] fn pin_layer_refuses_missing_and_short_quads() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "pin_layer", json!({"clip_id": id}), "quad needed");
+        refuse(&mut s, "pin_layer", json!({"clip_id": id, "quad": [1, 2, 3]}), "quad needs 8 numbers");
+        refuse(&mut s, "pin_layer", json!({"clip_id": id, "keys": [{"quad": []}]}), "key needs time");
+        refuse(&mut s, "pin_layer", json!({"clip_id": id, "keys": [{"time": 0}]}), "key needs quad");
+        refuse(&mut s, "pin_layer", json!({"clip_id": id, "keys": [{"time": 0, "quad": [1]}]}), "quad needs 8 numbers");
+        refuse(&mut s, "pin_layer", json!({"clip_id": "zz", "quad": []}), "no such clip 'zz'");
+    }
+    #[test] fn track_planar_names_missing_corners_and_clips() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "track_planar", json!({"corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "missing string 'clip_id'");
+        refuse(&mut s, "track_planar", json!({"clip_id": id}), "corners needed");
+        refuse(&mut s, "track_planar", json!({"clip_id": id, "corners": [0, 0]}), "corners needs 8 numbers");
+        refuse(&mut s, "track_planar", json!({"clip_id": "zz", "corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "no such clip 'zz'");
+    }
+
+    #[test] fn graph_editor_reads_and_edits_effect_params_and_names_missing_keys() {
+        let (mut s, t) = session(); let a = shape(&mut s, &t, 0.0, 2.0); let b = shape(&mut s, &t, 0.0, 2.0);
+        for (tt, v) in [(0.0, 0.0), (1.0, 10.0)] { c(&mut s, "set_keyframe", json!({"clip_id": a, "property": "x", "time": tt, "value": v, "ease": "linear"})); }
+        let fx = c(&mut s, "add_effect", json!({"clip_id": a, "kind": "blur", "params": {"radius": 2}}))["effect_id"].as_str().unwrap().to_string();
+        c(&mut s, "set_keyframe", json!({"clip_id": a, "effect_id": fx, "property": "radius", "time": 0.5, "value": 6}));
+        refuse(&mut s, "get_curve", json!({"clip_id": "zz", "property": "x"}), "no such clip 'zz'");
+        refuse(&mut s, "get_curve", json!({"clip_id": a, "property": "x", "effect_id": "nofx"}), "no such effect");
+        refuse(&mut s, "get_curve", json!({"clip_id": a, "property": "nope", "effect_id": fx}), "no such property");
+        refuse(&mut s, "get_curve", json!({"property": "x"}), "missing string 'clip_id'");
+        refuse(&mut s, "get_curve", json!({"clip_id": a}), "missing string 'property'");
+        // linear 0 -> 10 over 1 s: samples at 0, 0.5, 1 and a speed of 10 units/s
+        let r = c(&mut s, "get_curve", json!({"clip_id": a, "property": "x", "samples": 3}));
+        assert_eq!(r["t"], json!([0.0, 0.5, 1.0])); assert_eq!(r["value"], json!([0.0, 5.0, 10.0])); close(r["speed"][1].as_f64().unwrap(), 10.0, 1e-6, "speed units/s");
+        assert_eq!(c(&mut s, "get_curve", json!({"clip_id": b, "property": "x", "samples": 2}))["t"], json!([0.0, 2.0]), "no keys: samples span the clip");
+        assert_eq!(c(&mut s, "get_curve", json!({"clip_id": a, "property": "radius", "effect_id": fx}))["keys"][0]["value"], 6.0);
+        // the nearest key within half a frame (0.05 s)
+        refuse(&mut s, "move_key", json!({"clip_id": a, "property": "radius", "effect_id": fx, "time": 0.6}), "no key at that time");
+        refuse(&mut s, "move_key", json!({"clip_id": a, "property": "radius", "effect_id": "nofx", "time": 0.5}), "no such effect");
+        refuse(&mut s, "move_key", json!({"clip_id": a, "property": "nope", "time": 0.5}), "no such property");
+        refuse(&mut s, "move_key", json!({"clip_id": a, "property": "nope", "effect_id": fx, "time": 0.5}), "no such property");
+        refuse(&mut s, "move_key", json!({"clip_id": a, "property": "x"}), "missing number 'time'");
+        refuse(&mut s, "move_key", json!({"clip_id": "zz", "property": "x", "time": 0.5}), "no such clip 'zz'");
+        refuse(&mut s, "move_key", json!({"clip_id": a, "time": 0.5}), "missing string 'property'");
+        assert_eq!(c(&mut s, "move_key", json!({"clip_id": a, "property": "radius", "effect_id": fx, "time": 0.52, "new_value": 3})), json!({"ok": true, "keys": 1}));
+        assert_eq!(cj(&s, &a)["effects"][0]["params"]["radius"]["keys"][0]["v"], 3.0);
+        refuse(&mut s, "remove_key", json!({"clip_id": a, "property": "radius", "effect_id": fx, "time": 0.9}), "no key at that time");
+        refuse(&mut s, "remove_key", json!({"clip_id": a, "property": "nope", "time": 0.9}), "no such property");
+        refuse(&mut s, "remove_key", json!({"clip_id": a, "property": "x"}), "missing number 'time'");
+        refuse(&mut s, "remove_key", json!({"clip_id": "zz", "property": "x", "time": 0.5}), "no such clip 'zz'");
+        refuse(&mut s, "remove_key", json!({"clip_id": a, "time": 0.5}), "missing string 'property'");
+        assert_eq!(c(&mut s, "remove_key", json!({"clip_id": a, "property": "radius", "effect_id": fx, "time": 0.5})), json!({"ok": true, "keys": 0}));
+    }
+    #[test] fn copy_and_simplify_curve_name_their_missing_sources() {
+        let (mut s, t) = session(); let a = shape(&mut s, &t, 0.0, 2.0); let b = shape(&mut s, &t, 0.0, 2.0);
+        c(&mut s, "set_keyframe", json!({"clip_id": a, "property": "x", "time": 0, "value": 0}));
+        for (args, e) in [(json!({"from_clip": "zz"}), "no source clip"), (json!({"from_property": "nope"}), "no source property"), (json!({"to_clip": "zz"}), "no destination clip")] {
+            let mut x = json!({"from_clip": a, "from_property": "x", "to_clip": b, "to_property": "y"}); for (k, v) in args.as_object().unwrap() { x[k] = v.clone(); } refuse(&mut s, "copy_curve", x, e); }
+        for k in ["from_clip", "from_property", "to_clip", "to_property"] {
+            let mut x = json!({"from_clip": a, "from_property": "x", "to_clip": b, "to_property": "y"}); x.as_object_mut().unwrap().remove(k); refuse(&mut s, "copy_curve", x, &format!("missing string '{k}'")); }
+        refuse(&mut s, "simplify_curve", json!({"clip_id": a, "property": "nope"}), "no such property");
+        refuse(&mut s, "simplify_curve", json!({"clip_id": "zz", "property": "x"}), "no such clip 'zz'");
+        refuse(&mut s, "simplify_curve", json!({"clip_id": a}), "missing string 'property'");
+    }
 }

@@ -15,8 +15,11 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
             let (p, cl): (Vec<(f64, f64)>, bool) = if let Some(sh) = a.get("shape").and_then(|v| v.as_str()) { crate::motion::preset(sh, opt_num(a, "cx", 0.5), opt_num(a, "cy", 0.5), opt_num(a, "rx", 0.3), opt_num(a, "ry", 0.25)).ok_or("bad shape")? } else if let Some(v) = a.get("points") { (pt_arr(v).into_iter().map(|q| (q[0], q[1])).collect(), false) } else { return Err("give shape or points".into()) };
             if p.len() < 2 { return Err("need at least 2 points".into()); } let pts = crate::motion::smooth_points(&p, cl, 1.0);
             let mp = crate::motion::MotionPath { points: pts, closed: cl, auto_orient: false, orient_offset: 0.0, constant_speed: true, orient_smooth: 0.0 };
-            let c = clip(&mut ss.project, a)?; let dur = c.duration; let fx = c.text_fx.get_or_insert_with(TextFx::default); fx.path = Some(mp); fx.path_start = Prop::new(opt_num(a, "start", 0.0)); fx.path_flip = a.get("flip").and_then(|v| v.as_bool()).unwrap_or(false);
-            if let Some(an) = a.get("animate") { let g = |k: &str, d: f64| an.get(k).and_then(|v| v.as_f64()).unwrap_or(d); let e: Ease = serde_json::from_value(an.get("ease").cloned().unwrap_or(json!("in_out"))).map_err(|e| e.to_string())?; fx.path_start.set_key(g("start", 0.0), g("from", 0.0), e.clone()); fx.path_start.set_key(g("end", dur), g("to", 1.0), e); }
+            let c = clip(&mut ss.project, a)?; let dur = c.duration;
+            // the ease is read before the clip changes, so a bad one is refused with the clip untouched
+            let anim = match a.get("animate") { Some(an) => Some((an, serde_json::from_value::<Ease>(an.get("ease").cloned().unwrap_or(json!("in_out"))).map_err(|e| e.to_string())?)), None => None };
+            let fx = c.text_fx.get_or_insert_with(TextFx::default); fx.path = Some(mp); fx.path_start = Prop::new(opt_num(a, "start", 0.0)); fx.path_flip = a.get("flip").and_then(|v| v.as_bool()).unwrap_or(false);
+            if let Some((an, e)) = anim { let g = |k: &str, d: f64| an.get(k).and_then(|v| v.as_f64()).unwrap_or(d); fx.path_start.set_key(g("start", 0.0), g("from", 0.0), e.clone()); fx.path_start.set_key(g("end", dur), g("to", 1.0), e); }
             Ok(json!({"ok":true})) } },
     Command { name: "track_beats", description: "Estimate BPM and beat times from an audio or video asset. Beat tracker: estimates BPM and beat times (seconds, in the asset's own timeline plus `t0`) from an audio/video asset by onset-envelope autocorrelation with phase lock. Use the result with bind_beats (the older detect_beats takes a file path and returns cut points) to drive motion. Range limits via min_bpm/max_bpm (default 70-180). Tier: good on clear percussive music, unreliable on ambient or rubato audio; check with the returned beat list against what you hear.", mutates: false,
         schema: obj(vec![("asset_id", s("imported asset")), ("t0", n("start seconds, default 0")), ("duration", n("seconds to analyse, default 30")), ("min_bpm", n("")), ("max_bpm", n(""))], &["asset_id"]),
@@ -33,8 +36,10 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
     Command { name: "set_mesh_pin", description: "Pin a layer onto a deforming mesh of quads, for curved or waving surfaces such as cloth and flags. Pin a layer onto a deforming mesh (curved/waving surfaces, cloth, flags): the layer canvas is cut into (nx-1)*(ny-1) cells, each perspective-pinned to its own quad. `keys` = [{time (clip-local s), verts: [x0,y0,x1,y1,...] row-major nx*ny, px}]. Interpolates linearly between keys; supports motion_blur. track_mesh writes the same data.", mutates: true,
         schema: obj(vec![("clip_id", s("layer")), ("nx", n("vertex columns >= 2")), ("ny", n("vertex rows >= 2")), ("keys", json!({"type":"array","items":{"type":"object"}}))], &["clip_id","nx","ny","keys"]),
         run: |ss, a| { let (nx, ny) = (num_arg(a, "nx")? as usize, num_arg(a, "ny")? as usize); if nx < 2 || ny < 2 { return Err("nx, ny >= 2".into()); } let ks = a.get("keys").and_then(|v| v.as_array()).ok_or("keys needed")?; let c = clip(&mut ss.project, a)?;
+            // every key is checked before the clip changes, so a bad key is refused with the clip untouched
+            let parsed: Vec<(f64, Vec<f64>)> = ks.iter().map(|kk| { let t = kk.get("time").and_then(|v| v.as_f64()).ok_or("key needs time")?; let v: Vec<f64> = kk.get("verts").and_then(|v| v.as_array()).ok_or("key needs verts")?.iter().filter_map(|v| v.as_f64()).collect(); if v.len() != nx * ny * 2 { return Err(format!("verts needs {} numbers", nx * ny * 2)); } Ok((t, v)) }).collect::<Result<_, String>>()?;
             c.props.insert("pin_on".into(), Prop::new(1.0)); c.props.insert("mesh_nx".into(), Prop::new(nx as f64)); c.props.insert("mesh_ny".into(), Prop::new(ny as f64));
-            for kk in ks { let t = kk.get("time").and_then(|v| v.as_f64()).ok_or("key needs time")?; let v: Vec<f64> = kk.get("verts").and_then(|v| v.as_array()).ok_or("key needs verts")?.iter().filter_map(|v| v.as_f64()).collect(); if v.len() != nx * ny * 2 { return Err(format!("verts needs {} numbers", nx * ny * 2)); }
+            for (t, v) in parsed {
                 for k in 0..nx * ny { for (ax, nm) in [(0usize, "mx"), (1, "my")] { let pr = c.props.entry(format!("{nm}{k}")).or_insert_with(|| Prop::new(v[k * 2 + ax])); pr.set_key(t, v[k * 2 + ax], Ease::Linear); } } } Ok(json!({"ok":true})) } },
     Command { name: "track_mesh", description: "Mesh tracker for curved or deforming surfaces: a global homography refined at every grid vertex. Mesh tracker for curved or deforming surfaces: tracks the quad's global homography, then refines every vertex of an nx*ny grid against the frame-0 patch (warped by the local Jacobian, photometric-normalised, neighbour-regularised) and pins target_clip_id onto the mesh. Optional verts0 = normalised x,y of every grid vertex in the first frame (when the surface is already curved there). Heavier than track_planar (about 20-40x per vertex). Tier: handles smooth deformation up to about 12 px of vertex offset from the global plane per frame; no topology change, no occlusion handling per vertex yet.", mutates: true,
         schema: obj(vec![("clip_id", s("media clip")), ("corners", json!({"type":"array","items":{"type":"number"}})), ("nx", n("default 7")), ("ny", n("default 5")), ("target_clip_id", s("layer to pin")), ("start", n("")), ("end", n("")), ("return_verts", json!({"type":"boolean"})), ("verts0", json!({"type":"array","items":{"type":"number"}}))], &["clip_id","corners"]),
@@ -148,7 +153,7 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
             Ok(out) } },
     Command { name: "kimo_info", description: "Build identity of this server: semver version, git commit, project schema version, enabled features and backend versions (ffmpeg, ffprobe). The same identity is recorded in saved projects (the \"kimo\" block) and in export reports.", mutates: false,
         schema: obj(vec![], &[]),
-        run: |ss, _a| {let mut v=crate::buildinfo::info();v["limits"]=serde_json::to_value(ss.resource_limits).map_err(|e|e.to_string())?;Ok(v)} },
+        run: |ss, _a| {let mut v=crate::buildinfo::info();v["limits"]=serde_json::to_value(ss.resource_limits).unwrap_or(Value::Null);Ok(v)} },
     Command { name: "cache_stats", description: "Frame cache statistics: entries, bytes, cap, hits, misses, evictions, hit_rate. The cache holds recently rendered frames for scrubbing and repeated render_frame / get_scopes; it is never used by export.", mutates: false,
         schema: obj(vec![], &[]),
         run: |ss, _a| { let f = &ss.fcache; let tot = f.hits + f.misses; Ok(json!({"entries": f.len(), "bytes": f.bytes(), "cap_bytes": f.cap, "hits": f.hits, "misses": f.misses, "evictions": f.evictions, "hit_rate": if tot == 0 { 0.0 } else { f.hits as f64 / tot as f64 }})) } },
@@ -198,7 +203,7 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
             let compare = a.get("compare_cpu").and_then(|v| v.as_bool()).unwrap_or(true);
             let software_only = a.get("software_only").and_then(|v| v.as_bool()).unwrap_or(false);
             let t0 = std::time::Instant::now();
-            let (out, status) = match crate::gpu2d::gpu_gaussian_blur(&frame, sigma, software_only) { Ok((f, s)) => (f, s), Err(e) => (crate::gpu2d::cpu_gaussian_blur(&frame, sigma), crate::gpu2d::Gpu2dStatus { backend: "cpu".into(), fallback_reason: Some(e) }) };
+            let (out, status) = crate::gpu2d::gpu_gaussian_blur(&frame, sigma, software_only).unwrap_or_else(|e| (crate::gpu2d::cpu_gaussian_blur(&frame, sigma), crate::gpu2d::Gpu2dStatus { backend: "cpu".into(), fallback_reason: Some(e) }));
             let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let mut res = json!({"path": path, "backend": status.backend, "fallback_reason": status.fallback_reason, "elapsed_ms": elapsed_ms});
             if compare { let cpu = crate::gpu2d::cpu_gaussian_blur(&frame, sigma); let max_abs_diff = out.d.iter().zip(cpu.d.iter()).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max); res["max_abs_diff_vs_cpu"] = json!(max_abs_diff); }
@@ -213,10 +218,272 @@ pub(super) fn tools(eff_kinds: &[&str]) -> Vec<Command> {
             let compare = a.get("compare_cpu").and_then(|v| v.as_bool()).unwrap_or(true);
             let software_only = a.get("software_only").and_then(|v| v.as_bool()).unwrap_or(false);
             let t0 = std::time::Instant::now();
-            let (out, status) = match crate::gpu2d::gpu_color_matrix(&frame, &m, software_only) { Ok((f, s)) => (f, s), Err(e) => (crate::gpu2d::cpu_color_matrix(&frame, &m), crate::gpu2d::Gpu2dStatus { backend: "cpu".into(), fallback_reason: Some(e) }) };
+            let (out, status) = crate::gpu2d::gpu_color_matrix(&frame, &m, software_only).unwrap_or_else(|e| (crate::gpu2d::cpu_color_matrix(&frame, &m), crate::gpu2d::Gpu2dStatus { backend: "cpu".into(), fallback_reason: Some(e) }));
             let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let mut res = json!({"path": path, "backend": status.backend, "fallback_reason": status.fallback_reason, "elapsed_ms": elapsed_ms});
             if compare { let cpu = crate::gpu2d::cpu_color_matrix(&frame, &m); let max_abs_diff = out.d.iter().zip(cpu.d.iter()).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max); res["max_abs_diff_vs_cpu"] = json!(max_abs_diff); }
             render::write_image(&out, path)?; Ok(res) } },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_util::*;
+
+    #[test] fn smooth_curve_names_a_missing_property_or_clip() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "smooth_curve", json!({"clip_id": id, "property": "nope"}), "no such property");
+        refuse(&mut s, "smooth_curve", json!({"clip_id": "zz", "property": "x"}), "no such clip 'zz'");
+        refuse(&mut s, "smooth_curve", json!({"clip_id": id}), "missing string 'property'");
+    }
+
+    #[test] fn set_text_path_refusals_leave_the_clip_unchanged() {
+        let (mut s, t) = session(); let id = text(&mut s, &t);
+        refuse(&mut s, "set_text_path", json!({"clip_id": id, "shape": "blob"}), "bad shape");
+        refuse(&mut s, "set_text_path", json!({"clip_id": id}), "give shape or points");
+        refuse(&mut s, "set_text_path", json!({"clip_id": id, "points": [[0.5, 0.5]]}), "need at least 2 points");
+        refuse(&mut s, "set_text_path", json!({"clip_id": "zz", "remove": true}), "no such clip 'zz'");
+        refuse(&mut s, "set_text_path", json!({"clip_id": "zz", "shape": "circle"}), "no such clip 'zz'");
+        // regression: the new path used to be stored before the bad ease was refused
+        assert!(err(&mut s, "set_text_path", json!({"clip_id": id, "shape": "circle", "animate": {"ease": "wobbly"}})).contains("wobbly"));
+        assert!(cj(&s, &id)["text_fx"].is_null());
+    }
+
+    fn beat_session(curve: &str, extra: Value) -> (Session, String, Value) {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        let mut a = json!({"clip_id": id, "property": "rotation", "bpm": 120, "amount": 10, "decay": 0.2, "curve": curve}); for (k, v) in extra.as_object().unwrap() { a[k] = v.clone(); }
+        let r = c(&mut s, "bind_beats", a); (s, id, r)
+    }
+    #[test] fn bind_beats_flash_drops_linearly_over_the_decay_on_every_beat() {
+        // 120 bpm on a 1 s clip: beats at 0 and 0.5; flash = amount * (1 - dt/decay), one key per 0.1 s frame
+        let (s, id, r) = beat_session("flash", json!({}));
+        assert_eq!((r["beats"].as_u64(), r["keys"].as_u64()), (Some(2), Some(11)), "{r}");
+        let want = [10.0, 5.0, 0.0, 0.0, 0.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0];
+        let k = keys(&s, &id, "rotation"); assert_eq!(k.len(), 11);
+        for (i, (k, w)) in k.iter().zip(want).enumerate() { close(k.0, i as f64 * 0.1, 1e-9, "key time"); close(k.1, w, 1e-9, &format!("flash key {i}")); }
+    }
+    #[test] fn bind_beats_swing_alternates_sign_and_kick_attacks_from_zero() {
+        // swing: beat 1 pulls the other way, plus beat 0's tail 10 e^(-3 * min(0.5/0.2, 6)) = 10 e^-7.5
+        let (s, id, _) = beat_session("swing", json!({}));
+        let k = keys(&s, &id, "rotation"); close(k[0].1, 10.0, 1e-9, "swing beat 0"); close(k[5].1, 10.0 * (-7.5f64).exp() - 10.0, 1e-9, "swing beat 1");
+        // kick: zero at the beat, full attack after 15% of decay, then 1.4 e^(-2.5 dt/decay): at 0.1 s = 14 e^-1.25
+        let (s, id, _) = beat_session("kick", json!({}));
+        let k = keys(&s, &id, "rotation"); close(k[0].1, 0.0, 1e-12, "kick starts at 0"); close(k[1].1, 10.0 * 1.4 * (-1.25f64).exp(), 1e-9, "kick at 0.1 s");
+    }
+    #[test] fn bind_beats_skips_beats_before_the_clip_and_defaults_the_decay() {
+        // offset -0.25: beats at 0.25 and 0.75; 0.3 s is 0.05 s after the first
+        let (s, id, r) = beat_session("flash", json!({"offset": -0.25}));
+        assert_eq!(r["beats"], 2); close(keys(&s, &id, "rotation")[3].1, 10.0 * (1.0 - 0.05 / 0.2), 1e-9, "0.05 s after the 0.25 s beat");
+        // one explicit beat: the period falls back to 0.5 s, decay = 0.25 * 0.5 = 0.125 s
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        c(&mut s, "bind_beats", json!({"clip_id": id, "property": "rotation", "beats": [0.3], "amount": 1, "curve": "flash"}));
+        let k = keys(&s, &id, "rotation"); close(k[3].1, 1.0, 1e-9, "the beat"); close(k[4].1, 1.0 - 0.1 / 0.125, 1e-9, "0.1 s later");
+    }
+    #[test] fn bind_beats_names_missing_arguments() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "bind_beats", json!({"clip_id": "zz", "property": "x", "bpm": 60}), "no such clip 'zz'");
+        refuse(&mut s, "bind_beats", json!({"clip_id": id, "bpm": 60}), "missing string 'property'");
+        refuse(&mut s, "bind_beats", json!({"clip_id": id, "property": "x"}), "missing number 'bpm'");
+    }
+
+    #[test] fn set_mesh_pin_refusals_leave_the_clip_unchanged() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 1, "ny": 2, "keys": []}), "nx, ny >= 2");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 2, "ny": 2}), "keys needed");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": "zz", "nx": 2, "ny": 2, "keys": []}), "no such clip 'zz'");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "ny": 2, "keys": []}), "missing number 'nx'");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 2, "keys": []}), "missing number 'ny'");
+        // regression: pin_on / mesh_nx / mesh_ny used to be written before a bad key was refused
+        let v8 = [0, 0, 64, 0, 0, 32, 64, 32];
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 2, "ny": 2, "keys": [{"verts": v8}]}), "key needs time");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 2, "ny": 2, "keys": [{"time": 0}]}), "key needs verts");
+        refuse(&mut s, "set_mesh_pin", json!({"clip_id": id, "nx": 2, "ny": 2, "keys": [{"time": 0, "verts": v8}, {"time": 1, "verts": [1, 2]}]}), "verts needs 8 numbers");
+        assert!(s.project.find_clip(&id).unwrap().props.get("pin_on").is_none());
+    }
+
+    #[test] fn simulate_physics_names_bad_bodies() {
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "simulate_physics", json!({}), "bodies needed");
+        refuse(&mut s, "simulate_physics", json!({"bodies": [{}]}), "body needs clip_id");
+        refuse(&mut s, "simulate_physics", json!({"bodies": [{"clip_id": "zz"}]}), "no such clip");
+    }
+
+    #[test] fn apply_motion_preset_refuses_unknown_names_and_prompts() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 2.0);
+        refuse(&mut s, "apply_motion_preset", json!({"clip_id": id}), "give preset or prompt");
+        refuse(&mut s, "apply_motion_preset", json!({"clip_id": id, "preset": "zzz"}), "unknown preset zzz; available: pop_in, bounce_in,*");
+        refuse(&mut s, "apply_motion_preset", json!({"clip_id": id, "prompt": "do nothing special"}), "no preset matched that prompt; available: pop_in*");
+        refuse(&mut s, "apply_motion_preset", json!({"clip_id": "zz", "preset": "fade_in"}), "no such clip 'zz'");
+        refuse(&mut s, "apply_motion_preset", json!({"preset": "fade_in"}), "missing string 'clip_id'");
+    }
+    #[test] fn motion_preset_on_a_clip_without_transform_props_starts_from_defaults() {
+        let mut s = load(json!({"name": "t", "markers": [], "assets": {}, "width": 64, "height": 32, "fps": 10, "tracks": [{"id": "track1", "clips": [{"id": "clip9", "source": {"type": "solid", "color": [1, 0, 0]}, "start": 0, "duration": 1, "in_point": 0, "speed": 1, "effects": [], "blend": "normal", "props": {}}]}]}));
+        c(&mut s, "apply_motion_preset", json!({"clip_id": "clip9", "preset": "fade_out", "duration": 0.2}));
+        let cl = s.project.find_clip("clip9").unwrap();
+        for (k, base) in [("x", 0.0), ("y", 0.0), ("scale", 1.0), ("rotation", 0.0), ("opacity", 1.0)] { assert_eq!(cl.props[k].base, base, "{k} default"); }
+        assert_eq!(keys(&s, "clip9", "opacity"), vec![(0.0, 1.0), (0.1, 0.5), (0.2, 0.0)]);
+    }
+
+    #[test] fn shards_project_without_a_burst_reports_no_shards() {
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "shards_project", json!({}), "missing number 'time'");
+        assert_eq!(c(&mut s, "shards_project", json!({"time": 0.5, "min_alpha": 0.5})), json!({"count": 0, "shards": []}));
+    }
+
+    #[test] fn gpu_frame_tools_check_their_arguments_before_rendering() {
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 1.0);
+        let still = "/tmp/x.txt: this writes a still image, so the path must end in .png (or .jpg). Nothing was written. To look at a video file (an export or a source clip) use review_export {path}";
+        refuse(&mut s, "gpu_gaussian_blur_frame", json!({"path": "/tmp/x.png"}), "missing number 'time'");
+        refuse(&mut s, "gpu_gaussian_blur_frame", json!({"time": 0.5}), "missing string 'path'");
+        refuse(&mut s, "gpu_gaussian_blur_frame", json!({"time": 0.5, "path": "/tmp/x.txt"}), still);
+        refuse(&mut s, "gpu_color_matrix_frame", json!({"time": 0.5, "path": "/tmp/x.png"}), "matrix needed: 20 numbers");
+        refuse(&mut s, "gpu_color_matrix_frame", json!({"time": 0.5, "path": "/tmp/x.png", "matrix": [1, 0]}), "matrix needs exactly 20 numbers (4 rows of r,g,b,a,offset), got 2");
+        refuse(&mut s, "gpu_color_matrix_frame", json!({"time": 0.5, "matrix": [1, 0]}), "missing string 'path'");
+        refuse(&mut s, "gpu_color_matrix_frame", json!({"path": "/tmp/x.png", "matrix": [1, 0]}), "missing number 'time'");
+        refuse(&mut s, "gpu_color_matrix_frame", json!({"time": 0.5, "path": "/tmp/x.txt", "matrix": vec![0; 20]}), still);
+    }
+    #[test] fn gpu_frame_tools_report_an_unwritable_output() {
+        // the frame renders but cannot be written: the output folder does not exist
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 1.0);
+        let bad = tmp("missing_dir").join("x.png"); let bs = bad.to_str().unwrap();
+        assert!(dispatch(&mut s, "gpu_gaussian_blur_frame", &json!({"time": 0.5, "path": bs, "compare_cpu": false})).is_err());
+        assert!(dispatch(&mut s, "gpu_color_matrix_frame", &json!({"time": 0.5, "path": bs, "matrix": vec![0.0; 20], "compare_cpu": false})).is_err());
+        assert!(!bad.exists());
+    }
+
+    #[test] fn export_tools_name_missing_arguments() {
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 0.2);
+        refuse(&mut s, "export", json!({}), "missing string 'path'");
+        refuse(&mut s, "join_export", json!({"path": "/tmp/j.mp4"}), "missing array 'parts'");
+        refuse(&mut s, "join_export", json!({"path": "/tmp/j.mp4", "parts": [1]}), "parts must be strings");
+        refuse(&mut s, "join_export", json!({"parts": ["/tmp/a.mp4"]}), "missing string 'path'");
+        refuse(&mut s, "export_alpha", json!({"path": "/tmp/x.mov"}), "missing string 'format'");
+        refuse(&mut s, "export_alpha", json!({"format": "png"}), "missing string 'path'");
+    }
+    #[test] fn exports_into_a_missing_folder_fail_in_every_variant() {
+        let (mut s, t) = session(); shape(&mut s, &t, 0.0, 0.2);
+        let dir = tmp("no_such_dir"); let bad = dir.join("out.mp4"); let b = bad.to_str().unwrap();
+        for a in [json!({"path": b}), json!({"path": b, "audio": false}), json!({"path": b, "start": 0.1}), json!({"path": b, "low_memory": true})] { assert!(dispatch(&mut s, "export", &a).is_err(), "{a}"); }
+        assert!(dispatch(&mut s, "join_export", &json!({"path": b, "parts": [dir.join("a.mp4").to_str().unwrap()]})).is_err());
+        assert!(dispatch(&mut s, "export_alpha", &json!({"path": b, "format": "gif"})).is_err());
+        assert!(!dir.exists(), "nothing was created");
+    }
+
+    #[test] fn track_beats_motion_and_mesh_tools_name_missing_arguments() {
+        let (mut s, t) = session(); let id = shape(&mut s, &t, 0.0, 1.0);
+        refuse(&mut s, "track_beats", json!({}), "missing string 'asset_id'");
+        refuse(&mut s, "track_beats", json!({"asset_id": "zz"}), "no such asset");
+        refuse(&mut s, "motion_extract", json!({}), "missing string 'clip_id'");
+        refuse(&mut s, "motion_extract", json!({"clip_id": "zz"}), "no such clip 'zz'");
+        refuse(&mut s, "motion_diff", json!({"clip_b": id}), "missing string 'clip_a'");
+        refuse(&mut s, "motion_diff", json!({"clip_a": id}), "missing string 'clip_b'");
+        refuse(&mut s, "motion_diff", json!({"clip_a": "zz", "clip_b": id}), "no clip_a");
+        refuse(&mut s, "track_mesh", json!({"corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "missing string 'clip_id'");
+        refuse(&mut s, "track_mesh", json!({"clip_id": id}), "corners needed");
+        refuse(&mut s, "track_mesh", json!({"clip_id": id, "corners": [1]}), "corners needs 8 numbers");
+        refuse(&mut s, "track_mesh", json!({"clip_id": "zz", "corners": [0, 0, 1, 0, 1, 1, 0, 1]}), "no such clip 'zz'");
+    }
+
+    #[test] fn undo_and_redo_move_whole_steps_and_refuse_when_empty() {
+        let mut s = Session::new();
+        refuse(&mut s, "undo", json!({}), "nothing to undo"); refuse(&mut s, "redo", json!({}), "nothing to redo");
+        c(&mut s, "add_track", json!({})); c(&mut s, "add_track", json!({}));
+        assert_eq!(c(&mut s, "undo", json!({"steps": 5})), json!({"ok": true, "undone": 2, "undo_left": 0, "redo_available": 2}));
+        assert!(s.project.tracks.is_empty());
+        assert_eq!(c(&mut s, "redo", json!({"steps": 9})), json!({"ok": true, "redone": 2, "undo_left": 2, "redo_available": 0}));
+        assert_eq!(s.project.tracks.len(), 2);
+        let h = c(&mut s, "history_list", json!({})); assert_eq!(h["undo"].as_array().unwrap().len(), 2); assert_eq!(h["next_undo"], "add_track");
+    }
+
+    #[test] fn checkpoints_are_named_capped_and_restorable() {
+        let (mut s, _t) = session();
+        for n in ["checkpoint", "restore", "checkpoint_delete"] { refuse(&mut s, n, json!({}), "missing string 'name'"); }
+        refuse(&mut s, "checkpoint", json!({"name": "  "}), "name must be 1 to 80 characters");
+        refuse(&mut s, "checkpoint", json!({"name": "x".repeat(81)}), "name must be 1 to 80 characters");
+        for i in 0..25 { c(&mut s, "checkpoint", json!({"name": format!("c{i}")})); }
+        let r = c(&mut s, "checkpoint", json!({"name": "c24"})); let names = r["checkpoints"].as_array().unwrap();
+        assert_eq!(names.len(), 24, "the oldest is dropped past 24"); assert_eq!(names[0], "c1");
+        refuse(&mut s, "restore", json!({"name": "c0"}), "no checkpoint 'c0'. Existing: c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24");
+        c(&mut s, "add_track", json!({})); assert_eq!(s.project.tracks.len(), 2);
+        assert_eq!(c(&mut s, "restore", json!({"name": "c3"})), json!({"ok": true, "restored": "c3"})); assert_eq!(s.project.tracks.len(), 1);
+        assert_eq!(c(&mut s, "checkpoint_delete", json!({"name": "c3"})), json!({"ok": true}));
+        refuse(&mut s, "checkpoint_delete", json!({"name": "c3"}), "no checkpoint 'c3'");
+    }
+
+    #[test] fn frame_cache_tools_report_clear_and_bound_the_budget() {
+        let (mut s, _t) = session();
+        assert_eq!(c(&mut s, "cache_stats", json!({}))["hit_rate"], 0.0, "no lookups yet");
+        assert_eq!(c(&mut s, "cache_clear", json!({})), json!({"cleared_entries": 0, "freed_bytes": 0}));
+        refuse(&mut s, "cache_set_budget", json!({"megabytes": -1}), "megabytes must be >= 0, got -1");
+        refuse(&mut s, "cache_set_budget", json!({}), "missing number 'megabytes'");
+        assert_eq!(c(&mut s, "cache_set_budget", json!({"megabytes": 2}))["cap_bytes"], 2 * 1048576);
+        let i = c(&mut s, "kimo_info", json!({})); assert!(i["limits"].is_object(), "{i}");
+        let g = c(&mut s, "gpu2d_status", json!({})); assert_eq!(g["gpu_available"], g["fallback_reason"].is_null());
+    }
+
+    #[test] fn save_project_failures_leave_no_temporary_file() {
+        let (mut s, _t) = session();
+        // the target is a folder: the rename onto it fails and the .tmp is removed
+        let d = tmp("dir_target"); std::fs::create_dir_all(&d).unwrap(); let ds = d.to_str().unwrap().to_string();
+        assert!(dispatch(&mut s, "save_project", &json!({"path": ds})).is_err());
+        assert!(!std::path::Path::new(&format!("{ds}.tmp")).exists());
+        // the history temp name is a folder: the project is saved, the history is not
+        let p = tmp("h.kimo"); let ps = p.to_str().unwrap().to_string(); std::fs::create_dir_all(format!("{ps}.history.tmp")).unwrap();
+        assert!(dispatch(&mut s, "save_project", &json!({"path": ps, "with_history": true})).is_err());
+        assert!(p.is_file());
+        // an existing non-empty folder named <path>.history cannot be replaced
+        let q = tmp("q.kimo"); let qs = q.to_str().unwrap().to_string(); std::fs::create_dir_all(format!("{qs}.history/x")).unwrap();
+        assert!(dispatch(&mut s, "save_project", &json!({"path": qs, "with_history": true})).is_err());
+        refuse(&mut s, "save_project", json!({}), "missing string 'path'");
+        for x in [d.clone(), std::path::PathBuf::from(format!("{ps}.history.tmp")), std::path::PathBuf::from(format!("{qs}.history"))] { let _ = std::fs::remove_dir_all(x); }
+        for x in [p, q] { let _ = std::fs::remove_file(x); }
+    }
+
+    #[test] fn load_project_refuses_bad_files_and_newer_schemas() {
+        let mut s = Session::new();
+        refuse(&mut s, "load_project", json!({}), "missing string 'path'");
+        let p = tmp("bad.kimo"); let ps = p.to_str().unwrap();
+        std::fs::write(&p, "{\"tracks\": 5}").unwrap(); assert!(err(&mut s, "load_project", json!({"path": ps})).contains("invalid type"));
+        std::fs::write(&p, "not json").unwrap(); assert!(dispatch(&mut s, "load_project", &json!({"path": ps})).is_err());
+        std::fs::write(&p, json!({"kimo": {"schema_version": 999, "last_saved_with": {"version": "9.9", "commit": "abc"}}, "tracks": []}).to_string()).unwrap();
+        assert_eq!(err(&mut s, "load_project", json!({"path": ps})), format!("project schema_version 999 is newer than this build supports ({}); it was saved by kimo 9.9 (commit abc). Update kimo to open it.", crate::buildinfo::SCHEMA_VERSION));
+        std::fs::write(&p, json!({"kimo": {"schema_version": 999}, "tracks": []}).to_string()).unwrap();
+        assert!(err(&mut s, "load_project", json!({"path": ps})).ends_with("saved by kimo ? (commit ?). Update kimo to open it."));
+        // a kimo header without schema_version is a version 1 file
+        std::fs::write(&p, json!({"kimo": {"created_with": {"version": "0.1"}}, "name": "t", "markers": [], "assets": {}, "width": 64, "height": 32, "fps": 10, "tracks": []}).to_string()).unwrap();
+        assert_eq!(c(&mut s, "load_project", json!({"path": ps}))["tracks"], 0);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// Saves a one-track project with history, then lets `edit` rewrite the history file before loading it back.
+    fn reload_with_history(edit: impl Fn(&str, &mut Value)) -> (Session, Result<Value, String>) {
+        let (mut s, _t) = session(); let p = tmp("hist.kimo"); let ps = p.to_str().unwrap().to_string();
+        c(&mut s, "save_project", json!({"path": ps, "with_history": true}));
+        let hp = format!("{ps}.history"); let mut h: Value = serde_json::from_str(&std::fs::read_to_string(&hp).unwrap()).unwrap();
+        edit(&std::fs::read_to_string(&p).unwrap(), &mut h); std::fs::write(&hp, h.to_string()).unwrap();
+        let mut s2 = Session::new(); let r = dispatch(&mut s2, "load_project", &json!({"path": ps, "with_history": true, "restore": true}));
+        let _ = std::fs::remove_file(&p); let _ = std::fs::remove_file(&hp); (s2, r)
+    }
+    #[test] fn load_project_with_history_checks_the_history_file() {
+        let (s, r) = reload_with_history(|_, _| {}); let r = r.unwrap();
+        assert_eq!((r["undo_steps"].as_u64(), r["no_history"].as_bool()), (Some(2), Some(true)), "{r}"); assert_eq!(s.undo_labels, vec!["project_set", "add_track"]);
+        let (_, r) = reload_with_history(|_, h| { *h = json!({"undo": []}); });
+        assert_eq!(r.unwrap()["history_ignored"], "history file has no project_sha (older format)");
+        let (_, r) = reload_with_history(|t, h| { h["project_sha"] = json!("0000000000000001"); let _ = t; });
+        let r = r.unwrap(); let want = r["history_ignored"].as_str().unwrap().to_string();
+        assert!(want.starts_with("history belongs to a different project save (history sha 0000000000000001, project sha "), "{want}");
+        let (_, r) = reload_with_history(|t, h| { assert_eq!(h["project_sha"], json!(format!("{:016x}", crate::commands::fnv64(t.as_bytes())))); h["undo_labels"] = json!(["only one"]); });
+        assert_eq!(r.unwrap_err(), "history file is inconsistent (undo and labels differ in length)");
+        for k in ["undo", "undo_labels", "checkpoints"] { let (_, r) = reload_with_history(|_, h| { h[k] = json!(5); }); assert!(r.unwrap_err().contains("invalid type"), "{k}"); }
+    }
+    #[test] fn load_project_reports_a_missing_or_unreadable_history_and_dependencies() {
+        let (mut s, _t) = session(); let p = tmp("nohist.kimo"); let ps = p.to_str().unwrap().to_string();
+        c(&mut s, "save_project", json!({"path": ps}));
+        let r = c(&mut s, "load_project", json!({"path": ps, "with_history": true, "report": true}));
+        assert!(r["history_ignored"].as_str().unwrap().starts_with("missing ("), "{r}"); assert!(r.get("no_history").is_none());
+        assert_eq!(r["dependencies"]["total"], 0);
+        std::fs::write(format!("{ps}.history"), "not json").unwrap();
+        assert!(dispatch(&mut s, "load_project", &json!({"path": ps, "with_history": true})).is_err());
+        let _ = std::fs::remove_file(format!("{ps}.history")); let _ = std::fs::remove_file(&p);
+    }
 }

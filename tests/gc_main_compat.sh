@@ -7,9 +7,10 @@
 set -e
 MAIN=${1:-/tmp/mainwt}; HERE=$(cd "$(dirname "$0")/.." && pwd); export PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=1
 rm -rf /tmp/gc; mkdir -p /tmp/gc
-cp "$HERE/crates/kimo-core/tests/gc_dump.rs" "$MAIN/crates/kimo-core/tests/gc_dump.rs"
+# frozen main still has one test binary per file; this tree links them all into the `all` binary
+cp "$HERE/crates/kimo-core/tests/all/gc_dump.rs" "$MAIN/crates/kimo-core/tests/gc_dump.rs"
 (cd "$MAIN" && CARGO_TARGET_DIR=${MAIN_TARGET:-/tmp/maintarget} GC_OUT=/tmp/gc/main cargo test --release -p kimo-core --test gc_dump >/tmp/gc_main.log 2>&1)
-(cd "$HERE" && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/w6a-target} GC_OUT=/tmp/gc/v3 cargo test --release -p kimo-core --test gc_dump >/tmp/gc_v3.log 2>&1)
+(cd "$HERE" && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/w6a-target} GC_OUT=/tmp/gc/v3 cargo test --release -p kimo-core --test all gc_dump:: >/tmp/gc_v3.log 2>&1)
 python3 - <<'PY'
 import struct, sys
 SKIP = {'fx_stack', 'glass_post'}; ALLOW_F32 = {'shapes': 1e-6}; PROJ_OK = {'shapes', 'shards'}
