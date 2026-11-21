@@ -1169,7 +1169,9 @@ fn pillarboxed_landscape(name: &str, dur: f64, canvas_w: u32, canvas_h: u32, ban
     }
     let mut ss = Session::new(); call(&mut ss, "project_set", json!({"width": 1280, "height": 720, "fps": 30}));
     let tt = sid(&call(&mut ss, "add_track", json!({})), "track_id");
-    let added = call(&mut ss, "add_caption_cues", json!({"track_id": tt, "cues": [{"start": 0.0, "end": 1.0, "text": "PAGE ONE"}, {"start": 1.5, "end": 2.5, "text": "PAGE TWO"}], "style": "boxed"}));
+    // The caption geometry below depends on the font: pin the repo-owned font, not the default (a Linux system path).
+    let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/Montserrat-Var.ttf").to_string_lossy().into_owned();
+    let added = call(&mut ss, "add_caption_cues", json!({"track_id": tt, "cues": [{"start": 0.0, "end": 1.0, "text": "PAGE ONE"}, {"start": 1.5, "end": 2.5, "text": "PAGE TWO"}], "style": "boxed", "font": font}));
     let ids: Vec<String> = added["clip_ids"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     let (p1, p2) = (ids[0].clone(), ids[1].clone());
     // both pages' boxes sit around x 534-538, y 592, w ~210, h 32 (same style/size): a wide bright box

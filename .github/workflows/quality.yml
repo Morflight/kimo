@@ -140,6 +140,9 @@ jobs:
       # Keep debug assertions and every test, but avoid unoptimized renderer overhead. Level 1 for the
       # workspace crates (faster coverage compiles); dependencies stay at 2 via [profile.test.package."*"].
       CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      # The preset fonts fetched by fonts/fetch.sh. The build target lives outside the checkout (see below), so the
+      # executable-relative lookup of text::font_dirs never reaches <repo>/fonts; without this, preset fonts fall back.
+      KIMO_FONTS: ${{ github.workspace }}/fonts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Use the Windows volume with most free space for build artifacts
